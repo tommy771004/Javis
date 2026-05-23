@@ -10,14 +10,54 @@ import { CommandInput } from './components/CommandInput';
 import { Footer } from './components/Footer';
 import { hermesDB } from './services/db';
 
+import { SettingsModal, SecuritySettings } from './components/SettingsModal';
+
 interface PlannedAction {
-  type: 'write' | 'execute';
+  type: 'write' | 'execute' | 'create_task';
   filePath?: string;
   content?: string;
   command?: string;
+  priority?: string;
+  description?: string;
 }
 
 export default function App() {
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('jarvis_is_muted');
+      return stored === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  const handleToggleMute = () => {
+    setIsMuted(prev => {
+      const newVal = !prev;
+      try {
+        localStorage.setItem('jarvis_is_muted', String(newVal));
+      } catch (e) {}
+      if (newVal && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      return newVal;
+    });
+  };
+
+  // F4 Global Command Hotkey Listener for Mute state
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F4') {
+        e.preventDefault();
+        handleToggleMute();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   const [logs, setLogs] = useState<string[]>([
     "SYS: JARVIS online.",
     "SYS: System diagnostics initialized.",
@@ -27,6 +67,15 @@ export default function App() {
   const [isMicActive, setIsMicActive] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [isHermesActive, setIsHermesActive] = useState(false);
+
+  // Security Matrix & Permissions settings hooks
+  const [securitySettings, setSecuritySettings] = useState<SecuritySettings>({
+    shellMode: 'manual',
+    writeMode: 'manual',
+    taskMode: 'manual',
+    voiceProfile: 'baritone'
+  });
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Phase 3: Cognitive HUD and Voice amplitude sync states
   const [cognitiveState, setCognitiveState] = useState<CognitiveState>('idle');
@@ -86,6 +135,18 @@ export default function App() {
   useEffect(() => {
     syncLogsFromBackend();
   }, [isHermesActive]);
+
+  // Load configured security matrices on startup configuration
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('jarvis_security_settings');
+      if (stored) {
+        setSecuritySettings(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error("Failed to load security settings from localStorage", e);
+    }
+  }, []);
 
   // WebRTC Active Switch Effect
   useEffect(() => {
@@ -408,6 +469,7 @@ export default function App() {
     clean = clean.replace(/\[WRITE_FILE\]:[^\n]*/gi, '');
     clean = clean.replace(/\[EXECUTE_COMMAND\]:[^\n]*/gi, '');
     clean = clean.replace(/\[RUN_COMMAND\]:[^\n]*/gi, '');
+    clean = clean.replace(/\[CREATE_TASK\]:[^\n]*/gi, '');
     
     // 2. Remove markdown code blocks ```...``` (including content inside)
     clean = clean.replace(/```[\s\S]*?```/g, '');
@@ -453,6 +515,7 @@ export default function App() {
   };
 
   const speakText = (text: string) => {
+    if (isMuted) return;
     if (!('speechSynthesis' in window)) return;
     
     window.speechSynthesis.cancel();
@@ -501,9 +564,20 @@ export default function App() {
       const selectedVoice = selectJarvisVoice();
       if (selectedVoice) utterance.voice = selectedVoice;
 
-      // JARVIS acoustic profile: deep British baritone, measured pace, authoritative
-      utterance.rate = 0.95;   // Slightly slower for gravitas and clarity
-      utterance.pitch = 0.80;  // Deep baritone — lower than default
+      // JARVIS acoustic profile adjusted dynamically based on active voice settings profile
+      let customRate = 0.95;
+      let customPitch = 0.80;
+
+      if (securitySettings.voiceProfile === 'fast') {
+        customRate = 1.08;
+        customPitch = 0.90;
+      } else if (securitySettings.voiceProfile === 'standard') {
+        customRate = 1.00;
+        customPitch = 1.00;
+      }
+
+      utterance.rate = customRate;   // Gravitas or fastpaced operational control
+      utterance.pitch = customPitch;  // Deep British Baritone or custom robotic voice override
       utterance.volume = 1.0;
 
       let amplitudeTimer: NodeJS.Timeout | null = null;
@@ -544,6 +618,24 @@ export default function App() {
       };
     }
   };
+
+  // Listen for custom system event loops dispatched by high-tech sub-components like ActivityLog
+  useEffect(() => {
+    const handleAppendLog = (e: any) => {
+      const { message, speak } = e.detail;
+      if (message) {
+        setLogs(prev => [...prev, message]);
+      }
+      if (speak) {
+        speakText(speak);
+      }
+    };
+
+    window.addEventListener('append-sys-log', handleAppendLog);
+    return () => {
+      window.removeEventListener('append-sys-log', handleAppendLog);
+    };
+  }, []);
 
   const handleToggleHermes = () => {
     setIsHermesActive(prev => {
@@ -620,11 +712,47 @@ export default function App() {
       
       // Check for server-extracted planned file edits or execute statements
       if (data.plannedAction) {
-        setPendingAction(data.plannedAction);
-        if (data.plannedAction.type === 'execute') {
-          speakText("I have formulated the required local system command, Tommy. Please review and authorize its execution.");
+        const action = data.plannedAction;
+        let shouldAutoRun = false;
+
+        if (action.type === 'create_task' && securitySettings.taskMode === 'auto') {
+          shouldAutoRun = true;
+        } else if (action.type === 'write' && securitySettings.writeMode === 'auto') {
+          shouldAutoRun = true;
+        } else if (action.type === 'execute') {
+          if (securitySettings.shellMode === 'auto') {
+            shouldAutoRun = true;
+          } else if (securitySettings.shellMode === 'safe') {
+            // Evaluates command safety
+            const cmdLower = (action.command || '').toLowerCase().trim();
+            const safeKeywords = ['get-', 'dir', 'ls', 'echo', 'git status', 'git diff', 'whoami', 'sys-info', 'systeminfo'];
+            const dangerousKeywords = ['shutdown', 'restart', 'stop-', 'kill', 'rm ', 'del ', 'remove-', 'set-volume', 'write-file', 'write-host'];
+            
+            const startsWithSafe = safeKeywords.some(keyword => cmdLower.startsWith(keyword) || cmdLower.includes(keyword));
+            const hasNoDanger = !dangerousKeywords.some(keyword => cmdLower.includes(keyword));
+            
+            if (startsWithSafe && hasNoDanger) {
+              shouldAutoRun = true;
+            }
+          }
+        }
+
+        if (shouldAutoRun) {
+          setLogs(prev => [
+            ...prev,
+            `SYS: Automated transaction authorized by security matrix. Category: ${action.type.toUpperCase()}`
+          ]);
+          // Direct background execution
+          executeActionDirectly(action);
         } else {
-          speakText("I have formulated the required code changes, Tommy. Please review and authorize the filesystem patch.");
+          setPendingAction(action);
+          if (action.type === 'execute') {
+            speakText("I have formulated the required local system command, Tommy. Please review and authorize its execution.");
+          } else if (action.type === 'create_task') {
+            speakText(`I have prepared a new ${action.priority} priority task tracker, sir. Please review it.`);
+          } else {
+            speakText("I have formulated the required code changes, Tommy. Please review and authorize the filesystem patch.");
+          }
         }
       } else {
         // If speaking, state switches to speaking; else goes idle
@@ -650,15 +778,35 @@ export default function App() {
     }
   };
 
-  // --- Execute User-Consented Workspace Filesystem / Command Action ---
-  const handleApproveAction = async () => {
-    if (!pendingAction) return;
+  // --- Execute Workspace Filesystem or OS Shell Command action directly ---
+  const executeActionDirectly = async (action: PlannedAction) => {
     setIsExecutingAction(true);
     setCognitiveState('thinking'); // Computing
     
     try {
-      if (pendingAction.type === 'execute') {
-        const cmd = pendingAction.command || '';
+      if (action.type === 'create_task') {
+        const priority = action.priority || 'Medium';
+        const description = action.description || '';
+        setLogs(prev => [...prev, `SYS: Creating ${priority} priority task: ${description}...`]);
+
+        const taskRes = await fetch('/api/workspace/task', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ priority, description })
+        });
+        
+        if (taskRes.ok) {
+           setLogs(prev => [...prev, `SYS: Task tracking entry created successfully.`]);
+           speakText("The new task has been registered into the database, sir.");
+           // Optional: Dispatch a custom event to notify TaskList component
+           window.dispatchEvent(new Event('task-list-updated'));
+        } else {
+           const errData = await taskRes.json();
+           setLogs(prev => [...prev, `SYS ERROR: Task creation failed - ${errData.error}`]);
+           speakText("Warning, sir. I was unable to insert the task into the ledger.");
+        }
+      } else if (action.type === 'execute') {
+        const cmd = action.command || '';
         setLogs(prev => [...prev, `SYS: Initiating OS command execution...`, `CMD: ${cmd.substring(0, 120)}`]);
         
         // Determine best endpoint: /api/system/shell for PowerShell/CMD, /api/workspace/run as fallback
@@ -696,14 +844,14 @@ export default function App() {
         }
       } else {
         // Handle File Write Patch
-        setLogs(prev => [...prev, `SYS: Writing file patch request to: ${pendingAction.filePath}...`]);
+        setLogs(prev => [...prev, `SYS: Writing file patch request to: ${action.filePath}...`]);
         
         const patchRes = await fetch('/api/workspace/patch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            filePath: pendingAction.filePath,
-            content: pendingAction.content
+            filePath: action.filePath,
+            content: action.content
           })
         });
 
@@ -711,7 +859,7 @@ export default function App() {
 
         setLogs(prev => [
           ...prev, 
-          `SYS: Success. File '${pendingAction.filePath}' written to disk.`,
+          `SYS: Success. File '${action.filePath}' written to disk.`,
           "SYS: Initiating background compilability checks..."
         ]);
 
@@ -743,9 +891,16 @@ export default function App() {
       setLogs(prev => [...prev, `SYS ERROR: Operation failed. ${err.message}`]);
     } finally {
       setIsExecutingAction(false);
-      setPendingAction(null);
       setCognitiveState('idle');
     }
+  };
+
+  // --- Execute User-Consented Workspace Filesystem / Command Action ---
+  const handleApproveAction = async () => {
+    if (!pendingAction) return;
+    const actionToExec = pendingAction;
+    setPendingAction(null);
+    await executeActionDirectly(actionToExec);
   };
 
   const handleDeclineAction = () => {
@@ -776,65 +931,125 @@ export default function App() {
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className="w-full max-w-[640px] bg-[#020d06]/95 border-2 border-emerald-500 p-6 flex flex-col gap-4 font-mono shadow-[0_0_30px_rgba(16,185,129,0.3)] relative"
+              className={`w-full max-w-[660px] border-2 p-7 flex flex-col gap-4 font-mono relative backdrop-blur-lg ${
+                pendingAction.type === 'execute' 
+                  ? 'bg-red-950/90 border-orange-500 shadow-[0_0_35px_rgba(249,115,22,0.4)]' 
+                  : pendingAction.type === 'create_task'
+                    ? 'bg-cyan-950/90 border-cyan-500 shadow-[0_0_35px_rgba(6,182,212,0.4)]'
+                    : 'bg-emerald-950/90 border-emerald-500 shadow-[0_0_35px_rgba(16,185,129,0.4)]'
+              }`}
             >
-              {/* Corner brackets */}
-              <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-emerald-400"></div>
-              <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-emerald-400"></div>
-              <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-emerald-400"></div>
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-emerald-400"></div>
+              {/* Corner brackets matching action characteristics */}
+              <div className={`absolute -top-[2px] -left-[2px] w-6 h-6 border-t-4 border-l-4 ${pendingAction.type === 'execute' ? 'border-orange-400' : pendingAction.type === 'create_task' ? 'border-cyan-400' : 'border-emerald-400'}`}></div>
+              <div className={`absolute -top-[2px] -right-[2px] w-6 h-6 border-t-4 border-r-4 ${pendingAction.type === 'execute' ? 'border-orange-400' : pendingAction.type === 'create_task' ? 'border-cyan-400' : 'border-emerald-400'}`}></div>
+              <div className={`absolute -bottom-[2px] -left-[2px] w-6 h-6 border-b-4 border-l-4 ${pendingAction.type === 'execute' ? 'border-orange-400' : pendingAction.type === 'create_task' ? 'border-cyan-400' : 'border-emerald-400'}`}></div>
+              <div className={`absolute -bottom-[2px] -right-[2px] w-6 h-6 border-b-4 border-r-4 ${pendingAction.type === 'execute' ? 'border-orange-400' : pendingAction.type === 'create_task' ? 'border-cyan-400' : 'border-emerald-400'}`}></div>
 
-              {/* Warning Header — color changes by action type */}
-              <div className={`border-b pb-2 flex justify-between items-center ${pendingAction.type === 'execute' ? 'border-amber-800 text-amber-400' : 'border-emerald-800 text-emerald-400'}`}>
-                <span className="text-sm font-bold tracking-[0.2em] animate-pulse">
-                  {pendingAction.type === 'execute' ? '🔴 OS COMMAND AUTHORIZATION REQUIRED' : '📝 FILESYSTEM WRITE AUTHORIZATION REQUIRED'}
+              {/* Warning Header — color changes by action type with schedule.md specifications */}
+              <div className={`border-b pb-3 flex justify-between items-center ${pendingAction.type === 'execute' ? 'border-orange-850 text-orange-400' : pendingAction.type === 'create_task' ? 'border-cyan-850 text-cyan-400' : 'border-emerald-850 text-emerald-400'}`}>
+                <span className="text-xs sm:text-sm font-bold tracking-[0.16em] flex items-center gap-2 animate-pulse">
+                  {pendingAction.type === 'execute' 
+                    ? '🔴 橘色警告：此操作將影響作業系統' 
+                    : pendingAction.type === 'create_task' 
+                      ? '🔵 藍色提示：資料庫任務安全登錄' 
+                      : '💚 綠色提示：工作區邊界安全與檔案儲存'}
                 </span>
-                <span className="text-[10px] opacity-75">J.A.R.V.I.S SEC-MATRIX</span>
+                <span className="text-[9px] opacity-70 tracking-widest hidden sm:inline">J.A.R.V.I.S SEC-PROTOCOL v3.4</span>
               </div>
 
-              {/* Action Details */}
-              <div className={`text-[11px] space-y-2 ${pendingAction.type === 'execute' ? 'text-amber-300/80' : 'text-emerald-300/80'}`}>
-                <div className="flex gap-2">
-                  <span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>TRANSACTION TYPE:</span>
-                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${pendingAction.type === 'execute' ? 'bg-amber-900/50 text-amber-300 border border-amber-700/50' : 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50'}`}>
-                    {pendingAction.type === 'execute' ? '⚡ WINDOWS OS SHELL COMMAND' : '💾 WORKSPACE FILE WRITE'}
+              {/* Action Details with badges & safety envelopes */}
+              <div className={`text-[11.5px] space-y-3 ${pendingAction.type === 'execute' ? 'text-orange-200/90' : pendingAction.type === 'create_task' ? 'text-cyan-200/90' : 'text-emerald-200/90'}`}>
+                
+                {/* Badge layout */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-bold opacity-75">TRANSACTION TYPE:</span>
+                  <span className={`px-2.5 py-0.5 text-[9.5px] font-bold tracking-widest rounded ${
+                    pendingAction.type === 'execute' 
+                      ? 'bg-orange-950/85 text-orange-400 border border-orange-500/50' 
+                      : pendingAction.type === 'create_task' 
+                        ? 'bg-cyan-950/85 text-cyan-400 border border-cyan-500/50' 
+                        : 'bg-emerald-950/85 text-emerald-400 border border-emerald-500/50'
+                  }`}>
+                    {pendingAction.type === 'execute' ? '⚡ WINDOWS DIRECT EXECUTE' : pendingAction.type === 'create_task' ? '📋 LOCAL DATABASE MATRIX' : '💾 SAFE-BOUND FILESYSTEM PATCH'}
                   </span>
                 </div>
-                <div><span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>TARGET:</span> {pendingAction.type === 'execute' ? '🖥️ host_os_terminal (PowerShell/CMD)' : `📁 workspace/${pendingAction.filePath}`}</div>
-                <div><span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>SECURITY ENVELOPE:</span> {pendingAction.type === 'execute' ? '🔓 UNBOUNDED_LOCAL_EXEC — Runs on YOUR machine' : '🔒 DIRECTORY_BOUNDED — Restricted to workspace'}</div>
-                {pendingAction.type === 'execute' && (
-                  <div className="text-[10px] text-amber-400/60 italic border border-amber-900/40 bg-amber-950/20 p-2 rounded">
-                    ⚠️ J.A.R.V.I.S will execute this command directly on your Windows OS. Review carefully before authorizing.
+
+                <div>
+                  <span className="font-bold opacity-75">RESOURCE TARGET:</span> 
+                  <span className="font-semibold text-white">
+                    {pendingAction.type === 'execute' ? '🖥️ host_operating_system (PowerShell/CMD Terminal)' : pendingAction.type === 'create_task' ? '🗄️ task_ledger_sqlite_db' : `📁 local_workspace/${pendingAction.filePath}`}
+                  </span>
+                </div>
+
+                {/* Safety envelope explains */}
+                <div>
+                  <span className="font-bold opacity-75">SECURITY ENVELOPE:</span> 
+                  <span className={`font-semibold underline decoration-2 underline-offset-4 ${pendingAction.type === 'execute' ? 'text-orange-400 decoration-orange-600' : pendingAction.type === 'create_task' ? 'text-cyan-400 decoration-cyan-600' : 'text-emerald-400 decoration-emerald-600'}`}>
+                    {pendingAction.type === 'execute' 
+                      ? '🔓 SYSTEM INTERVENTION — Unrestricted OS execution payload' 
+                      : pendingAction.type === 'create_task'
+                        ? '🔒 DB BOUNDED TRANSACTION — Standard sandbox schema storage'
+                        : '🔒 FILESYSTEM CONFINED CONTEXT — Sandboxed inside active workspace directory'}
+                  </span>
+                </div>
+
+                {pendingAction.type === 'execute' ? (
+                  <div className="text-[10px] text-orange-400 border border-orange-900 bg-red-950/45 p-2.5 rounded leading-relaxed">
+                    ⚠️ <b>WARNING:</b> J.A.R.V.I.S will launch this script as a host processor. Unauthorized OS access might disrupt system state matrices. Check string carefully.
+                  </div>
+                ) : pendingAction.type === 'create_task' ? (
+                  <div className="text-[10px] text-cyan-400 border border-cyan-900 bg-cyan-950/45 p-2.5 rounded leading-relaxed">
+                    ℹ️ <b>STATE TRANSITION:</b> Registering task tracker metrics. Completely internal configuration, doesn't affect active operating system commands.
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-emerald-400 border border-emerald-900 bg-emerald-950/45 p-2.5 rounded leading-relaxed">
+                    💚 <b>SANDBOX INTEGRITY CLEARED:</b> File writes are directory-confined. No active runtime execution or system threats detected. Safe transaction.
                   </div>
                 )}
               </div>
 
               {/* Code preview block */}
-              <div className={`flex-1 min-h-[180px] max-h-[300px] border p-4 text-[11px] overflow-y-auto select-text font-mono leading-relaxed whitespace-pre-wrap ${pendingAction.type === 'execute' ? 'border-amber-900/60 bg-black/60 text-amber-300' : 'border-emerald-900/60 bg-black/60 text-emerald-400'}`}>
-                {pendingAction.type === 'execute' ? pendingAction.command : pendingAction.content}
+              <div className={`flex-1 min-h-[140px] max-h-[220px] border p-4 text-[11px] overflow-y-auto select-text font-mono leading-relaxed whitespace-pre-wrap rounded ${
+                pendingAction.type === 'execute' 
+                  ? 'border-orange-900/60 bg-black/75 text-orange-300 shadow-[inset_0_0_12px_rgba(249,115,22,0.15)]' 
+                  : pendingAction.type === 'create_task' 
+                    ? 'border-cyan-900/60 bg-black/75 text-cyan-300 shadow-[inset_0_0_12px_rgba(6,182,212,0.15)]' 
+                    : 'border-emerald-900/60 bg-black/75 text-emerald-450 shadow-[inset_0_0_12px_rgba(16,185,129,0.15)]'
+              }`}>
+                {pendingAction.type === 'execute' ? pendingAction.command : pendingAction.type === 'create_task' ? `PRIORITY: ${pendingAction.priority}\n\nDESCRIPTION:\n${pendingAction.description}` : pendingAction.content}
               </div>
 
-              {/* Actions */}
-              <div className="flex gap-4 border-t border-gray-800/60 pt-4 flex-shrink-0">
+              {/* Redesigned Larger buttons for the Consent Overlay */}
+              <div className="flex flex-col sm:flex-row gap-3 border-t border-cyan-950/40 pt-4 flex-shrink-0">
                 <button
                   disabled={isExecutingAction}
                   onClick={handleApproveAction}
-                  className={`flex-1 py-3 text-xs uppercase border tracking-widest text-center transition-all font-bold ${
+                  className={`flex-1 py-4 text-xs tracking-[0.2em] uppercase border transition-all font-bold cursor-pointer hover:scale-[1.01] active:scale-98 flex items-center justify-center gap-2 ${
                     isExecutingAction 
-                      ? 'border-gray-700 text-gray-600 bg-gray-950/20 cursor-not-allowed' 
+                      ? 'border-slate-800 text-slate-600 bg-slate-950 cursor-not-allowed' 
                       : pendingAction.type === 'execute'
-                        ? 'border-amber-500 text-amber-200 bg-amber-950/40 hover:bg-amber-500/20 shadow-[0_0_16px_rgba(217,119,6,0.3)] active:scale-98'
-                        : 'border-emerald-400 text-white bg-emerald-950/40 hover:bg-emerald-500/20 shadow-[0_0_12px_rgba(16,185,129,0.25)] active:scale-98'
+                        ? 'border-orange-500 text-white bg-orange-600/25 hover:bg-orange-500/35 shadow-[0_0_20px_rgba(249,115,22,0.35)]'
+                        : pendingAction.type === 'create_task'
+                          ? 'border-cyan-500 text-white bg-cyan-600/25 hover:bg-cyan-500/35 shadow-[0_0_20px_rgba(6,182,212,0.35)]'
+                          : 'border-emerald-400 text-white bg-emerald-600/25 hover:bg-emerald-500/35 shadow-[0_0_20px_rgba(16,185,129,0.35)]'
                   }`}
                 >
-                  {isExecutingAction ? '⏳ Executing...' : pendingAction.type === 'execute' ? '✅ Authorize & Execute on Windows' : '✅ Authorize & Write to Disk'}
+                  {isExecutingAction ? (
+                    '⏳ Processing System Control...'
+                  ) : pendingAction.type === 'execute' ? (
+                    '✅ Authorize & Execute on Windows (確認執行)'
+                  ) : pendingAction.type === 'create_task' ? (
+                    '✅ Approve Ledger Insertion (核准任務)'
+                  ) : (
+                    '✅ Authorize & Patch Filesystem (確認寫入)'
+                  )}
                 </button>
                 <button
                   disabled={isExecutingAction}
                   onClick={handleDeclineAction}
-                  className="px-6 py-3 text-xs uppercase border border-red-800/70 text-red-400 bg-black hover:bg-red-950/30 active:scale-98 transition-all tracking-widest font-bold"
+                  className="px-6 py-4 text-xs tracking-widest uppercase border border-red-800/80 text-red-400 hover:text-white bg-black hover:bg-red-950/40 active:scale-98 cursor-pointer transition-all font-bold"
                 >
-                  ❌ Deny
+                  ❌ Deny (拒絕)
                 </button>
               </div>
             </motion.div>
@@ -842,7 +1057,17 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <Header />
+      <Header 
+        onOpenSettings={() => setIsSettingsOpen(true)} 
+        isMuted={isMuted}
+        onToggleMute={handleToggleMute}
+      />
+
+      <SettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        onSettingsChange={setSecuritySettings} 
+      />
 
       <main className="flex-1 flex flex-col lg:flex-row w-full mx-auto mt-4 lg:mt-6 overflow-visible lg:overflow-hidden gap-8 lg:gap-0">
         
@@ -885,7 +1110,10 @@ export default function App() {
 
       </main>
 
-      <Footer />
+      <Footer 
+        isMuted={isMuted}
+        onToggleMute={handleToggleMute}
+      />
     </div>
   );
 }

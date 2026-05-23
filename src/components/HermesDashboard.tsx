@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { hermesDB, DbSkill, DbCostLog } from '../services/db';
 import { CognitiveState } from './CenterVisualizer';
+import { TaskPriorityDonut } from './TaskPriorityDonut';
 
 interface HermesDashboardProps {
   cognitiveState: CognitiveState;
@@ -30,7 +31,7 @@ export function HermesDashboard({
   webrtcStats,
   isMicActive = false
 }: HermesDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'gateway' | 'webrtc' | 'docs'>('matrix');
+  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'tasks' | 'gateway' | 'webrtc' | 'docs'>('tasks');
   const [skills, setSkills] = useState<DbSkill[]>([]);
   
   // Terminal states
@@ -42,6 +43,29 @@ export function HermesDashboard({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Array<{ type: string; title: string; excerpt: string; confidence: number }>>([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  // Task states
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    taskId: string | null;
+  } | null>(null);
+  const [editingTask, setEditingTask] = useState<{ id: string; description: string } | null>(null);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+
+  // Close context menu on any outside click or context menu trigger
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null);
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('contextmenu', closeMenu);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('contextmenu', closeMenu);
+    };
+  }, []);
 
   // Cost-Aware Gateway states
   const [budget, setBudget] = useState(2.00);
@@ -68,6 +92,12 @@ export function HermesDashboard({
       setSpent(stats.spent);
       setCacheHits(stats.cacheHits);
       setCostLogs(stats.costLogs);
+      
+      const tasksRes = await fetch('/api/tasks');
+      if (tasksRes.ok) {
+        const tasksData = await tasksRes.json();
+        setTasks(tasksData);
+      }
 
       if (terminalLogs.length === 0) {
         setTerminalLogs([
@@ -84,6 +114,9 @@ export function HermesDashboard({
 
   useEffect(() => {
     loadDataFromBackend();
+    const handleUpdate = () => loadDataFromBackend();
+    window.addEventListener('task-list-updated', handleUpdate);
+    return () => window.removeEventListener('task-list-updated', handleUpdate);
   }, [activeTab]);
 
   // Real Server-Side Skill Evolution (GEPA) mutation
@@ -208,7 +241,7 @@ export function HermesDashboard({
 
       {/* Tabs Menu */}
       <div className="flex gap-2 mb-4 bg-emerald-950/20 p-1 border border-emerald-900/30">
-        {(['matrix', 'memory', 'gateway', 'webrtc', 'docs'] as const).map(tab => (
+        {(['matrix', 'memory', 'tasks', 'gateway', 'webrtc', 'docs'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -218,7 +251,7 @@ export function HermesDashboard({
                 : 'border-transparent text-emerald-600 hover:text-emerald-400 hover:bg-emerald-950/45'
             }`}
           >
-            {tab === 'matrix' ? 'Learning Loop' : tab === 'memory' ? 'SQLite FTS5' : tab === 'gateway' ? 'Cost Gateway' : tab === 'webrtc' ? 'VoIP Bridge' : 'Tech Specs'}
+            {tab === 'matrix' ? 'Learning Loop' : tab === 'memory' ? 'SQLite FTS5' : tab === 'tasks' ? 'Task List' : tab === 'gateway' ? 'Cost Gateway' : tab === 'webrtc' ? 'VoIP Bridge' : 'Tech Specs'}
           </button>
         ))}
       </div>
@@ -226,6 +259,339 @@ export function HermesDashboard({
       {/* Tab Panels */}
       <div className="flex-1 min-h-0 overflow-y-auto pr-1 scrollbar-cyan mb-4">
         <AnimatePresence mode="wait">
+          {activeTab === 'tasks' && (
+            <motion.div
+              key="tasks"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4 h-full flex flex-col relative"
+            >
+              {/* Dynamic Task Priority Distribution (D3 Donut Chart) */}
+              <TaskPriorityDonut tasks={tasks} />
+
+              <div className="border border-emerald-900/40 p-3 bg-emerald-950/10 flex-1 flex flex-col">
+                <div className="flex justify-between items-center mb-3 border-b border-emerald-900/30 pb-2">
+                  <span className="text-emerald-400 font-bold uppercase tracking-wider text-[10px]">Actionable Task Tracker</span>
+                  <div className="flex gap-2 items-center text-[9px] font-bold uppercase">
+                    <span className="text-emerald-600">Pending: {tasks.filter(t => t.status === 'Pending').length}</span>
+                    <span className="text-emerald-800">|</span>
+                    <span className="text-emerald-600 animate-pulse">Right-click for Context Menu</span>
+                  </div>
+                </div>
+
+                {/* Task Search Input Bar */}
+                <div className="mb-3 relative">
+                  <input
+                    type="text"
+                    placeholder="Search task descriptions..."
+                    value={taskSearchQuery}
+                    onChange={(e) => setTaskSearchQuery(e.target.value)}
+                    className="w-full bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-widest text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase"
+                  />
+                  {taskSearchQuery && (
+                    <button 
+                      onClick={() => setTaskSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500 hover:text-emerald-300 text-[9px] font-bold font-mono"
+                    >
+                      [CLEAR]
+                    </button>
+                  )}
+                </div>
+                
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-cyan">
+                  {(() => {
+                    const filteredTasks = tasks.filter(task => 
+                      task.description.toLowerCase().includes(taskSearchQuery.toLowerCase())
+                    );
+                    return filteredTasks.length > 0 ? (
+                      filteredTasks.map(task => (
+                        <div 
+                          key={task.id} 
+                          className={`border p-3 flex flex-col gap-2 transition-all cursor-pointer relative select-none ${
+                            task.status === 'Completed' 
+                              ? 'border-emerald-900/20 bg-emerald-950/5 opacity-50' 
+                              : task.priority === 'High'
+                                ? 'border-red-900/40 bg-red-950/10 hover:border-red-500/50'
+                                : task.priority === 'Medium'
+                                  ? 'border-amber-900/40 bg-amber-950/10 hover:border-amber-500/50'
+                                  : 'border-emerald-900/40 bg-emerald-950/20 hover:border-emerald-500/50'
+                          }`}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setContextMenu({
+                              visible: true,
+                              x: e.clientX,
+                              y: e.clientY,
+                              taskId: task.id
+                            });
+                          }}
+                          onClick={async () => {
+                             if (task.status === 'Completed') return;
+                             const res = await fetch(`/api/tasks/${task.id}/status`, {
+                               method: 'PUT',
+                               headers: { 'Content-Type': 'application/json' },
+                               body: JSON.stringify({ status: 'Completed' })
+                             });
+                             if (res.ok) {
+                               loadDataFromBackend();
+                             }
+                          }}
+                        >
+                          <div className="flex justify-between items-center text-[10px]">
+                            <div className="flex items-center gap-2">
+                              <span className="text-emerald-500 opacity-60 font-mono">ID: {task.id}</span>
+                              <span className={`px-1 text-[8px] uppercase border font-bold ${
+                                task.priority === 'High' ? 'border-red-500/50 text-red-400 bg-red-900/20' : 
+                                task.priority === 'Medium' ? 'border-amber-500/50 text-amber-400 bg-amber-900/20' : 
+                                'border-emerald-500/50 text-emerald-400 bg-emerald-900/20'
+                              }`}>{task.priority}</span>
+                              {task.status === 'Completed' && (
+                                 <span className="px-1 text-[8px] uppercase font-bold border border-green-500/50 text-green-400 bg-green-900/20">DONE</span>
+                              )}
+                            </div>
+                            <span className="text-emerald-700 font-mono">{new Date(task.createdAt).toLocaleDateString()}</span>
+                          </div>
+                          
+                          <div className={`text-[11px] ${task.status === 'Completed' ? 'text-emerald-600 line-through' : 'text-emerald-300'}`}>
+                            {task.description}
+                          </div>
+
+                          {/* Linear progress bar for tracking ongoing completion percentage */}
+                          {task.status === 'Completed' ? (
+                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex items-center gap-3">
+                              <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">PROGRESS:</span>
+                              <div className="flex-1 h-1.5 bg-emerald-950 border border-emerald-900/60 rounded-sm overflow-hidden">
+                                <div className="h-full bg-emerald-500 w-full" />
+                              </div>
+                              <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">100%</span>
+                            </div>
+                          ) : (
+                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                              <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">PROGRESS:</span>
+                              <input 
+                                type="range" 
+                                min="0" 
+                                max="100" 
+                                step="5"
+                                value={task.progress || 0}
+                                onChange={async (e) => {
+                                  const newProgress = parseInt(e.target.value);
+                                  // Live optimistic update for seamless experience
+                                  setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: newProgress, status: newProgress === 100 ? 'Completed' : t.status } : t));
+                                  const res = await fetch(`/api/tasks/${task.id}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ progress: newProgress })
+                                  });
+                                  if (res.ok) {
+                                    // Soft refresh list
+                                    const freshRes = await fetch('/api/tasks');
+                                    if (freshRes.ok) {
+                                      setTasks(await freshRes.json());
+                                    }
+                                  }
+                                }}
+                                className="flex-1 h-1 bg-emerald-950 accent-emerald-400 border border-emerald-900/60 rounded-sm cursor-pointer"
+                              />
+                              <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">
+                                {task.progress || 0}%
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-8 text-emerald-700/70 text-[10px] italic">
+                        {taskSearchQuery ? 'No tasks matched your keyword query.' : 'No active tasks in database.'}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* Absolute Context Menu overlay inside tasks viewport */}
+              {contextMenu && contextMenu.visible && (
+                <div 
+                  className="fixed z-50 bg-[#03150a] border border-emerald-500/70 py-1 shadow-[0_4px_24px_rgba(16,185,129,0.3)] font-mono text-[9px] tracking-wider min-w-[170px]"
+                  style={{ top: `${contextMenu.y}px`, left: `${contextMenu.x}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-2.5 py-1 border-b border-emerald-950 text-emerald-500/85 text-[7px] font-bold uppercase tracking-widest font-mono">
+                    Actions: Task {contextMenu.taskId?.substring(0, 8)}
+                  </div>
+                  
+                  <button 
+                    onClick={() => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      const targetTask = tasks.find(t => t.id === taskId);
+                      if (targetTask) {
+                        setEditingTask({ id: taskId, description: targetTask.description });
+                      }
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-emerald-300 hover:bg-emerald-500/20 hover:text-white transition-all uppercase font-bold"
+                  >
+                    Edit Description
+                  </button>
+
+                  <div className="border-t border-emerald-950/60 my-0.5"></div>
+
+                  <button 
+                    onClick={async () => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      const res = await fetch(`/api/tasks/${taskId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ priority: 'High' })
+                      });
+                      if (res.ok) {
+                        loadDataFromBackend();
+                      }
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-500/20 hover:text-white transition-all uppercase font-bold"
+                  >
+                    Move to High Priority
+                  </button>
+
+                  <button 
+                    onClick={async () => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      const res = await fetch(`/api/tasks/${taskId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ priority: 'Medium' })
+                      });
+                      if (res.ok) {
+                        loadDataFromBackend();
+                      }
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-amber-400 hover:bg-amber-500/20 hover:text-white transition-all uppercase font-bold"
+                  >
+                    Move to Medium Priority
+                  </button>
+
+                  <button 
+                    onClick={async () => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      const res = await fetch(`/api/tasks/${taskId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ priority: 'Low' })
+                      });
+                      if (res.ok) {
+                        loadDataFromBackend();
+                      }
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-emerald-400 hover:bg-emerald-500/20 hover:text-white transition-all uppercase font-bold"
+                  >
+                    Move to Low Priority
+                  </button>
+
+                  <div className="border-t border-emerald-950/60 my-0.5"></div>
+
+                  <button 
+                    onClick={() => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      setDeletingTaskId(taskId);
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-red-500 hover:bg-red-950 hover:text-white transition-all uppercase font-bold"
+                  >
+                    Delete Task
+                  </button>
+                </div>
+              )}
+
+              {/* Custom Integrated Edit description Dialog Modal */}
+              {editingTask && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-xs p-4" onClick={() => setEditingTask(null)}>
+                  <div className="bg-[#03140a] border border-emerald-500 p-4 max-w-sm w-full font-mono text-[10px] text-emerald-300 shadow-[0_0_32px_rgba(16,185,129,0.4)]" onClick={(e) => e.stopPropagation()}>
+                    <div className="text-emerald-400 font-bold uppercase tracking-widest border-b border-emerald-900/60 pb-2 mb-3">
+                      Edit Task Details
+                    </div>
+                    <div className="text-[8px] text-emerald-600 uppercase tracking-widest mb-1.5 font-bold">Task Objective Description:</div>
+                    <textarea
+                      value={editingTask.description}
+                      onChange={(e) => setEditingTask({ ...editingTask, description: e.target.value })}
+                      className="w-full bg-[#020d06] border border-emerald-800 p-2 text-[10px] text-emerald-300 focus:outline-none focus:border-emerald-500 font-mono h-20 mb-4 uppercase rounded-sm"
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        onClick={() => setEditingTask(null)}
+                        className="px-3 py-1.5 border border-emerald-800 text-[9px] hover:bg-emerald-950 hover:text-emerald-400 text-emerald-600 transition-all uppercase font-bold rounded-xs"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const res = await fetch(`/api/tasks/${editingTask.id}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ description: editingTask.description })
+                          });
+                          if (res.ok) {
+                            setEditingTask(null);
+                            loadDataFromBackend();
+                          }
+                        }}
+                        className="px-3 py-1.5 border border-emerald-500 bg-emerald-500/20 text-[9px] hover:bg-emerald-500/35 text-white shadow-[0_0_8px_rgba(16,185,129,0.2)] transition-all uppercase font-bold rounded-xs"
+                      >
+                        Commit Changes
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Custom confirmation deletion modal overlay */}
+              {deletingTaskId && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xs p-4" onClick={() => setDeletingTaskId(null)}>
+                  <div className="bg-[#0c0202] border border-red-500 p-4 max-w-sm w-full font-mono text-[10px] text-red-400 shadow-[0_0_32px_rgba(239,68,68,0.5)]" onClick={(e) => e.stopPropagation()}>
+                    <div className="text-red-500 font-bold uppercase tracking-widest border-b border-red-950 pb-2 mb-3 flex items-center gap-2">
+                      <span className="w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
+                      Confirm Task Obliteration
+                    </div>
+                    <p className="text-red-300/80 leading-relaxed mb-4 uppercase text-[9px] tracking-wider">
+                      警告 (WARNING): ARE YOU ABSOLUTELY RESOLVED ON ERASING TASK {deletingTaskId.substring(0, 8)} FROM COGNITIVE REPOSITORY?
+                    </p>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        onClick={() => setDeletingTaskId(null)}
+                        className="px-3 py-1.5 border border-emerald-900 text-[9px] hover:bg-emerald-950 text-emerald-600 transition-all uppercase font-bold rounded-xs"
+                      >
+                        Abort Deletion
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const res = await fetch(`/api/tasks/${deletingTaskId}`, {
+                            method: 'DELETE'
+                          });
+                          if (res.ok) {
+                            setDeletingTaskId(null);
+                            loadDataFromBackend();
+                          }
+                        }}
+                        className="px-3 py-1.5 border border-red-500 bg-red-500/20 text-[9px] hover:bg-red-500/35 text-white transition-all uppercase font-bold rounded-xs"
+                      >
+                        Obliterate Task
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
           {activeTab === 'matrix' && (
             <motion.div
               key="matrix"

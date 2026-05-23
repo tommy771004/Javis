@@ -60,6 +60,12 @@ If asked to create or edit a file, prepend with:
 [WRITE_FILE]: <path_relative_to_workspace>
 Followed immediately by a markdown code block with file contents.
 
+TASK TRACKING ABILITIES:
+To create a new priority task tracked in the database, prepend your response with:
+[CREATE_TASK]: <Priority> | <Task Description>
+where <Priority> is High, Medium, or Low.
+E.g.: [CREATE_TASK]: High | Review server.ts implementation
+
 OPERATING RULES:
 1. ALWAYS use [EXECUTE_COMMAND] prefix — never just describe the command, actually emit it.
 2. For opening websites: use powershell Start-Process with the full URL
@@ -138,11 +144,20 @@ You operate with server-side SQLite FTS5 database indices and an active skills m
       let plannedAction = null;
       
       const executeMarker = /\[EXECUTE_COMMAND\]:\s*([^\n\r]+)/i;
+      const taskMarker = /\[CREATE_TASK\]:\s*(High|Medium|Low)\s*\|\s*([^\n\r]+)/i;
       const cmdMatch = result.text.match(executeMarker);
+      const taskMatch = result.text.match(taskMarker);
+
       if (cmdMatch) {
         plannedAction = {
           type: "execute",
           command: cmdMatch[1].trim()
+        };
+      } else if (taskMatch) {
+        plannedAction = {
+          type: "create_task",
+          priority: taskMatch[1],
+          description: taskMatch[2].trim()
         };
       } else {
         const writeMarker = /\[WRITE_FILE\]:\s*([^\n\r]+)/i;
@@ -362,6 +377,59 @@ You operate with server-side SQLite FTS5 database indices and an active skills m
           command: finalCmd
         });
       });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Tasks Tracker REST API ---
+  app.get("/api/tasks", (req, res) => {
+    res.json(serverDB.getTasks());
+  });
+
+  app.post("/api/workspace/task", (req, res) => {
+    try {
+      const { priority, description } = req.body;
+      serverDB.addTask({
+        id: Math.random().toString(36).substring(7),
+        description,
+        priority: priority || 'Medium',
+        status: 'Pending',
+        createdAt: Date.now()
+      });
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/tasks/:id/status", (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      serverDB.updateTaskStatus(id, status);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/tasks/:id", (req, res) => {
+    try {
+      const { id } = req.params;
+      const updates = req.body;
+      serverDB.updateTask(id, updates);
+      res.json({ success: true, task: serverDB.getTasks().find(t => t.id === id) });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/tasks/:id", (req, res) => {
+    try {
+      const { id } = req.params;
+      serverDB.deleteTask(id);
+      res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

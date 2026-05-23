@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
-  "requestFramePermissions": [],
+  "name": "J.A.R.V.I.S. Core Dashboard",
+  "description": "A high-fidelity futuristic holographic head-up display dashboard for Stark Industries home assistant terminal controls.",
+  "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -1,11 +1,20 @@
 import React, { useState, useRef } from 'react';
 import { Upload } from 'lucide-react';
+import { useI18n } from '../services/i18n';
 
 export function FileUpload() {
+    const { t } = useI18n();
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const [statusText, setStatusText] = useState('No file loaded - drop or click above to upload');
+    const [statusText, setStatusText] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [uploadSuccess, setUploadSuccess] = useState(false);
+
+    // Dynamic initial status text update based on locale change
+    React.useEffect(() => {
+        if (!uploadSuccess && !isUploading) {
+            setStatusText(t.lblNoFileLoaded);
+        }
+    }, [t, uploadSuccess, isUploading]);
 
     const handleFile = async (file: File) => {
         setIsUploading(true);
@@ -81,7 +90,7 @@ export function FileUpload() {
     return (
         <div className="h-44 flex flex-col mb-4 font-mono text-[11px] select-none">
             <div className="text-cyan-500 tracking-widest border-b border-cyan-800/50 pb-2 mb-2 flex items-center opacity-80 uppercase">
-                <span className="w-1.5 h-1.5 bg-cyan-500 mr-2 inline-block shadow-[0_0_5px_rgba(0,255,255,0.8)]"></span> FILE UPLOAD
+                <span className="w-1.5 h-1.5 bg-cyan-500 mr-2 inline-block shadow-[0_0_5px_rgba(0,255,255,0.8)]"></span> {t.lblFileUpload}
             </div>
 
             <input 
@@ -115,8 +124,8 @@ export function FileUpload() {
                     {isUploading 
                         ? 'Processing Payload...' 
                         : uploadSuccess 
-                            ? 'Upload Complete' 
-                            : 'Drop file here or Click to Browse'
+                            ? t.lblUploadComplete
+                            : t.lblDropOrClick
                     }
                 </div>
                 

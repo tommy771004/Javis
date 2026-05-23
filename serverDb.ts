@@ -32,10 +32,20 @@ export interface DbCostLog {
   outputTokens: number;
 }
 
+export interface DbTask {
+  id: string;
+  description: string;
+  priority: 'Low' | 'Medium' | 'High';
+  status: 'Pending' | 'Completed' | 'Cancelled';
+  createdAt: number;
+  progress?: number;
+}
+
 interface DatabaseSchema {
   messages: DbMessage[];
   skills: DbSkill[];
   costLogs: DbCostLog[];
+  tasks: DbTask[];
 }
 
 const DB_FILE = path.join(process.cwd(), 'database.json');
@@ -76,7 +86,7 @@ const INITIAL_SKILLS: DbSkill[] = [
 ];
 
 class ServerPersistenceEngine {
-  private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [] };
+  private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [] };
 
   constructor() {
     this.initDb();
@@ -92,17 +102,22 @@ class ServerPersistenceEngine {
           this.cache.skills = INITIAL_SKILLS;
           this.saveDb();
         }
+        if (!this.cache.tasks) {
+          this.cache.tasks = [];
+          this.saveDb();
+        }
       } else {
         this.cache = {
           messages: [],
           skills: INITIAL_SKILLS,
-          costLogs: []
+          costLogs: [],
+          tasks: []
         };
         this.saveDb();
       }
     } catch (e) {
       console.error('Failed to initialize local server database file', e);
-      this.cache = { messages: [], skills: INITIAL_SKILLS, costLogs: [] };
+      this.cache = { messages: [], skills: INITIAL_SKILLS, costLogs: [], tasks: [] };
     }
   }
 
@@ -163,6 +178,50 @@ class ServerPersistenceEngine {
       m.inputTokens = 0;
       m.outputTokens = 0;
     });
+    this.saveDb();
+  }
+
+  // --- Tasks API ---
+  addTask(task: DbTask) {
+    if (task.progress === undefined) {
+      task.progress = 0;
+    }
+    this.cache.tasks.push(task);
+    this.saveDb();
+  }
+
+  getTasks(): DbTask[] {
+    return this.cache.tasks || [];
+  }
+
+  updateTaskStatus(id: string, status: DbTask['status']) {
+    const task = this.cache.tasks.find(t => t.id === id);
+    if (task) {
+      task.status = status;
+      if (status === 'Completed') {
+        task.progress = 100;
+      }
+      this.saveDb();
+    }
+  }
+
+  updateTask(id: string, updates: Partial<DbTask>) {
+    const task = this.cache.tasks.find(t => t.id === id);
+    if (task) {
+      Object.assign(task, updates);
+      if (updates.progress !== undefined) {
+        if (updates.progress === 100) {
+          task.status = 'Completed';
+        } else if (updates.progress < 100 && task.status === 'Completed') {
+          task.status = 'Pending';
+        }
+      }
+      this.saveDb();
+    }
+  }
+
+  deleteTask(id: string) {
+    this.cache.tasks = (this.cache.tasks || []).filter(t => t.id !== id);
     this.saveDb();
   }
 
