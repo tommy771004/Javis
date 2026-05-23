@@ -8,6 +8,7 @@ import {
 import { useI18n } from '../services/i18n';
 import { JarvisLogo } from './JarvisLogo';
 import { hermesDB } from '../services/db';
+import { playTactileClick } from '../services/audioSynth';
 
 export interface SecuritySettings {
   shellMode: 'manual' | 'safe' | 'auto';
@@ -166,6 +167,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   const [cliOptions, setCliOptions] = useState<CLIOption[]>(INITIAL_CLI_OPTIONS);
   const [cognitiveMemories, setCognitiveMemories] = useState<string[]>([]);
   const [newMemory, setNewMemory] = useState<string>('');
+  const [installingCli, setInstallingCli] = useState<string | null>(null);
 
   // Dynamic system security audit and telemetry fetching
   const [synapseLatency, setSynapseLatency] = useState<string>('374 ms');
@@ -385,6 +387,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
             ? `Active pipeline connected to GitHub CLI protocol. OAuth validated: Logged in as ${data.user}, sir.`
             : `Active pipeline connected. Warning: ${data.details}`;
           triggerLog(`SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`, authMsg);
+        } else if (cliId === "claude-code" || cliId === "cursor-agent" || cliId === "devin" || cliId === "gemini-cli") {
+          triggerLog(
+            `SYS: ISOLATED PHYSICAL BINARY RUNNER ACTIVATED: ${cliId.toUpperCase()}`,
+            `Backend API will now natively spawn distinct subprocess using standard CLI '${cliId}'. OpenRouter LLM inference is completely bypassed, sir.`
+          );
         } else if (engineParam === "stark-quantum") {
           triggerLog(
             `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
@@ -495,6 +502,70 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   }
 
   const handleRescan = () => runPathScan(false);
+
+  const handleInstallCLI = async (cliId: string, cliName: string) => {
+    if (installingCli) {
+      triggerLog(
+        `SYS: CANNOT DEPLOY CLI. ANOTHER DEPLOYMENT PROCESS (${installingCli.toUpperCase()}) IS ACTIVE.`,
+        "Another package install process is currently active, sir."
+      );
+      return;
+    }
+
+    setInstallingCli(cliId);
+    triggerLog(
+      `SYS: DEPLOYING CLI DEPLOYMENT AGENT FOR [${cliName.toUpperCase()}]...`,
+      `Initializing automated background deployment for ${cliName}, sir.`
+    );
+
+    // Update CLI state to installing status in UI immediately
+    setCliOptions(prev => 
+      prev.map(opt => {
+        if (opt.id === cliId) {
+          return {
+            ...opt,
+            version: "修補與安裝中... (Installing...)",
+            statusColor: "orange" as const
+          };
+        }
+        return opt;
+      })
+    );
+
+    try {
+      const resp = await fetch("/api/system/install-cli", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cliId })
+      });
+      const data = await resp.json();
+
+      if (data.success) {
+        triggerLog(
+          `SYS: ${data.message.toUpperCase()}`,
+          data.speak || "Active package installation pipeline triggered as background daemon."
+        );
+        
+        // Wait 12 seconds then schedule a hot-reload path check
+        setTimeout(async () => {
+          await runPathScan(true);
+          setInstallingCli(null);
+        }, 12000);
+      } else {
+        throw new Error(data.error || "Installation API returned status false");
+      }
+    } catch (err: any) {
+      console.error("Install CLI error:", err);
+      setInstallingCli(null);
+      triggerLog(
+        `SYS: LOGISTICAL DEPLOYMENT OF ${cliName.toUpperCase()} FAILED - ${err.message}`,
+        "An unexpected intercept in our package pipelines, sir."
+      );
+      
+      // Restore state
+      await runPathScan(true);
+    }
+  };
 
   const handlePurgeMemory = async (index: number) => {
     try {
@@ -817,7 +888,15 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                                 </div>
                               ) : (
                                 <div className="text-right text-[8.5px] flex flex-col gap-0.5">
-                                  <span className="text-purple-400 hover:underline cursor-pointer">{t.lblInstallNow}</span>
+                                  <span 
+                                    className="text-purple-400 hover:underline cursor-pointer"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleInstallCLI(cli.id, cli.name);
+                                    }}
+                                  >
+                                    {t.lblInstallNow}
+                                  </span>
                                   <span className="text-cyan-600 hover:underline cursor-pointer">{t.lblDocs}</span>
                                 </div>
                               )}
@@ -1186,6 +1265,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                 <div className="grid grid-cols-2 gap-3 pb-2">
                   <div 
                     onClick={() => {
+                      playTactileClick();
                       localStorage.setItem('jarvis_active_skin', 'cyan');
                       setActiveSkin('cyan');
                       window.dispatchEvent(new CustomEvent('skin-updated'));
@@ -1206,6 +1286,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
 
                   <div 
                     onClick={() => {
+                      playTactileClick();
                       localStorage.setItem('jarvis_active_skin', 'emerald');
                       setActiveSkin('emerald');
                       window.dispatchEvent(new CustomEvent('skin-updated'));
@@ -1226,6 +1307,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
 
                   <div 
                     onClick={() => {
+                      playTactileClick();
                       localStorage.setItem('jarvis_active_skin', 'amber');
                       setActiveSkin('amber');
                       window.dispatchEvent(new CustomEvent('skin-updated'));
@@ -1246,6 +1328,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
 
                   <div 
                     onClick={() => {
+                      playTactileClick();
                       localStorage.setItem('jarvis_active_skin', 'red');
                       setActiveSkin('red');
                       window.dispatchEvent(new CustomEvent('skin-updated'));

@@ -11,6 +11,8 @@ import { Footer } from './components/Footer';
 import { hermesDB } from './services/db';
 
 import { SettingsModal, SecuritySettings } from './components/SettingsModal';
+import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
+import { startCommsChannel, stopCommsChannel, playTactileClick } from './services/audioSynth';
 
 interface PlannedAction {
   type: 'write' | 'execute' | 'create_task';
@@ -55,6 +57,23 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  // Synchronize CSS active skin theme class on the document body/html element
+  useEffect(() => {
+    const applySkinClass = () => {
+      const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
+      // Remove all theme classes first
+      document.body.classList.remove('theme-cyan', 'theme-emerald', 'theme-amber', 'theme-red');
+      // Add active skin class
+      document.body.classList.add(`theme-${skin}`);
+    };
+
+    applySkinClass();
+    window.addEventListener('skin-updated', applySkinClass);
+    return () => {
+      window.removeEventListener('skin-updated', applySkinClass);
     };
   }, []);
 
@@ -586,6 +605,7 @@ export default function App() {
       
       utterance.onstart = () => {
         setCognitiveState('speaking');
+        startCommsChannel();
         amplitudeTimer = setInterval(() => {
           // Organic vocal amplitude simulation — peaks and valleys like real speech
           const base = 20;
@@ -598,12 +618,14 @@ export default function App() {
         if (amplitudeTimer) clearInterval(amplitudeTimer);
         setCognitiveState('idle');
         setVoiceAmplitude(0);
+        stopCommsChannel();
       };
 
       utterance.onerror = () => {
         if (amplitudeTimer) clearInterval(amplitudeTimer);
         setCognitiveState('idle');
         setVoiceAmplitude(0);
+        stopCommsChannel();
       };
       
       window.speechSynthesis.speak(utterance);
@@ -856,7 +878,7 @@ export default function App() {
         const executeRes = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli })
+          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli, shellMode: securitySettings.shellMode })
         });
         
         const executeData = await executeRes.json();
@@ -891,11 +913,24 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             filePath: action.filePath,
-            content: action.content
+            content: action.content,
+            writeMode: securitySettings.writeMode
           })
         });
 
-        if (!patchRes.ok) throw new Error('Failed to patch file');
+        if (!patchRes.ok) {
+          const errData = await patchRes.json().catch(() => ({}));
+          const errMsg = errData.reason || errData.error || 'Failed to patch file';
+          
+          setLogs(prev => [
+            ...prev,
+            `SYS ERROR: Write Intercept. Reason:`,
+            errMsg
+          ]);
+          
+          speakText(`Warning, sir! File write request has been physically blocked by Stark-Defense Matrix. Reason: ${errMsg}`);
+          return;
+        }
 
         setLogs(prev => [
           ...prev, 
@@ -1108,6 +1143,8 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)} 
         onSettingsChange={handleSettingsChange} 
       />
+
+      <SpectrumRebootOverlay />
 
       <main className="flex-1 flex flex-col lg:flex-row w-full mx-auto mt-4 lg:mt-6 overflow-visible lg:overflow-hidden gap-8 lg:gap-0">
         

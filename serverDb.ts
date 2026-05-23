@@ -352,6 +352,20 @@ class ServerPersistenceEngine {
       }
     });
 
+    // Score Cognitive Memories
+    (this.cache.cognitiveMemories || []).forEach((mem, index) => {
+      const score = scoreText(mem);
+      if (score > 0) {
+        results.push({
+          type: 'message',
+          title: `Cognitive Memory Directive [Slot ${index + 1}]`,
+          excerpt: mem.length > 150 ? mem.substring(0, 147) + '...' : mem,
+          confidence: Math.min(0.99, 0.45 + (score * 0.2)),
+          rawScore: score + 1.0 // Priority boost for user-defined configuration directives
+        });
+      }
+    });
+
     return results
       .sort((a, b) => b.rawScore - a.rawScore)
       .slice(0, 5)

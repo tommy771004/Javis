@@ -255,6 +255,82 @@ export async function getPowerShellDetails(): Promise<{ policy: string; version:
   }
 }
 
+export function helperValidateCommand(command: string): { safe: boolean; reason: string } {
+  if (!command || typeof command !== "string") {
+    return { safe: false, reason: "Command statement is empty or invalid structure." };
+  }
+
+  const cmdTrim = command.trim();
+  const subStatements = cmdTrim.split(/[;&\n]|\&\&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+
+  let isSafe = true;
+  let reason = "";
+
+  const safeVerbs = [
+    'git', 'node', 'npm', 'python', 'echo', 'type', 'cat', 'whoami', 'pwd', 
+    'hostname', 'ver', 'systeminfo', 'wmic', 'tasklist', 'dir', 'ls', 'ping', 
+    'nslookup', 'curl', 'wget', 'select-object', 'out-string', 'out-default',
+    'measure-object', 'export-clixml', 'resolve-path', 'test-path'
+  ];
+
+  const blockedTriggers = [
+    'rm', 'del', 'remove-item', 'kill', 'stop-process', 'restart-computer',
+    'shutdown', 'netsh', 'reg', 'sc', 'npx', 'bash', 'sh', 'cmd', 'powershell',
+    'invoke-expression', 'iex', 'invoke-webrequest', 'iwr', 'start-process',
+    'set-content', 'add-content', 'out-file'
+  ];
+
+  for (const statement of subStatements) {
+    let cleanStmt = statement.replace(/^powershell(\.exe)?\s+(-[a-zA-Z]+\s+)*(-[a-zA-Z]+)?\s*["']?|["']?$/gi, '').trim();
+    cleanStmt = cleanStmt.replace(/^cmd(\.exe)?\s+\/c\s*/gi, '').trim();
+
+    // Redirection check
+    if (/>+/.test(cleanStmt)) {
+      isSafe = false;
+      reason = "Write redirection operator (> or >>) detected. File write operations are restricted under Safe Mode.";
+      break;
+    }
+
+    const tokens = cleanStmt.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) continue;
+
+    const primaryVerb = tokens[0].toLowerCase();
+
+    if (primaryVerb.includes('-')) {
+      const parts = primaryVerb.split('-');
+      const prefix = parts[0];
+      const dangerousPrefixes = ['set', 'remove', 'new', 'add', 'start', 'stop', 'restart', 'clear', 'enable', 'disable', 'invoke'];
+      if (dangerousPrefixes.includes(prefix)) {
+        isSafe = false;
+        reason = `State-changing PowerShell verb prefix "${prefix.toUpperCase()}-" is strictly blocked in Safe/Manual Mode.`;
+        break;
+      }
+    }
+
+    const isBlocked = blockedTriggers.some(trigger => {
+      return primaryVerb === trigger || cleanStmt.toLowerCase().startsWith(trigger + " ");
+    });
+
+    if (isBlocked) {
+      isSafe = false;
+      reason = `Executable or statement "${primaryVerb.toUpperCase()}" is strictly restricted under Safe/Manual Mode.`;
+      break;
+    }
+
+    const isExplicitlySafe = safeVerbs.some(verb => {
+      return primaryVerb === verb || primaryVerb.startsWith('get-');
+    });
+
+    if (!isExplicitlySafe) {
+      isSafe = false;
+      reason = `Command "${primaryVerb}" is unrecognized and has been blocked by default to maintain safe-only boundaries.`;
+      break;
+    }
+  }
+
+  return { safe: isSafe, reason };
+}
+
 async function startServer() {
   // Run initial container and local host system security audit
   runSecurityAudit().catch(err => {
@@ -297,6 +373,88 @@ async function startServer() {
         content: message,
         timestamp: Date.now()
       });
+
+      // --- Distinct CLI Runner Physical Interceptor ---
+      const discreteAgents = ['claude-code', 'cursor-agent', 'devin', 'gemini-cli'];
+      if (discreteAgents.includes(activeCli)) {
+        serverDB.addSystemLog('EXEC', 'INFO', `Delegating autonomy to distinct CLI runner: ${activeCli}`);
+
+        let resolvedCommand = "";
+        const safePrompt = message.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+
+        if (activeCli === 'claude-code') {
+          // The anthropic claude code execution:
+          resolvedCommand = `npx -y @anthropic-ai/claude-code --print -p "${safePrompt}"`;
+        } else if (activeCli === 'cursor-agent') {
+          resolvedCommand = `cursor --agent --prompt "${safePrompt}"`;
+        } else if (activeCli === 'devin') {
+          resolvedCommand = `devin --interactive false --instruction "${safePrompt}"`;
+        } else if (activeCli === 'gemini-cli') {
+          resolvedCommand = `gemini query "${safePrompt}"`;
+        }
+
+        try {
+          // Emulate physical binary execution locally
+          const { stdout, stderr } = await execAsync(resolvedCommand, { 
+            timeout: 60000,
+            env: { ...process.env, ANTHROPIC_API_KEY: apiKey } // passes BYOK or OpenRouter key as fallback
+          });
+          
+          let cliOutput = stdout || stderr || `[${activeCli}] Executed successfully with no output.`;
+          const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER OUTPUT]\n\n${cliOutput.trim()}`;
+          const tokensOut = estimateTokens(botResponse);
+
+          serverDB.addMessage({
+            id: Math.random().toString(36).substring(7),
+            sessionId,
+            role: "assistant",
+            content: botResponse,
+            timestamp: Date.now(),
+            model: `cli-execution/${activeCli}`,
+            outputTokens: tokensOut
+          });
+
+          return res.json({
+            text: botResponse,
+            model: `cli-execution/${activeCli}`,
+            tokens: { input: estimateTokens(message), output: tokensOut, cached: 0 },
+            telemetry: {
+              ttsMs: 0,
+              routerSource: "Distinct Local CLI Execution",
+              runnerCommand: resolvedCommand
+            }
+          });
+
+        } catch (err: any) {
+          serverDB.addSystemLog('EXEC', 'WARN', `${activeCli} physical binary execution fault: ${err.message}`);
+          
+          let errorText = err.stderr || err.stdout || err.message;
+          const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER FAULT]\n\nCommand attempted: \`${resolvedCommand}\`\n\nExecution error:\n\`\`\`text\n${errorText}\n\`\`\`\n\nThe target runner binary may not be installed in the current physical environment, or requires external environment keys. Switching back to 'OpenRouter REST API' or 'Hermes' mode in settings is recommended for guaranteed LLM inference.`;
+          
+          const tokensOut = estimateTokens(botResponse);
+          serverDB.addMessage({
+            id: Math.random().toString(36).substring(7),
+            sessionId,
+            role: "assistant",
+            content: botResponse,
+            timestamp: Date.now(),
+            model: `cli-error/${activeCli}`,
+            outputTokens: tokensOut
+          });
+
+          return res.json({
+            text: botResponse,
+            model: `cli-error/${activeCli}`,
+            tokens: { input: estimateTokens(message), output: tokensOut, cached: 0 },
+            telemetry: {
+              ttsMs: 0,
+              routerSource: "Local CLI Runner Fault",
+              runnerCommand: resolvedCommand
+            }
+          });
+        }
+      }
+      // --- End Distinct CLI Runner ---
 
       // Construct dynamic system prompt with active skills context and filesystem instructions
       const activeSkills = serverDB.getSkills().filter(s => s.status === 'active');
@@ -651,15 +809,48 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
-  // --- Workspace Filesystem Patch Endpoint ---
-  app.post("/api/workspace/patch", (req, res) => {
+  // --- Workspace Filesystem Patch & Write Endpoints ---
+  const handleSecureWorkspaceWrite = (req: express.Request, res: express.Response) => {
     try {
-      const { filePath, content } = req.body;
+      const { filePath, content, writeMode = 'manual' } = req.body;
       const safePath = path.resolve(process.cwd(), filePath);
       
       // Security: Directory traversal protection check
       if (!safePath.startsWith(process.cwd())) {
         return res.status(403).json({ error: "Access Denied: Path outside workspace bounds." });
+      }
+
+      const relativePath = path.relative(process.cwd(), safePath).replace(/\\/g, '/');
+
+      // Stark-Defense physical file write restriction validation check
+      if (writeMode === 'manual') {
+        const fileLower = relativePath.toLowerCase();
+        
+        // Critical file blocklist checks
+        const isCriticalFile = 
+          fileLower === 'server.ts' || 
+          fileLower === 'serverdb.ts' || 
+          fileLower === 'package.json' || 
+          fileLower === 'tsconfig.json' || 
+          fileLower === 'vite.config.ts' || 
+          fileLower.includes('.env') || 
+          fileLower.includes('node_modules');
+
+        const isInSafeDirectory = 
+          relativePath.startsWith('src/') || 
+          relativePath.startsWith('uploads/') || 
+          relativePath.startsWith('public/');
+
+        if (isCriticalFile || !isInSafeDirectory) {
+          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: File '${relativePath}' writing blocked by Stark-Defense Matrix in manual mode.`);
+          return res.status(403).json({
+            success: false,
+            error: "Forbidden",
+            code: "STARK_WRITE_INTERCEPT",
+            reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted under Safe/Manual code policy to prevent backend corruption. Whitelist allowed folders: 'src/', 'uploads/', 'public/'.`,
+            stderr: `[STARK-DEFENSE SECURITY CHK] BLOCKED (Code: 403)\nWrite Mode: MANUAL\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
+          });
+        }
       }
 
       // Ensure directory tree exists
@@ -669,11 +860,15 @@ INTEGRATION ENGINE DETAILS:
       }
 
       fs.writeFileSync(safePath, content, 'utf8');
-      res.json({ success: true });
+      serverDB.addSystemLog('DB', 'SUCCESS', `Stark-Defense File Write: Successfully written ${content.length} bytes to '${relativePath}'.`);
+      res.json({ success: true, relativePath });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
-  });
+  };
+
+  app.post("/api/workspace/patch", handleSecureWorkspaceWrite);
+  app.post("/api/workspace/write", handleSecureWorkspaceWrite);
 
   // --- Secure Workspace Shell Script Execution Endpoint ---
   app.post("/api/workspace/execute", (req, res) => {
@@ -776,10 +971,25 @@ INTEGRATION ENGINE DETAILS:
   // --- Windows Native Shell Command Endpoint (PowerShell / CMD / Start) ---
   app.post("/api/system/shell", async (req, res) => {
     try {
-      const { command, shell = 'powershell', activeCli = 'openrouter' } = req.body;
+      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode = 'manual' } = req.body;
       
       if (!command || typeof command !== 'string') {
         return res.status(400).json({ error: 'Missing command parameter' });
+      }
+
+      // Stark-Defense physical command validation check if in safe or manual mode
+      if (shellMode === 'manual' || shellMode === 'safe') {
+        const validation = helperValidateCommand(command);
+        if (!validation.safe) {
+          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System is running in ${shellMode.toUpperCase()} security mode. Executing '${command}' has been blocked by Stark-Defense Matrix. Reason: ${validation.reason}`);
+          return res.status(403).json({
+            success: false,
+            error: "Forbidden",
+            code: "STARK_DEFENSE_INTERCEPT",
+            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Command blocked under ${shellMode.toUpperCase()} mode safety policy. Details: ${validation.reason}`,
+            stderr: `[STARK-DEFENSE SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: ${shellMode.toUpperCase()}\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+          });
+        }
       }
 
       let extraStderr = "";
@@ -828,6 +1038,69 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
+  // --- CLI Subsystem installer endpoint ---
+  app.post("/api/system/install-cli", async (req, res) => {
+    try {
+      const { cliId } = req.body;
+      const packageMap: { [key: string]: string } = {
+        "claude-code": "@anthropic-ai/claude-code",
+        "codex-cli": "codex-cli",
+        "openrouter": "openrouter-cli",
+        "cursor-agent": "cursor-agent",
+        "devin": "devin-cli",
+        "gemini-cli": "gemini-cli-node",
+        "opencode": "opencode-cli",
+        "hermes": "hermes-cli",
+        "kimi": "kimi-cli",
+        "qwen": "qwen-cli",
+        "copilot": "@github/copilot-cli",
+        "pi": "pi-cli"
+      };
+
+      const pkg = packageMap[cliId];
+      if (!pkg) {
+        return res.status(400).json({ error: `Unknown CLI ID: ${cliId}` });
+      }
+
+      serverDB.addSystemLog('SYS', 'INFO', `INITIATING PHYSICAL CLI DEPLOYMENT: npm install -g ${pkg}...`);
+      
+      // Run background installation
+      exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
+        if (err) {
+          serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
+        } else {
+          serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
+        }
+      });
+
+      res.json({
+        success: true,
+        message: `Installation for ${cliId} (${pkg}) has been dispatched in background layer. Check system logs for telemetry stream.`,
+        speak: `Understood, sir. Initiating npm deployment sequence for ${cliNameByMap(cliId)} background daemon.`
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  function cliNameByMap(id: string): string {
+    const names: { [key: string]: string } = {
+      "claude-code": "Claude Code",
+      "codex-cli": "Codex C.L.I.",
+      "openrouter": "OpenRouter C.L.I.",
+      "cursor-agent": "Cursor Agent",
+      "devin": "Devin Terminal",
+      "gemini-cli": "Gemini C.L.I.",
+      "opencode": "OpenCode Engine",
+      "hermes": "Hermes Daemon",
+      "kimi": "Kimi System",
+      "qwen": "Qwen Processor",
+      "copilot": "GitHub Copilot",
+      "pi": "Pi Interface"
+    };
+    return names[id] || id;
+  }
+
   // --- Tasks Tracker REST API ---
   app.get("/api/tasks", (req, res) => {
     res.json(serverDB.getTasks());
@@ -855,6 +1128,36 @@ INTEGRATION ENGINE DETAILS:
       const { status } = req.body;
       serverDB.updateTaskStatus(id, status);
       res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/tasks/:id/progress", (req, res) => {
+    try {
+      const { id } = req.params;
+      const { progress } = req.body;
+      const numericProgress = Number(progress);
+      if (isNaN(numericProgress) || numericProgress < 0 || numericProgress > 100) {
+        return res.status(400).json({ error: "Invalid progress percentage value" });
+      }
+      serverDB.updateTask(id, { progress: numericProgress });
+      res.json({ success: true, task: serverDB.getTasks().find(t => t.id === id) });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/tasks/:id/progress", (req, res) => {
+    try {
+      const { id } = req.params;
+      const { progress } = req.body;
+      const numericProgress = Number(progress);
+      if (isNaN(numericProgress) || numericProgress < 0 || numericProgress > 100) {
+        return res.status(400).json({ error: "Invalid progress percentage value" });
+      }
+      serverDB.updateTask(id, { progress: numericProgress });
+      res.json({ success: true, task: serverDB.getTasks().find(t => t.id === id) });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -985,83 +1288,10 @@ INTEGRATION ENGINE DETAILS:
         return res.status(400).json({ error: "Missing command parameter" });
       }
 
-      const cmdTrim = command.trim();
       serverDB.addSystemLog('SEC', 'INFO', `Analyzing shell command structures for safety validations...`);
+      const { safe, reason } = helperValidateCommand(command);
 
-      // 1. AST Parser Chaining Splitter: split by pipelines or conditional execution terminators
-      const subStatements = cmdTrim.split(/[;&\n]|\&\&|\|\||\|/).map(s => s.trim()).filter(Boolean);
-
-      let isSafe = true;
-      let reason = "";
-
-      const safeVerbs = [
-        'git', 'node', 'npm', 'python', 'echo', 'type', 'cat', 'whoami', 'pwd', 
-        'hostname', 'ver', 'systeminfo', 'wmic', 'tasklist', 'dir', 'ls', 'ping', 
-        'nslookup', 'curl', 'wget', 'select-object', 'out-string', 'out-default',
-        'measure-object', 'export-clixml', 'resolve-path', 'test-path'
-      ];
-
-      const blockedTriggers = [
-        'rm', 'del', 'remove-item', 'kill', 'stop-process', 'restart-computer',
-        'shutdown', 'netsh', 'reg', 'sc', 'npx', 'bash', 'sh', 'cmd', 'powershell',
-        'invoke-expression', 'iex', 'invoke-webrequest', 'iwr', 'start-process',
-        'set-content', 'add-content', 'out-file'
-      ];
-
-      for (const statement of subStatements) {
-        let cleanStmt = statement.replace(/^powershell(\.exe)?\s+(-[a-zA-Z]+\s+)*(-[a-zA-Z]+)?\s*["']?|["']?$/gi, '').trim();
-        cleanStmt = cleanStmt.replace(/^cmd(\.exe)?\s+\/c\s*/gi, '').trim();
-
-        // 2. Redirection inspection (Writes/overwrites files)
-        if (/>+/.test(cleanStmt)) {
-          isSafe = false;
-          reason = "Write redirection operator (> or >>) detected. File write operations are restricted under Safe Mode.";
-          break;
-        }
-
-        // 3. Extract primary verb/binary name
-        const tokens = cleanStmt.split(/\s+/).filter(Boolean);
-        if (tokens.length === 0) continue;
-
-        const primaryVerb = tokens[0].toLowerCase();
-
-        // If it looks like a PowerShell cmdlet, verify standard prefixes
-        if (primaryVerb.includes('-')) {
-          const parts = primaryVerb.split('-');
-          const prefix = parts[0];
-          
-          const dangerousPrefixes = ['set', 'remove', 'new', 'add', 'start', 'stop', 'restart', 'clear', 'enable', 'disable', 'invoke'];
-          if (dangerousPrefixes.includes(prefix)) {
-            isSafe = false;
-            reason = `State-changing PowerShell verb prefix "${prefix.toUpperCase()}-" is strictly blocked in Safe Mode.`;
-            break;
-          }
-        }
-
-        // Block specific dangerous binaries or commands
-        const isBlocked = blockedTriggers.some(trigger => {
-          return primaryVerb === trigger || cleanStmt.toLowerCase().startsWith(trigger + " ");
-        });
-
-        if (isBlocked) {
-          isSafe = false;
-          reason = `Executable or statement "${primaryVerb.toUpperCase()}" is strictly restricted under Safe Mode.`;
-          break;
-        }
-
-        // If not explicitly safe and not explicitly dangerous, run standard verification warning
-        const isExplicitlySafe = safeVerbs.some(verb => {
-          return primaryVerb === verb || primaryVerb.startsWith('get-');
-        });
-
-        if (!isExplicitlySafe) {
-          isSafe = false;
-          reason = `Command "${primaryVerb}" is unrecognized and has been blocked by default to maintain safe-only boundaries.`;
-          break;
-        }
-      }
-
-      if (isSafe) {
+      if (safe) {
         serverDB.addSystemLog('SEC', 'SUCCESS', 'Stark-Defense AST Parser: Command structure validated as 100% safe.');
       } else {
         serverDB.addSystemLog('SEC', 'WARN', `Stark-Defense AST Parser: Command blocked! Reason: ${reason}`);
@@ -1069,7 +1299,7 @@ INTEGRATION ENGINE DETAILS:
 
       res.json({
         success: true,
-        safe: isSafe,
+        safe,
         reason
       });
     } catch (e: any) {

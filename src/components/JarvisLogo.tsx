@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 
 interface JarvisLogoProps {
@@ -8,10 +8,50 @@ interface JarvisLogoProps {
 }
 
 export function JarvisLogo({ size = 48, glow = true, pulse = true }: JarvisLogoProps) {
-  // Stark tech-aesthetic colors
-  const strokeCyan = "#22d3ee"; // cyan-400
-  const fillMidMidnight = "#020617"; // slate-950
-  const glowCyan = "rgba(34, 211, 238, 0.85)";
+  const [activeSkin, setActiveSkin] = useState(() => localStorage.getItem('jarvis_active_skin') || 'cyan');
+
+  useEffect(() => {
+    const handleSkinUpdated = () => {
+      setActiveSkin(localStorage.getItem('jarvis_active_skin') || 'cyan');
+    };
+    window.addEventListener('skin-updated', handleSkinUpdated);
+    return () => window.removeEventListener('skin-updated', handleSkinUpdated);
+  }, []);
+
+  const getSkinColors = () => {
+    switch (activeSkin) {
+      case 'emerald':
+        return {
+          stroke: "#34d399",
+          glow: "rgba(52, 211, 153, 0.85)",
+          bgStroke: "#047857"
+        };
+      case 'amber':
+        return {
+          stroke: "#fbbf24",
+          glow: "rgba(251, 191, 36, 0.85)",
+          bgStroke: "#b45309"
+        };
+      case 'red':
+        return {
+          stroke: "#f87171",
+          glow: "rgba(248, 113, 113, 0.85)",
+          bgStroke: "#b91c1c"
+        };
+      case 'cyan':
+      default:
+        return {
+          stroke: "#22d3ee",
+          glow: "rgba(34, 211, 238, 0.85)",
+          bgStroke: "#083344"
+        };
+    }
+  };
+
+  const colors = getSkinColors();
+  const strokeCyan = colors.stroke;
+  const fillMidMidnight = "#020617";
+  const glowCyan = colors.glow;
 
   const glowStyle = glow
     ? {
@@ -40,7 +80,7 @@ export function JarvisLogo({ size = 48, glow = true, pulse = true }: JarvisLogoP
         }}
       >
         {/* Deep background shield */}
-        <circle cx="50" cy="50" r="46" fill={fillMidMidnight} fillOpacity="0.45" stroke="#083344" strokeWidth="1" />
+        <circle cx="50" cy="50" r="46" fill={fillMidMidnight} fillOpacity="0.45" stroke={colors.bgStroke} strokeWidth="1" />
         
         {/* Outer dotted tracking ring */}
         <motion.circle 
@@ -112,7 +152,7 @@ export function JarvisLogo({ size = 48, glow = true, pulse = true }: JarvisLogoP
 
         {/* Central glowing reactor center */}
         <circle cx="50" cy="50" r="4" fill="#ffffff" />
-        <circle cx="50" cy="50" r="6" stroke="#22d3ee" strokeWidth="0.5" />
+        <circle cx="50" cy="50" r="6" stroke={strokeCyan} strokeWidth="0.5" />
       </motion.svg>
     </div>
   );
