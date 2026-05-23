@@ -97,6 +97,15 @@ class HermesDBClient {
     return data.memories;
   }
 
+  async clearCognitiveMemories(): Promise<string[]> {
+    const res = await fetch('/api/memory/cognitive/all', {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Failed to purge all cognitive memories');
+    const data = await res.json();
+    return data.memories;
+  }
+
   async deleteCognitiveMemory(index: number): Promise<string[]> {
     const res = await fetch(`/api/memory/cognitive/${index}`, {
       method: 'DELETE'

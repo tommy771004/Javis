@@ -50,12 +50,36 @@ export interface SystemLogEntry {
   message: string;
 }
 
+export interface DbSettings {
+  shellMode: 'manual' | 'safe' | 'auto';
+  writeMode: 'manual' | 'auto';
+  taskMode: 'manual' | 'auto';
+  voiceProfile: 'baritone' | 'fast' | 'standard';
+  autoRepair: boolean;
+}
+
+export interface DbMcpWebhook {
+  id: string;
+  name: string;
+  url: string;
+  active: boolean;
+}
+
+export interface DbMcpRoutine {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
 interface DatabaseSchema {
   messages: DbMessage[];
   skills: DbSkill[];
   costLogs: DbCostLog[];
   tasks: DbTask[];
   cognitiveMemories: string[];
+  settings?: DbSettings;
+  mcpWebhooks?: DbMcpWebhook[];
+  mcpRoutines?: DbMcpRoutine[];
 }
 
 const DB_FILE = path.join(process.cwd(), 'database.json');
@@ -197,6 +221,37 @@ class ServerPersistenceEngine {
     } catch (e) {
       console.error('Failed to write local database file', e);
     }
+  }
+
+  purgeCache() {
+    // Keep cognitiveMemories and skills, but purge conversations, logs and tasks
+    this.cache.messages = [];
+    this.cache.costLogs = [];
+    this.cache.tasks = [];
+    this.saveDb();
+    this.addSystemLog('SYS', 'SUCCESS', 'Persistent memory and temporal logs successfully purged.');
+  }
+
+  // --- Settings API ---
+  getSettings(): DbSettings {
+    if (!this.cache.settings) {
+      this.cache.settings = {
+        shellMode: 'safe',
+        writeMode: 'manual',
+        taskMode: 'manual',
+        voiceProfile: 'baritone',
+        autoRepair: false
+      };
+      this.saveDb();
+    }
+    return this.cache.settings;
+  }
+
+  updateSettings(newSettings: Partial<DbSettings>) {
+    const current = this.getSettings();
+    this.cache.settings = { ...current, ...newSettings };
+    this.saveDb();
+    this.addSystemLog('SYS', 'SUCCESS', `System configurables updated via manual override.`);
   }
 
   // --- Messages API ---
@@ -425,12 +480,69 @@ class ServerPersistenceEngine {
     this.addSystemLog('DB', 'SUCCESS', `Stored new cognitive fragment in memory bank: "${memory.substring(0, 32)}..."`);
   }
 
+  clearCognitiveMemories() {
+    this.cache.cognitiveMemories = [];
+    this.saveDb();
+    this.addSystemLog('DB', 'WARN', `Purged entire cognitive memory bank.`);
+  }
+
   deleteCognitiveMemory(index: number) {
     if (this.cache.cognitiveMemories && this.cache.cognitiveMemories[index] !== undefined) {
       const purged = this.cache.cognitiveMemories[index];
       this.cache.cognitiveMemories.splice(index, 1);
       this.saveDb();
       this.addSystemLog('DB', 'WARN', `Purged cognitive fragment from memory bank: "${purged.substring(0, 32)}..."`);
+    }
+  }
+
+  // --- External MCP Webhooks API ---
+  getMcpWebhooks(): DbMcpWebhook[] {
+    return this.cache.mcpWebhooks || [];
+  }
+
+  addMcpWebhook(webhook: DbMcpWebhook) {
+    if (!this.cache.mcpWebhooks) this.cache.mcpWebhooks = [];
+    this.cache.mcpWebhooks.push(webhook);
+    this.saveDb();
+    this.addSystemLog('SYS', 'SUCCESS', `Added new MCP Webhook connector: ${webhook.name}.`);
+  }
+
+  deleteMcpWebhook(id: string) {
+    if (this.cache.mcpWebhooks) {
+      this.cache.mcpWebhooks = this.cache.mcpWebhooks.filter(w => w.id !== id);
+      this.saveDb();
+      this.addSystemLog('SYS', 'WARN', `Deleted MCP Webhook connector.`);
+    }
+  }
+
+  toggleMcpWebhookFocus(id: string, active: boolean) {
+    if (this.cache.mcpWebhooks) {
+      const w = this.cache.mcpWebhooks.find(w => w.id === id);
+      if (w) {
+        w.active = active;
+        this.saveDb();
+        this.addSystemLog('SYS', 'INFO', `MCP Webhook state changed to ${active ? 'ACTIVE' : 'INACTIVE'}.`);
+      }
+    }
+  }
+
+  // --- MCP Routines API ---
+  getMcpRoutines(): DbMcpRoutine[] {
+    return this.cache.mcpRoutines || [];
+  }
+
+  addMcpRoutine(routine: DbMcpRoutine) {
+    if (!this.cache.mcpRoutines) this.cache.mcpRoutines = [];
+    this.cache.mcpRoutines.push(routine);
+    this.saveDb();
+    this.addSystemLog('SYS', 'SUCCESS', `Added new MCP Routine sequence: ${routine.name}.`);
+  }
+
+  deleteMcpRoutine(id: string) {
+    if (this.cache.mcpRoutines) {
+      this.cache.mcpRoutines = this.cache.mcpRoutines.filter(r => r.id !== id);
+      this.saveDb();
+      this.addSystemLog('SYS', 'WARN', `Deleted MCP Routine sequence.`);
     }
   }
 }

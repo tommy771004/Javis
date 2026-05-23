@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   X, ShieldAlert, Terminal, FileText, CheckCircle2, Volume2, 
   Settings, Key, RefreshCw, Play, Languages, Palette, Layers, 
-  Info, Brain, Radio, HelpCircle, Activity, Sparkles, Check, Server
+  Info, Brain, Radio, HelpCircle, Activity, Sparkles, Check, Server, Monitor,
+  Trash2, Zap
 } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 import { JarvisLogo } from './JarvisLogo';
@@ -15,6 +16,7 @@ export interface SecuritySettings {
   writeMode: 'manual' | 'auto';
   taskMode: 'manual' | 'auto';
   voiceProfile: 'baritone' | 'fast' | 'standard';
+  autoRepair: boolean;
 }
 
 const DEFAULT_SETTINGS: SecuritySettings = {
@@ -22,12 +24,15 @@ const DEFAULT_SETTINGS: SecuritySettings = {
   writeMode: 'manual',
   taskMode: 'manual',
   voiceProfile: 'baritone',
+  autoRepair: false,
 };
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSettingsChange?: (settings: SecuritySettings) => void;
+  isMuted?: boolean;
+  onToggleMute?: () => void;
 }
 
 // Full list of premium CLI options matching the screenshot
@@ -43,128 +48,15 @@ interface CLIOption {
   iconBg: string;
 }
 
-const INITIAL_CLI_OPTIONS: CLIOption[] = [
-  {
-    id: 'claude-code',
-    name: 'Claude Code',
-    version: '2.1.142 (Claude Code)',
-    isInstalled: true,
-    statusColor: 'green',
-    iconText: '🎛️',
-    iconBg: 'bg-amber-950/40 border-amber-500/30'
-  },
-  {
-    id: 'codex-cli',
-    name: 'Codex CLI',
-    version: 'codex-cli 0.129.0',
-    isInstalled: true,
-    statusColor: 'orange',
-    iconText: '🦾',
-    iconBg: 'bg-emerald-950/40 border-emerald-500/30',
-    tag: 'Active'
-  },
-  {
-    id: 'openrouter',
-    name: 'OpenRouter API CLI',
-    version: '1.0.2 (OpenRouter CLI)',
-    isInstalled: true,
-    statusColor: 'green',
-    iconText: '📡',
-    iconBg: 'bg-cyan-950/40 border-cyan-500/30',
-    tag: 'Connected'
-  },
-  {
-    id: 'cursor-agent',
-    name: 'Cursor Agent',
-    version: '2025.10.28-0a91dc2',
-    isInstalled: true,
-    statusColor: 'gray',
-    iconText: '🌀',
-    iconBg: 'bg-slate-900 border-slate-700/50'
-  },
-  {
-    id: 'devin',
-    name: 'Devin for Terminal',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '🤖',
-    iconBg: 'bg-purple-950/20 border-purple-900/20'
-  },
-  {
-    id: 'gemini-cli',
-    name: 'Gemini CLI',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '♊',
-    iconBg: 'bg-blue-950/20 border-blue-900/20'
-  },
-  {
-    id: 'opencode',
-    name: 'OpenCode',
-    version: '1.1.28',
-    isInstalled: true,
-    statusColor: 'gray',
-    iconText: '⏹️',
-    iconBg: 'bg-slate-900 border-slate-700/50'
-  },
-  {
-    id: 'hermes',
-    name: 'Hermes CLI',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '🦅',
-    iconBg: 'bg-rose-950/20 border-rose-900/20'
-  },
-  {
-    id: 'kimi',
-    name: 'Kimi CLI',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '🍵',
-    iconBg: 'bg-teal-950/20 border-teal-900/20'
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen Code',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '🪁',
-    iconBg: 'bg-indigo-950/20 border-indigo-900/20'
-  },
-  {
-    id: 'copilot',
-    name: 'GitHub Copilot CLI',
-    version: '1.0.4 (Copilot)',
-    isInstalled: true,
-    statusColor: 'green',
-    iconText: '🐈',
-    iconBg: 'bg-slate-900 border-slate-700/50'
-  },
-  {
-    id: 'pi',
-    name: 'Pi CLI',
-    version: '未安裝 (Not installed)',
-    isInstalled: false,
-    statusColor: 'red',
-    iconText: '🟢',
-    iconBg: 'bg-green-950/20 border-green-900/20'
-  }
-];
-
-export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsModalProps) {
+export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onToggleMute }: SettingsModalProps) {
   const { locale, t, setLocale } = useI18n();
   const [settings, setSettings] = useState<SecuritySettings>(DEFAULT_SETTINGS);
-  const [activeMenu, setActiveMenu] = useState<'execution' | 'memory' | 'security' | 'languages' | 'appearance' | 'about'>('execution');
+  const [activeMenu, setActiveMenu] = useState<string>('execution');
   const [execTab, setExecTab] = useState<'cli' | 'byok'>('cli');
   const [selectedCLI, setSelectedCLI] = useState<string>('openrouter');
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [scanMessage, setScanMessage] = useState<string>('');
-  const [cliOptions, setCliOptions] = useState<CLIOption[]>(INITIAL_CLI_OPTIONS);
+  const [cliOptions, setCliOptions] = useState<CLIOption[]>([]);
   const [cognitiveMemories, setCognitiveMemories] = useState<string[]>([]);
   const [newMemory, setNewMemory] = useState<string>('');
   const [installingCli, setInstallingCli] = useState<string | null>(null);
@@ -228,6 +120,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   const [openRouterKey, setOpenRouterKey] = useState<string>('');
   const [openRouterModel, setOpenRouterModel] = useState<string>('google/gemini-2.5-flash');
   const [openRouterEndpoint, setOpenRouterEndpoint] = useState<string>('https://openrouter.ai/api/v1');
+  const [openRouterProtocol, setOpenRouterProtocol] = useState<string>('openrouter');
+  
+  const [elevenLabsKey, setElevenLabsKey] = useState<string>('');
+  const [envSaveStatus, setEnvSaveStatus] = useState<string>('');
+  const [systemPrompt, setSystemPrompt] = useState<string>('');
 
   // Core Identity Profile customizable state values
   const [operatorName, setOperatorName] = useState<string>('');
@@ -235,12 +132,90 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   const [satelliteName, setSatelliteName] = useState<string>('');
   const [activeSkin, setActiveSkin] = useState<string>('cyan');
 
+  const [mcpServersText, setMcpServersText] = useState<string>('{\n  "mcpServers": {\n    "example": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-everything"]\n    }\n  }\n}');
+  const [isMcpConnecting, setIsMcpConnecting] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<string>('Disconnected');
+  const [mcpSkillsList, setMcpSkillsList] = useState<any[]>([]);
+  const [mcpSkillsLoading, setMcpSkillsLoading] = useState(false);
+  const [isPurgingCache, setIsPurgingCache] = useState(false);
+  
+  const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
+  const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
+
+  const [newWebhookName, setNewWebhookName] = useState('');
+  const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  
+  const [newRoutineName, setNewRoutineName] = useState('');
+  const [newRoutinePrompt, setNewRoutinePrompt] = useState('');
+
+  const [supportedModels, setSupportedModels] = useState<{id: string, name: string, defaultPrompt?: string}[]>([
+    { id: "google/gemini-2.5-flash", name: "google/gemini-2.5-flash" }
+  ]);
+  
+  const [alwaysOnTop, setAlwaysOnTop] = useState<boolean>(false);
+  const [launchOnStartup, setLaunchOnStartup] = useState<boolean>(false);
+
+  useEffect(() => {
+    // Fetch dynamically supported models
+    fetch('/api/system/models')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.models) {
+          setSupportedModels(data.models);
+        }
+      })
+      .catch((e) => console.error("Failed to load supported models:", e));
+      
+    // Initialize desktop controls saved state
+    const savedOnTop = localStorage.getItem('jarvis_always_on_top') === 'true';
+    const savedStartup = localStorage.getItem('jarvis_launch_on_startup') === 'true';
+    setAlwaysOnTop(savedOnTop);
+    setLaunchOnStartup(savedStartup);
+  }, []);
+
+  useEffect(() => {
+    if (activeMenu === 'mcpSkills') {
+      setMcpSkillsLoading(true);
+      fetch('/api/mcp/tools')
+        .then(r => r.json())
+        .then(data => {
+           if (data.success) {
+              setMcpSkillsList(data.tools || []);
+           }
+        })
+        .finally(() => setMcpSkillsLoading(false));
+    } else if (activeMenu === 'mcpExternal') {
+      fetch('/api/mcp/webhooks')
+        .then(r => r.json())
+        .then(data => data.success && setMcpWebhooks(data.webhooks))
+        .catch(console.error);
+    } else if (activeMenu === 'mcpRoutines') {
+      fetch('/api/mcp/routines')
+        .then(r => r.json())
+        .then(data => data.success && setMcpRoutines(data.routines))
+        .catch(console.error);
+    }
+  }, [activeMenu]);
+
   useEffect(() => {
     try {
-      const stored = localStorage.getItem('jarvis_security_settings');
-      if (stored) {
-        setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
+      const storedMcp = localStorage.getItem('jarvis_mcp_config');
+      if (storedMcp) {
+        setMcpServersText(storedMcp);
       }
+
+      fetch('/api/settings')
+        .then(res => res.json())
+        .then(data => {
+          if (data) setSettings({ ...DEFAULT_SETTINGS, ...data });
+        })
+        .catch(err => {
+          console.warn("Failed to fetch settings from server on mount", err);
+          const stored = localStorage.getItem('jarvis_security_settings');
+          if (stored) {
+            setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
+          }
+        });
 
       const savedOperatorName = localStorage.getItem('jarvis_operator_name') || (locale === 'zh-TW' ? '東尼 史塔克' : 'T. STARK');
       const savedArmorModel = localStorage.getItem('jarvis_armor_model') || 'Mark LXXXV';
@@ -256,12 +231,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
       const key = localStorage.getItem('jarvis_byok_key');
       const model = localStorage.getItem('jarvis_byok_model');
       const endpoint = localStorage.getItem('jarvis_byok_endpoint');
+      const protocol = localStorage.getItem('jarvis_byok_protocol');
+      const savedPrompt = localStorage.getItem('jarvis_system_prompt');
       const savedCLI = localStorage.getItem('jarvis_active_cli');
+      const elevenlabs = localStorage.getItem('jarvis_elevenlabs_key');
 
       if (key) setOpenRouterKey(key);
       if (model) setOpenRouterModel(model);
       if (endpoint) setOpenRouterEndpoint(endpoint);
+      if (protocol) setOpenRouterProtocol(protocol);
+      if (savedPrompt) setSystemPrompt(savedPrompt);
       if (savedCLI) setSelectedCLI(savedCLI);
+      if (elevenlabs) setElevenLabsKey(elevenlabs);
 
       runPathScan(true);
 
@@ -276,15 +257,24 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     }
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
-  const saveSettings = (newSettings: SecuritySettings) => {
+  const saveSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings);
     localStorage.setItem('jarvis_security_settings', JSON.stringify(newSettings));
     if (onSettingsChange) {
       onSettingsChange(newSettings);
     }
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
+    } catch (e) {
+      console.error("Failed to sync settings to server:", e);
+    }
   };
+
+  if (!isOpen) return null;
 
   const handleShellChange = (mode: 'manual' | 'safe' | 'auto') => {
     const updated = { ...settings, shellMode: mode };
@@ -332,6 +322,27 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     window.dispatchEvent(new Event('identity-updated'));
   };
 
+  const handleDesktopToggle = (type: 'always-on-top' | 'startup', enabled: boolean) => {
+    if (type === 'always-on-top') {
+      setAlwaysOnTop(enabled);
+      localStorage.setItem('jarvis_always_on_top', enabled ? 'true' : 'false');
+      triggerLog(`SYS: DESKTOP OVERLAY SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Always on top is ${enabled ? 'active' : 'disabled'}, sir.`);
+    } else {
+      setLaunchOnStartup(enabled);
+      localStorage.setItem('jarvis_launch_on_startup', enabled ? 'true' : 'false');
+      triggerLog(`SYS: BOOT SEQUENCE AUTO-LAUNCH SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core systems will ${enabled ? 'auto-launch' : 'not launch'} on system startup, sir.`);
+    }
+
+    if (typeof window !== 'undefined' && (window as any).require) {
+      try {
+        const { ipcRenderer } = (window as any).require('electron');
+        ipcRenderer.invoke('window-control', type, { enabled });
+      } catch (e) {
+        console.warn("Electron IPC not available", e);
+      }
+    }
+  };
+
   const handleVoiceChange = (profile: 'baritone' | 'fast' | 'standard') => {
     const updated = { ...settings, voiceProfile: profile };
     saveSettings(updated);
@@ -355,10 +366,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     localStorage.setItem('jarvis_byok_key', openRouterKey);
     localStorage.setItem('jarvis_byok_model', openRouterModel);
     localStorage.setItem('jarvis_byok_endpoint', openRouterEndpoint);
+    localStorage.setItem('jarvis_byok_protocol', openRouterProtocol);
+    localStorage.setItem('jarvis_system_prompt', systemPrompt);
     
     triggerLog(
-      `SYS: BYOK OPENROUTER PARAMETERS UPDATE. MODEL: ${openRouterModel}`,
-      "OpenRouter core API parameters registered and verified, Tommy."
+      `SYS: BYOK API PARAMETERS UPDATE. MODEL: ${openRouterModel}`,
+      `Protocol Adapter: ${openRouterProtocol.toUpperCase()}`
     );
   };
 
@@ -421,6 +434,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     
     try {
       const resp = await fetch("/api/system/test-cli-ping", { method: "POST" });
+      if (!resp.ok) {
+        throw new Error(`HTTP error ${resp.status}`);
+      }
       const data = await resp.json();
       setIsScanning(false);
       setScanMessage("");
@@ -431,17 +447,43 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
           data.speak || "Grid verified. Primary command channels are fully stable, sir."
         );
       } else {
-        throw new Error("Unsuccessful telemetry probe");
+        triggerLog(
+          `SYS: CRITICAL TELEMETRY PROBE FAILURE - CONNECTION OFFLINE.`,
+          data.speak || "Physical backup networks failed. Outer communication systems are offline, sir."
+        );
       }
-    } catch (e) {
+    } catch (e: any) {
       setIsScanning(false);
       setScanMessage("");
-      // Fallback
-      const latencyMs = Math.round(5 + Math.random() * 12);
       triggerLog(
-        `SYS: LOCAL SUBSYSTEM LOOPBACK PING COMPLETED IN ${latencyMs}ms. 0 FAILURE DETECTED.`,
-        "Grid verified. Primary command channels are fully stable, sir."
+        `SYS: DIAGNOSTIC PROBE LIMIT EXCEEDED. HOST UNREACHABLE.`,
+        "Warning, sir. Sub-orbital connection failed. Physical networks are offline."
       );
+    }
+  };
+
+  const handleMcpConnect = async () => {
+    setIsMcpConnecting(true);
+    setMcpStatus("Initializing connection sequence...");
+    try {
+      localStorage.setItem('jarvis_mcp_config', mcpServersText);
+      const resp = await fetch("/api/mcp/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: mcpServersText })
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setMcpStatus(`[SUCCESS] Connected to ${data.count} external MCP server(s).`);
+        triggerLog(`SYS: MODEL CONTEXT PROTOCOL SYNCHRONIZATION`, `Connected to ${data.count} external Model Context Protocol server(s). Integration parameters verified and standard stdio streams bonded, sir.`);
+      } else {
+        setMcpStatus(`[FAULT] Connection failed: ${data.error}`);
+        triggerLog(`SYS: MCP SYNC FAULT`, `Failed to connect to MCP external servers. Trace data logic error recorded, sir: ${data.error}`);
+      }
+    } catch (e: any) {
+      setMcpStatus(`[SYS NULL] Network payload error. Standard socket connection dropped.`);
+    } finally {
+      setIsMcpConnecting(false);
     }
   };
 
@@ -452,6 +494,10 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     }
     
     try {
+      const cliResp = await fetch("/api/system/cli");
+      const cliData = await cliResp.json();
+      const baseOptions: CLIOption[] = cliData.options || [];
+
       const resp = await fetch("/api/system/rescan-paths", { method: "POST" });
       const data = await resp.json();
       
@@ -462,8 +508,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
       
       if (data.success) {
         if (data.installedClis) {
-          setCliOptions(prevOptions => 
-            prevOptions.map(opt => {
+          setCliOptions(
+            baseOptions.map(opt => {
               const scanInfo = data.installedClis[opt.id];
               if (scanInfo) {
                 return {
@@ -480,7 +526,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
         }
         
         if (!silent) {
-          const discovered = data.tools.filter((t: any) => INITIAL_CLI_OPTIONS.some(c => c.id === t.name)).map((t: any) => t.name).join(", ");
+          const discovered = data.tools.filter((t: any) => baseOptions.some(c => c.id === t.name)).map((t: any) => t.name).join(", ");
           triggerLog(
             `SYS: PATH SYNCHRONIZATION COMPLETED. ${data.foundCount} BACKEND CLIS RESOLVED [${discovered || 'NONE'}].`,
             data.speak || "Scan successfully synchronized. Candidates matched."
@@ -591,6 +637,29 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
     }
   };
 
+  const handlePurgeAllMemories = async () => {
+    try {
+      triggerLog(
+        `SYS: INITIATING COMPLETE PURGE OF COGNITIVE MEMORY BANK...`,
+        "Wiping all cognitive fragments from active RAG bank, sir."
+      );
+      
+      const remainingMems = await hermesDB.clearCognitiveMemories();
+      setCognitiveMemories(remainingMems);
+      
+      triggerLog(
+        `SYS: COGNITIVE PURGE SUCCESSFUL. ALL FRAGMENTS CLEARED.`,
+        "Memory bank completely wiped and resynchronized, Sir."
+      );
+    } catch (e: any) {
+      console.error("Purge all memories error", e);
+      triggerLog(
+        "SYS: COGNITIVE PURGE FAILED.",
+        "Attempted full memory purge failed, sir."
+      );
+    }
+  };
+
   const handleSaveMemory = async () => {
     if (!newMemory.trim()) return;
     
@@ -615,6 +684,125 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
         "SYS: MEMORY RECORDING FAILED.",
         "Failed to write logical directive to database, sir."
       );
+    }
+  };
+
+  const handlePurgeCache = async () => {
+    setIsPurgingCache(true);
+    triggerLog("SYS: INITIATING SYSTEM WIDE CACHE PURGE...", "Initiating cache purge protocols, sir.");
+    try {
+      const resp = await fetch("/api/system/purge-cache", { method: "POST" });
+      const data = await resp.json();
+      if (data.success) {
+        triggerLog("SYS: CACHE PURGE SUCCESSFUL. DATABASE RELOADED.", "System cache has been successfully purged, sir.");
+      } else {
+        throw new Error(data.error || "Purge Failed");
+      }
+    } catch (e: any) {
+      triggerLog(`SYS: CACHE PURGE FAILED - ${e.message}`, "Cache purge failed, sir.");
+    } finally {
+      setIsPurgingCache(false);
+    }
+  };
+
+  const handleReboot = async () => {
+    playTactileClick();
+    triggerLog(
+      "SYS: CRITICAL: REBOOT COMMENCED. INITIATING COMPLETE RUNTIME SHUTDOWN AND RE-SPAWNING OF THE CORE INFRASTRUCTURE PROCESS...",
+      "Initiating reactor reboot, sir. Power cycled in three, two, one..."
+    );
+
+    // Trigger full-screen reboot simulation/re-calibration
+    window.dispatchEvent(new CustomEvent('skin-updated'));
+
+    try {
+      await fetch('/api/system/reboot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (e) {
+      console.error("Reboot post-fire trigger expected process termination.", e);
+    }
+  };
+
+  const handleAddWebhook = async (name: string, url: string) => {
+    try {
+      const res = await fetch('/api/mcp/webhooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, url })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMcpWebhooks([...mcpWebhooks, data.webhook]);
+        triggerLog(`SYS: NEW WEBHOOK CONFIGURED [${name}]`, "Webhook routing active, sir.");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteWebhook = async (id: string, name: string) => {
+    try {
+      await fetch(`/api/mcp/webhooks/${id}`, { method: 'DELETE' });
+      setMcpWebhooks(mcpWebhooks.filter(w => w.id !== id));
+      triggerLog(`SYS: WEBHOOK DELETED [${name}]`, "Network link severed, sir.");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleToggleWebhook = async (id: string, active: boolean) => {
+    try {
+      await fetch(`/api/mcp/webhooks/${id}/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active })
+      });
+      setMcpWebhooks(mcpWebhooks.map(w => w.id === id ? { ...w, active } : w));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleAddRoutine = async (name: string, prompt: string) => {
+    try {
+      const res = await fetch('/api/mcp/routines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, prompt })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMcpRoutines([...mcpRoutines, data.routine]);
+        triggerLog(`SYS: NEW ROUTINE COMPILED [${name}]`, "New routine synchronized to the core matrix, sir.");
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteRoutine = async (id: string, name: string) => {
+    try {
+      await fetch(`/api/mcp/routines/${id}`, { method: 'DELETE' });
+      setMcpRoutines(mcpRoutines.filter(r => r.id !== id));
+      triggerLog(`SYS: ROUTINE PURGED [${name}]`, "Routine wiped from memory banks.");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleExecuteRoutine = async (id: string) => {
+    try {
+      const res = await fetch(`/api/mcp/routines/${id}/execute`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.prompt) {
+        triggerLog(`SYS: ROUTINE SIGNAL DISPATCHED (EXECUTION IMMINENT)`, "Command protocol engaged.");
+        window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
+        setTimeout(() => onClose(), 800);
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -753,22 +941,26 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
             <div className="mt-4 pt-4 border-t border-cyan-950/30">
               <span className="text-[8.5px] text-cyan-700 tracking-widest uppercase block mb-2 px-3">Hologram Utilities</span>
               
-              <div className="px-3 py-1.5 text-cyan-600/60 hover:text-cyan-500/80 cursor-pointer flex items-center gap-2 transition-all">
-                <Sparkles className="w-3 h-3 text-cyan-700" />
+              <button onClick={() => setActiveMenu('envKeys')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'envKeys' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
+                <Key className={`w-3 h-3 ${activeMenu === 'envKeys' ? 'text-cyan-400' : 'text-cyan-700'}`} />
+                <span>ENVIRONMENT KEYS</span>
+              </button>
+              <button onClick={() => setActiveMenu('mcpSkills')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'mcpSkills' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
+                <Sparkles className={`w-3 h-3 ${activeMenu === 'mcpSkills' ? 'text-cyan-400' : 'text-cyan-700'}`} />
                 <span>{t.mcpSkills}</span>
-              </div>
-              <div className="px-3 py-1.5 text-cyan-600/60 hover:text-cyan-500/80 cursor-pointer flex items-center gap-2 transition-all">
-                <Radio className="w-3 h-3 text-cyan-700" />
+              </button>
+              <button onClick={() => setActiveMenu('mcpExternal')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'mcpExternal' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
+                <Radio className={`w-3 h-3 ${activeMenu === 'mcpExternal' ? 'text-cyan-400' : 'text-cyan-700'}`} />
                 <span>{t.mcpExternal}</span>
-              </div>
-              <div className="px-3 py-1.5 text-cyan-600/60 hover:text-cyan-500/80 cursor-pointer flex items-center gap-2 transition-all">
-                <Activity className="w-3 h-3 text-cyan-700" />
+              </button>
+              <button onClick={() => setActiveMenu('mcpRoutines')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'mcpRoutines' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
+                <Activity className={`w-3 h-3 ${activeMenu === 'mcpRoutines' ? 'text-cyan-400' : 'text-cyan-700'}`} />
                 <span>{t.mcpRoutines}</span>
-              </div>
-              <div className="px-3 py-1.5 text-cyan-600/60 hover:text-cyan-500/80 cursor-pointer flex items-center gap-2 transition-all">
-                <Server className="w-3 h-3 text-cyan-700" />
+              </button>
+              <button onClick={() => setActiveMenu('mcpServer')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'mcpServer' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
+                <Server className={`w-3 h-3 ${activeMenu === 'mcpServer' ? 'text-cyan-400' : 'text-cyan-700'}`} />
                 <span>{t.mcpServer}</span>
-              </div>
+              </button>
             </div>
 
             <div className="mt-auto p-2 italic text-[8px] text-cyan-700/70 text-center leading-relaxed">
@@ -935,22 +1127,42 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                           onChange={(e) => setOpenRouterModel(e.target.value)}
                           className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
                         >
-                          <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
-                          <option value="anthropic/claude-3.5-sonnet:beta">anthropic/claude-3.5-sonnet:beta (Claude Code backend)</option>
-                          <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
-                          <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (DeepSeek V3)</option>
-                          <option value="openai/gpt-4o">openai/gpt-4o</option>
+                          {supportedModels.map(m => (
+                            <option key={m.id} value={m.id}>{m.name}</option>
+                          ))}
                         </select>
                       </div>
 
                       <div className="flex flex-col gap-1.5">
                         <label className="text-[10px] text-cyan-500 uppercase tracking-wider">{t.lblGatewayEndpoint}</label>
-                        <input
-                          type="text"
-                          value={openRouterEndpoint}
-                          onChange={(e) => setOpenRouterEndpoint(e.target.value)}
-                          placeholder="https://openrouter.ai/api/v1"
-                          className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500"
+                        <div className="flex gap-2">
+                          <select
+                            value={openRouterProtocol}
+                            onChange={(e) => setOpenRouterProtocol(e.target.value)}
+                            className="bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500 cursor-pointer w-[120px]"
+                          >
+                            <option value="openrouter">OpenRouter / OpenAI</option>
+                            <option value="anthropic">Anthropic Native</option>
+                            <option value="gemini">Google Gemini</option>
+                            <option value="ollama">Ollama Local</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={openRouterEndpoint}
+                            onChange={(e) => setOpenRouterEndpoint(e.target.value)}
+                            placeholder="https://openrouter.ai/api/v1"
+                            className="flex-1 bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-[10px] text-cyan-500 uppercase tracking-wider">{locale === 'zh-TW' ? '系統提示詞 (System Prompt)' : 'SYSTEM PROMPT'}</label>
+                        <textarea
+                          value={systemPrompt}
+                          onChange={(e) => setSystemPrompt(e.target.value)}
+                          placeholder="You are J.A.R.V.I.S..."
+                          className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500 min-h-[60px]"
                         />
                       </div>
 
@@ -1013,6 +1225,14 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                     >
                       {t.btnStoreContext}
                     </button>
+                    {cognitiveMemories.length > 0 && (
+                      <button 
+                        onClick={handlePurgeAllMemories}
+                        className="px-4 py-2 border border-red-900/50 bg-red-950/20 text-red-400 text-[10.5px] rounded hover:border-red-500 hover:text-red-300 shrink-0 font-bold uppercase transition-all"
+                      >
+                        [清除記憶] PURGE ALL
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1156,6 +1376,53 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                     </button>
                   </div>
                 </div>
+
+                {/* 4. Auto-Repair Mechanism */}
+                <div className="border border-cyan-950 bg-cyan-950/5 p-4 rounded relative hover:bg-cyan-950/10 transition-all">
+                  <div className="flex justify-between items-center border-b border-cyan-900/40 pb-2 mb-3">
+                    <div className="flex items-center gap-2 text-rose-400">
+                      <Activity className="w-4 h-4 text-rose-500" />
+                      <span className="text-xs font-bold tracking-widest uppercase">自動修復機制 (Auto-Repair)</span>
+                    </div>
+                  </div>
+                  
+                  <p className="text-[10px] text-cyan-500/70 mb-3 leading-relaxed">
+                    啟用後，當系統 Health (CPU/Memory/Temperature) 下降至危險閾值時，系統將自動觸發自我修復指令（Self-healing scripts）重置容器並清理緩存。
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      onClick={() => {
+                        const next = { ...settings, autoRepair: false };
+                        setSettings(next);
+                        if (onSettingsChange) onSettingsChange(next);
+                      }}
+                      className={`py-2 px-3 text-[10px] border cursor-pointer font-bold rounded flex items-center justify-center gap-2 transition-all ${
+                        !settings.autoRepair
+                          ? 'border-cyan-500 bg-cyan-950/40 text-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.2)]'
+                          : 'border-cyan-950/50 text-cyan-700 hover:border-cyan-800'
+                      }`}
+                    >
+                      <X className="w-3 h-3" />
+                      MANUAL (手動)
+                    </button>
+                    <button
+                      onClick={() => {
+                        const next = { ...settings, autoRepair: true };
+                        setSettings(next);
+                        if (onSettingsChange) onSettingsChange(next);
+                      }}
+                      className={`py-2 px-3 text-[10px] border cursor-pointer font-bold rounded flex items-center justify-center gap-2 transition-all ${
+                        settings.autoRepair
+                          ? 'border-rose-500 bg-rose-950/40 text-rose-300 shadow-[0_0_10px_rgba(244,63,94,0.3)]'
+                          : 'border-cyan-950/50 text-cyan-700 hover:border-cyan-800'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3 h-3" />
+                      AUTO-REPAIR (啟用)
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1175,7 +1442,66 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                     <span className="text-xs font-bold tracking-widest uppercase">{t.voiceHeader}</span>
                   </div>
 
-                  <p className="text-[10px] text-cyan-500/70 mb-3 leading-relaxed">
+                  <div className="mb-4">
+                    <label className="flex items-center justify-between cursor-pointer group">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-pink-300 font-bold group-hover:text-pink-200">
+                          {locale === 'zh-TW' ? '語音互動開關 (Voice Synthesizer)' : 'VOICE SYNTHESIZER TOGGLE'}
+                        </span>
+                        <span className="text-[9px] text-pink-500/70">
+                          {locale === 'zh-TW' ? '啟用/停用 J.A.R.V.I.S 聲學反饋模組' : 'Enable/Disable J.A.R.V.I.S acoustic feedback module'}
+                        </span>
+                      </div>
+                      <input 
+                        type="checkbox"
+                        className="sr-only"
+                        checked={!isMuted}
+                        onChange={(e) => onToggleMute && onToggleMute()}
+                      />
+                      <div className={`w-10 h-4 rounded-full flex items-center p-0.5 transition-colors ${!isMuted ? 'bg-pink-500 shadow-[0_0_8px_rgba(236,72,153,0.6)]' : 'bg-slate-900 border border-cyan-950'}`}>
+                        <div className={`bg-white w-3 h-3 rounded-full transition-transform ${!isMuted ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="mb-4 flex flex-col gap-2 border-t border-cyan-950/40 pt-3">
+                    <span className="text-[10px] text-pink-500 uppercase tracking-wider">{locale === 'zh-TW' ? '外部語音引擎 API' : 'External Voice Engine APIs'}</span>
+                    
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-cyan-400">STT (語音辨識) Provider:</span>
+                      <select 
+                        value={localStorage.getItem('jarvis_stt_provider') || 'webspeech'}
+                        onChange={(e) => {
+                          localStorage.setItem('jarvis_stt_provider', e.target.value);
+                          triggerLog(`SYS: STT ENGINE SWITCHED TO ${e.target.value.toUpperCase()}`);
+                          // Dispatch event to app
+                          window.dispatchEvent(new Event('voice-engine-updated'));
+                        }}
+                        className="bg-slate-950 border border-cyan-950 text-[10px] text-cyan-300 rounded p-1"
+                      >
+                        <option value="webspeech">Local Web Speech API</option>
+                        <option value="whisper">Backend API (OpenAI Whisper)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-cyan-400">TTS (語音合成) Provider:</span>
+                      <select 
+                        value={localStorage.getItem('jarvis_tts_provider') || 'webspeech'}
+                        onChange={(e) => {
+                          localStorage.setItem('jarvis_tts_provider', e.target.value);
+                          triggerLog(`SYS: TTS ENGINE SWITCHED TO ${e.target.value.toUpperCase()}`);
+                          window.dispatchEvent(new Event('voice-engine-updated'));
+                        }}
+                        className="bg-slate-950 border border-cyan-950 text-[10px] text-cyan-300 rounded p-1"
+                      >
+                        <option value="webspeech">Local Web Speech API</option>
+                        <option value="elevenlabs">Backend API (ElevenLabs)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-cyan-500/70 mb-3 leading-relaxed border-t border-cyan-950/40 pt-3">
                     {t.voiceDesc}
                   </p>
 
@@ -1399,6 +1725,57 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                   </div>
                 </div>
 
+                {/* Desktop Application Window Controls */}
+                <div className="border border-cyan-950 bg-cyan-950/15 p-4 rounded space-y-4">
+                  <div className="border-b border-cyan-900/40 pb-2 flex items-center gap-2">
+                    <Monitor className="w-4 h-4 text-cyan-400" />
+                    <span className="text-[11px] font-extrabold text-cyan-400 tracking-widest uppercase">
+                      {locale === 'zh-TW' ? '桌面端原生控制' : 'DESKTOP NATIVE CONTROLS'}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <label className="flex items-center justify-between cursor-pointer group">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-cyan-300 font-bold group-hover:text-cyan-200">
+                           {locale === 'zh-TW' ? '視窗置頂 (Always on Top)' : 'ALWAYS ON TOP OVERLAY'}
+                        </span>
+                        <span className="text-[9px] text-cyan-600">
+                           {locale === 'zh-TW' ? '確保 HUD 覆蓋在其他應用程式上方' : 'Force HUD matrix to render above all desktop applications'}
+                        </span>
+                      </div>
+                      <input 
+                        type="checkbox"
+                        className="sr-only"
+                        checked={alwaysOnTop}
+                        onChange={(e) => handleDesktopToggle('always-on-top', e.target.checked)}
+                      />
+                      <div className={`w-10 h-4 rounded-full flex items-center p-0.5 transition-colors ${alwaysOnTop ? 'bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)]' : 'bg-slate-900 border border-cyan-950'}`}>
+                        <div className={`bg-white w-3 h-3 rounded-full transition-transform ${alwaysOnTop ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                      </div>
+                    </label>
+
+                    <label className="flex items-center justify-between cursor-pointer group">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-cyan-300 font-bold group-hover:text-cyan-200">
+                           {locale === 'zh-TW' ? '開機自啟動 (Launch on Startup)' : 'BOOT SEQUENCE AUTO-START'}
+                        </span>
+                        <span className="text-[9px] text-cyan-600">
+                           {locale === 'zh-TW' ? '系統啟動時自動載入 J.A.R.V.I.S 介面' : 'Automatically ignite core matrix upon system initialization'}
+                        </span>
+                      </div>
+                      <input 
+                        type="checkbox"
+                        className="sr-only"
+                        checked={launchOnStartup}
+                        onChange={(e) => handleDesktopToggle('startup', e.target.checked)}
+                      />
+                      <div className={`w-10 h-4 rounded-full flex items-center p-0.5 transition-colors ${launchOnStartup ? 'bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)]' : 'bg-slate-900 border border-cyan-950'}`}>
+                        <div className={`bg-white w-3 h-3 rounded-full transition-transform ${launchOnStartup ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
                 <div className="p-3 border border-cyan-950 bg-cyan-950/5 text-cyan-500 text-[10px] leading-relaxed italic">
                   * Interface skin transition alters overlay color envelopes without terminating background socket processes. Direct graphic acceleration is fully enabled.
                 </div>
@@ -1457,6 +1834,227 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                     </>
                   )}
                 </div>
+
+                <div className="pt-2 border-t border-cyan-950/30 flex justify-end gap-2">
+                  <button
+                    onClick={handlePurgeCache}
+                    disabled={isPurgingCache}
+                    className="w-full sm:w-auto px-4 py-2 bg-amber-950/40 hover:bg-amber-900/30 border border-amber-800/40 hover:border-amber-500/70 rounded text-amber-400 hover:text-amber-300 text-[10px] uppercase font-bold tracking-widest transition-all shadow-[0_0_10px_rgba(245,158,11,0.05)] hover:shadow-[0_0_15px_rgba(245,158,11,0.2)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Server className={`w-3.5 h-3.5 ${isPurgingCache ? 'animate-pulse' : ''}`} />
+                    {isPurgingCache ? 'PURGING...' : '清理快取 (PURGE CACHE)'}
+                  </button>
+                  <button
+                    onClick={handleReboot}
+                    className="w-full sm:w-auto px-4 py-2 bg-red-950/40 hover:bg-red-900/30 border border-red-800/40 hover:border-red-500/70 rounded text-red-400 hover:text-red-300 text-[10px] uppercase font-bold tracking-widest transition-all shadow-[0_0_10px_rgba(239,68,68,0.05)] hover:shadow-[0_0_15px_rgba(239,68,68,0.2)] flex items-center justify-center gap-2"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin-reverse" />
+                    REACTOR REBOOT / 反應爐重啟
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Environment Keys Panel */}
+            {activeMenu === 'envKeys' && (
+              <div className="space-y-4">
+                <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">ENVIRONMENT KEYS</span>
+                  <p className="text-[10px] text-cyan-600 tracking-wider">
+                    Configure operational API keys. Stored securely in your browser's local matrix.
+                  </p>
+                </div>
+                
+                <div className="space-y-4">
+                    <div className="flex flex-col gap-1">
+                        <label className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">ElevenLabs TTS API Key</label>
+                        <input 
+                            type="password" 
+                            className="bg-black/50 border border-cyan-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 w-full font-mono" 
+                            placeholder="sk-..."
+                            value={elevenLabsKey}
+                            onChange={e => setElevenLabsKey(e.target.value)}
+                        />
+                        <span className="text-[9px] text-cyan-600/70">Required for high-fidelity Jarvis voice synthesis.</span>
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                        <button 
+                            className="px-4 py-1.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-2"
+                            onClick={() => {
+                                localStorage.setItem('jarvis_elevenlabs_key', elevenLabsKey);
+                                setEnvSaveStatus('SAVED TO LOCAL STORAGE');
+                                setTimeout(() => setEnvSaveStatus(''), 2000);
+                            }}
+                        >
+                            <Key className="w-3 h-3" />
+                            SAVE KEYS
+                        </button>
+                    </div>
+                    {envSaveStatus && (
+                        <div className="text-right text-[10px] text-emerald-400 animate-pulse mt-1">
+                            {envSaveStatus}
+                        </div>
+                    )}
+                </div>
+              </div>
+            )}
+
+            {/* MCP Config Panel */}
+            {activeMenu === 'mcpServer' && (
+              <div className="space-y-4">
+                <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">MCP SERVERS (MODEL CONTEXT PROTOCOL)</span>
+                  <p className="text-[10px] text-cyan-600 tracking-wider">
+                    Configure standardized stdio-based JSON-RPC tools and context sources. Edit the JSON configuration exactly as you would for Claude Desktop.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <textarea
+                    value={mcpServersText}
+                    onChange={(e) => setMcpServersText(e.target.value)}
+                    className="w-full h-[200px] bg-slate-950/80 border border-cyan-900/60 rounded px-3 py-2 text-[10px] text-emerald-400 font-mono tracking-widest focus:outline-none focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.2)] scrollbar-cyan"
+                    spellCheck="false"
+                  ></textarea>
+
+                  <div className="flex justify-between items-center mt-2">
+                    <span className="text-[9px] text-cyan-500 font-mono flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${mcpStatus.includes('SUCCESS') ? 'bg-emerald-500' : mcpStatus.includes('FAULT') ? 'bg-red-500' : 'bg-amber-500 animate-pulse'}`}></span>
+                      {mcpStatus}
+                    </span>
+                    <button
+                      onClick={handleMcpConnect}
+                      disabled={isMcpConnecting}
+                      className="px-4 py-1.5 bg-cyan-950/50 hover:bg-cyan-900 border border-cyan-700/50 hover:border-cyan-400 rounded text-cyan-300 text-[10px] uppercase tracking-widest font-bold transition-all disabled:opacity-50"
+                    >
+                      {isMcpConnecting ? 'INITIALIZING...' : 'CONNECT MCP SERVERS'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 border border-cyan-950 bg-cyan-950/5 text-cyan-500 text-[10px] leading-relaxed italic mt-4">
+                  * Note: Embedded Jarvis Core will spawn authentic Node child_processes and handle stdio streams based on config.
+                </div>
+              </div>
+            )}
+
+            {/* MCP Skills Panel */}
+            {activeMenu === 'mcpSkills' && (
+              <div className="space-y-4 h-full flex flex-col">
+                <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">MCP SKILLS INVENTORY</span>
+                  <p className="text-[10px] text-cyan-600 tracking-wider">
+                    Discovered Context Tools injected from authenticated MCP servers via JSON-RPC.
+                  </p>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto scrollbar-cyan pr-2 space-y-2">
+                  {mcpSkillsLoading ? (
+                     <div className="text-cyan-600 text-[11px] animate-pulse">Scanning live process streams for available tools...</div>
+                  ) : mcpSkillsList.length > 0 ? (
+                    mcpSkillsList.map((tool: any, idx) => (
+                      <div key={idx} className="bg-slate-950 border border-cyan-950/50 p-2 rounded flex flex-col gap-1 hover:border-cyan-800 transition-colors">
+                         <div className="flex items-center gap-2">
+                           <span className="text-[11px] text-emerald-400 font-bold tracking-widest uppercase">{tool.name}</span>
+                           <span className="text-[8px] text-cyan-700 uppercase bg-cyan-950/30 px-1 rounded-sm border border-cyan-900/50">Via {tool._server}</span>
+                         </div>
+                         <p className="text-[10px] text-cyan-600 border-l border-cyan-950 pl-2 leading-relaxed">{tool.description}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-[10px] text-cyan-700 italic">No tools loaded. Verify MCP Servers are running.</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* MCP External Connectors / Routines Placeholder Panels */}
+            {(activeMenu === 'mcpExternal' || activeMenu === 'mcpRoutines') && (
+              <div className="space-y-4">
+                <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">
+                     {activeMenu === 'mcpExternal' ? 'EXTERNAL MCP CONNECTORS' : 'MCP ROUTINES'}
+                  </span>
+                  <p className="text-[10px] text-cyan-600 tracking-wider">
+                    {activeMenu === 'mcpExternal' 
+                      ? 'Global SSE webhooks for distributed external nodes.' 
+                      : 'Automated prompt protocols bridged to your external MCP process streams.'}
+                  </p>
+                </div>
+                
+                {activeMenu === 'mcpExternal' && (
+                  <div className="space-y-4">
+                    <div className="bg-slate-950/80 border border-cyan-950/50 p-3 rounded space-y-2">
+                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">Register Webhook</span>
+                       <div className="grid grid-cols-2 gap-2">
+                         <input type="text" placeholder="NODE NAME (e.g. Remote Server)" value={newWebhookName} onChange={e => setNewWebhookName(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
+                         <input type="text" placeholder="URL ENDPOINT" value={newWebhookUrl} onChange={e => setNewWebhookUrl(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
+                       </div>
+                       <div className="flex justify-end pt-1">
+                         <button onClick={() => { handleAddWebhook(newWebhookName, newWebhookUrl); setNewWebhookName(''); setNewWebhookUrl(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors">Bind Webhook</button>
+                       </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      {mcpWebhooks.length === 0 ? (
+                        <div className="h-[100px] flex items-center justify-center border border-cyan-950/30 bg-slate-950/30 border-dashed rounded relative overflow-hidden group hover:border-cyan-900/50 transition-colors">
+                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">No active network webhooks</span>
+                        </div>
+                      ) : (
+                        mcpWebhooks.map(w => (
+                          <div key={w.id} className="bg-slate-950/60 border border-cyan-900/40 p-2.5 rounded flex justify-between items-center gap-2 group hover:border-cyan-700/60 transition-colors">
+                            <div className="flex items-center gap-3">
+                              <button onClick={() => handleToggleWebhook(w.id, !w.active)} className="relative flex items-center justify-center cursor-pointer overflow-hidden p-1">
+                                <div className={`w-3.5 h-3.5 rounded-sm border ${w.active ? 'bg-cyan-500 border-cyan-400' : 'bg-transparent border-cyan-800'} transition-all`} />
+                                {w.active && <div className="absolute inset-0 bg-cyan-200/20 blur-[2px]" />}
+                              </button>
+                              <div className="flex flex-col">
+                                <span className="text-[11px] text-cyan-300 font-bold uppercase tracking-widest flex items-center gap-2">{w.name} {w.active ? <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> : <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />}</span>
+                                <span className="text-[9px] text-cyan-600 truncate max-w-[200px] sm:max-w-[300px]">{w.url}</span>
+                              </div>
+                            </div>
+                            <button onClick={() => handleDeleteWebhook(w.id, w.name)} className="text-red-500/60 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                {activeMenu === 'mcpRoutines' && (
+                  <div className="space-y-4">
+                    <div className="bg-slate-950/80 border border-cyan-950/50 p-3 rounded space-y-2 flex flex-col">
+                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">Create Execution Routine</span>
+                       <input type="text" placeholder="ROUTINE IDENTIFIER (e.g. Daily Standup)" value={newRoutineName} onChange={e => setNewRoutineName(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1.5 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
+                       <textarea placeholder="PROMPT PAYLOAD SEQUENCE..." value={newRoutinePrompt} onChange={e => setNewRoutinePrompt(e.target.value)} className="w-full h-16 bg-black/50 border border-cyan-900/50 rounded px-2 py-1.5 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 resize-none font-mono" />
+                       <div className="flex justify-end pt-1">
+                         <button onClick={() => { handleAddRoutine(newRoutineName, newRoutinePrompt); setNewRoutineName(''); setNewRoutinePrompt(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-1.5"><Activity className="w-3 h-3" /> Save Matrix</button>
+                       </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      {mcpRoutines.length === 0 ? (
+                        <div className="h-[100px] flex items-center justify-center border border-cyan-950/30 bg-slate-950/30 border-dashed rounded relative overflow-hidden group hover:border-cyan-900/50 transition-colors">
+                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">No active matrix routines</span>
+                        </div>
+                      ) : (
+                        mcpRoutines.map(r => (
+                          <div key={r.id} className="bg-slate-950/60 border border-cyan-900/40 p-2.5 rounded flex flex-col gap-2 group hover:border-cyan-700/60 transition-colors">
+                            <div className="flex justify-between items-start">
+                              <span className="text-[12px] text-cyan-300 font-bold uppercase tracking-widest">{r.name}</span>
+                              <div className="flex gap-2">
+                                <button onClick={() => handleExecuteRoutine(r.id)} className="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 rounded text-[9px] uppercase tracking-wide flex items-center gap-1 hover:bg-emerald-900/60 transition-all font-bold"><Zap className="w-2.5 h-2.5" /> Execute</button>
+                                <button onClick={() => handleDeleteRoutine(r.id, r.name)} className="text-red-500/60 hover:text-red-400 p-0.5"><Trash2 className="w-3.5 h-3.5" /></button>
+                              </div>
+                            </div>
+                            <p className="text-[9px] text-cyan-600 font-mono truncate">{r.prompt}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

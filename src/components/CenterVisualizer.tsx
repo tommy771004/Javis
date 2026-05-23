@@ -25,6 +25,9 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
     cpu: number; 
     mem: number; 
     net: string; 
+    neuralSync?: string;
+    rxSpeed?: number;
+    txSpeed?: number;
     gpu: number; 
     tmp: string; 
     uptime: number; 
@@ -33,6 +36,8 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
     nodeVersion?: string;
     costLogsCount?: number;
     messagesCount?: number;
+    cognitiveCount?: number;
+    diskIo?: string;
     systemLogs?: string[];
   } | null>(null);
   const [tasks, setTasks] = React.useState<any[]>([]);
@@ -260,15 +265,15 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
             <span className="text-emerald-500 animate-pulse text-[7.5px] font-bold">ONLINE</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>INDEX SIZE:</span>
+            <span>COGNITIVE FRAGMENTS:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.messagesCount ? (stats.messagesCount * 12 + 14210).toLocaleString() : '14,285'} BLK
+              {stats?.cognitiveCount !== undefined ? stats.cognitiveCount : 0} FRAG
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>QUERY LATENCY:</span>
+            <span>FTS5 INDEX SIZE:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {(0.72 + Math.sin(Date.now() / 15000) * 0.08).toFixed(2)} ms
+              {stats?.messagesCount !== undefined ? stats.messagesCount : 0} BLK
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
@@ -294,15 +299,13 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
             <span>TRACE RECORDS:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.costLogsCount ? (stats.costLogsCount * 15 + 2380).toLocaleString() : '2,410'} TRAC
+              {stats?.costLogsCount !== undefined ? stats.costLogsCount : 0} TRAC
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
-            <span>MUTATION MATRIX:</span>
+            <span>NEURAL SYNC:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {cognitiveState === 'thinking' 
-                ? (98.15 + Math.random() * 0.5).toFixed(2) 
-                : (96.35 + Math.sin(Date.now() / 30000) * 0.3).toFixed(2)}% STD
+              {stats?.neuralSync || '99.55'}%
             </span>
           </div>
           <div className="flex justify-between border-t border-cyan-800/10 pt-1 mt-1 text-[7px] text-cyan-500/80">
@@ -508,21 +511,26 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           </span>
         </div>
          
-        {/* Responsive Sound Waveform representing natural interactive audio visual responses */}
-        <div className="flex items-end justify-center gap-[3px] h-4 w-48 opacity-80" title="Soundwave frequency visualizer">
+        {/* Real Network RX/TX Traffic Visualizer */}
+        <div className="flex items-end justify-center gap-[3px] h-4 w-48 opacity-80" title="Network RX/TX Telemetry Waveform">
           {Array.from({ length: 42 }).map((_, i) => {
             let animateHeight = 2;
-            if (isMicActive) {
-              animateHeight = Math.random() * (voiceAmplitude / 2.2) + 2;
-            } else if (cognitiveState === 'speaking') {
-              animateHeight = Math.random() * (voiceAmplitude / 3.2) + 2;
+            
+            // Generate visual traffic based on actual RX/TX bytes and ping
+            const rxBase = stats?.rxSpeed ? Math.min(10, (stats.rxSpeed / 2048)) : 0;
+            const txBase = stats?.txSpeed ? Math.min(10, (stats.txSpeed / 2048)) : 0;
+            const flowBase = Math.max(rxBase, txBase);
+
+            if (flowBase > 0.5) {
+              // High traffic peak wave
+              animateHeight = Math.random() * (flowBase * 3) + 2;
             } else if (cognitiveState === 'thinking') {
               animateHeight = Math.random() * 8 + 2;
             } else if (cognitiveState === 'searching') {
               const waveVal = Math.sin((Date.now() / 150) - (i * 0.45)) * 6 + 8;
               animateHeight = Math.max(2, waveVal);
             } else {
-              // Static glowing waves representing idling state
+              // Idling small network pings
               const idleSine = Math.sin((Date.now() / 500) - (i * 0.2)) * 1.5 + 2.5;
               animateHeight = Math.max(2, idleSine);
             }

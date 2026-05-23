@@ -16,7 +16,11 @@ export function SysMonitor({
         cpu: 0,
         mem: 0,
         net: '0KB/s',
+        diskIo: '0.0 MB/s WAIT',
         gpu: 0,
+        neuralSync: '99.55',
+        rxSpeed: 0,
+        txSpeed: 0,
         tmp: 'N/A',
         uptime: 0,
         processes: 0,
@@ -91,13 +95,15 @@ export function SysMonitor({
             </div>
             {type === 'percent' && (
                 <div className="h-1 bg-black/50 w-full overflow-hidden border border-cyan-950/40 relative">
-                    <div 
-                        className={`h-full transition-all duration-1000 ${
+                    <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${value}%` }}
+                        transition={{ type: "spring", stiffness: 40, damping: 12, mass: 0.8 }}
+                        className={`h-full ${
                             Number(value) > 75 
                                 ? 'bg-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.6)]' 
                                 : 'bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]'
                         }`} 
-                        style={{ width: `${value}%` }}
                     />
                 </div>
             )}
@@ -173,7 +179,7 @@ export function SysMonitor({
                     </div>
                     <div className="flex flex-col">
                         <span className="text-cyan-600 text-[8px] uppercase tracking-widest">{t.lblNeuralLink}</span>
-                        <span className="text-green-400 font-bold mt-0.5 animate-pulse">{t.lblActiveState}</span>
+                        <span className="text-green-400 font-bold mt-0.5 animate-pulse">{stats.neuralSync}%</span>
                     </div>
                 </div>
             </div>
@@ -240,7 +246,7 @@ export function SysMonitor({
                 <StatBar label={t.lblRamMemory} value={stats.mem} />
                 <StatBar label={t.lblGpuCore} value={stats.gpu} />
                 
-                <div className="mt-3 border-t border-cyan-950/60 pt-3 flex justify-between text-[10px] tracking-wider text-cyan-600/90 font-mono">
+                <div className="mt-3 border-t border-cyan-950/60 pt-3 grid grid-cols-2 gap-y-2 text-[10px] tracking-wider text-cyan-600/90 font-mono">
                     <div className="flex flex-col">
                         <span className="text-[8px] text-cyan-600 uppercase tracking-widest">{t.lblNetSpeed}</span>
                         <span className="text-cyan-300 font-bold mt-0.5">{stats.net}</span>
@@ -248,6 +254,10 @@ export function SysMonitor({
                     <div className="flex flex-col text-right">
                         <span className="text-[8px] text-cyan-600 uppercase tracking-widest">{t.lblSysTemp}</span>
                         <span className="text-cyan-300 font-bold mt-0.5">{stats.tmp}</span>
+                    </div>
+                    <div className="flex flex-col col-span-2 border-t border-cyan-950/30 pt-2 mt-1 text-center">
+                        <span className="text-[8px] text-cyan-600 uppercase tracking-widest">DISK I/O</span>
+                        <span className="text-cyan-300 font-bold mt-0.5">{stats.diskIo || '0.0 MB/s WAIT'}</span>
                     </div>
                 </div>
             </div>

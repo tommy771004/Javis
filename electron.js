@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -53,6 +53,26 @@ function createWindow() {
 app.on('ready', () => {
   console.log('Bootstrapping desktop Javis environment...');
   
+  // Set up IPC Handlers for frontend control
+  ipcMain.handle('window-control', (event, action, payload) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return { success: false, error: 'No window found' };
+    
+    switch (action) {
+      case 'always-on-top':
+        win.setAlwaysOnTop(!!payload?.enabled);
+        return { success: true, enabled: !!payload?.enabled };
+      case 'startup':
+        app.setLoginItemSettings({
+          openAtLogin: !!payload?.enabled,
+          path: app.getPath('exe')
+        });
+        return { success: true, enabled: !!payload?.enabled };
+      default:
+        return { success: false, error: 'Unknown action' };
+    }
+  });
+
   // 1. Spawns our backend SQLite-like REST server
   startBackendServer();
   

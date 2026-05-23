@@ -26,40 +26,73 @@ export function SpectrumRebootOverlay() {
     };
   }, []);
 
-  // Handle progress counter increments simulating boot steps
+  // Replace fake interval with real backend system checks
   useEffect(() => {
     if (!isRebooting) return;
 
-    const steps = [
-      'SYS: DISCONNECTING CORPOREAL LIGHT EMITTING DIODES...',
-      'SYS: VACUUM COUPLERS GROUNDED. DRAINAGE PROTOCOL RUNNING...',
-      'SYS: LOADING NEW CRYSTALLINE ENVELOPE STRUCTS...',
-      'SYS: INTIATING EMISSION CALIBRATION MATRIX...',
-      'SYS: FLUORESCENCE COMPRESSION HARVESTING LOADED.',
-      'SYS: SYSTEM SPECTRAL INTEGRITY NOMINAL.'
-    ];
+    let isSubscribed = true;
 
-    let currentProgress = 0;
-    const interval = setInterval(() => {
-      currentProgress += Math.floor(Math.random() * 8) + 6;
-      if (currentProgress >= 100) {
-        currentProgress = 100;
-        clearInterval(interval);
+    const performRealSystemChecks = async () => {
+      try {
+        // Step 1: Initializing & fetching basic stats
+        setProgress(15);
+        setCurrentStep("SYS: HANDSHAKING WITH CORE SERVER PROCESS...");
+        await new Promise(r => setTimeout(r, 400));
+        
+        let res = await fetch('/api/system/engine-status', { method: 'POST' });
+        let data = await res.json();
+        if (!isSubscribed) return;
+        
+        setProgress(35);
+        setCurrentStep(`SYS: CORE METRICS NOMINAL. CPU: ${data.metrics?.cpuUtilization || 'N/A'}, RAM: ${data.metrics?.ramUsage || 'N/A'}`);
+        await new Promise(r => setTimeout(r, 600));
+
+        // Step 2: Validating Database / Logs
+        setProgress(60);
+        setCurrentStep("SYS: VALIDATING SQLITE DATABASE INTEGRITY...");
+        res = await fetch('/api/system/logs?limit=1');
+        data = await res.json();
+        if (!isSubscribed) return;
+
+        setProgress(75);
+        setCurrentStep(`SYS: STORAGE VERIFIED. LAST RECORD: [${data.length > 0 ? data[0].module : 'OK'}]`);
+        await new Promise(r => setTimeout(r, 500));
+
+        // Step 3: Fetch MCP Status
+        setProgress(85);
+        setCurrentStep("SYS: BINDING MCP AND EXTERNAL CONTEXT SERVERS...");
+        res = await fetch('/api/system/stats');
+        data = await res.json();
+        if (!isSubscribed) return;
+
+        setProgress(95);
+        setCurrentStep(`SYS: ${data.mcpServersConnected} EXTERNAL MCP SERVER(S) BOUND. UPTIME: ${Math.floor(data.uptime)}s`);
+        await new Promise(r => setTimeout(r, 500));
+
+        // Step 4: Complete
+        setProgress(100);
+        setCurrentStep("SYS: SYSTEM SPECTRAL INTEGRITY NOMINAL. CORE ONLINE.");
+        
         setTimeout(() => {
-          setIsRebooting(false);
-        }, 180);
+          if (isSubscribed) setIsRebooting(false);
+        }, 300);
+
+      } catch (err: any) {
+        if (isSubscribed) {
+          setProgress(100);
+          setCurrentStep(`SYS: CRITICAL ERROR DURING REBOOT: ${err.message}`);
+          setTimeout(() => {
+            setIsRebooting(false);
+          }, 1000);
+        }
       }
-      setProgress(currentProgress);
+    };
 
-      // Select description according to progress level
-      const stepIndex = Math.min(
-        Math.floor((currentProgress / 100) * steps.length),
-        steps.length - 1
-      );
-      setCurrentStep(steps[stepIndex]);
-    }, 60);
+    performRealSystemChecks();
 
-    return () => clearInterval(interval);
+    return () => {
+      isSubscribed = false;
+    };
   }, [isRebooting]);
 
   const getSkinData = () => {

@@ -6,6 +6,7 @@
  */
 
 let audioCtx: AudioContext | null = null;
+let masterAnalyser: AnalyserNode | null = null;
 
 // Audio parameters caching for voice/bridge settings
 let lowpassFilter: BiquadFilterNode | null = null;
@@ -15,9 +16,33 @@ let humNode: OscillatorNode | null = null;
 let noiseNode: AudioWorkletNode | ScriptProcessorNode | null = null;
 let carrierGain: GainNode | null = null;
 
+function isMutedLocally(): boolean {
+  try {
+    return localStorage.getItem('jarvis_is_muted') === 'true';
+  } catch (e) {
+    return false;
+  }
+}
+
+export function getMasterAnalyser(): AnalyserNode | null {
+  if (!audioCtx) {
+    try {
+      getAudioContext();
+    } catch (e) {
+      return null;
+    }
+  }
+  return masterAnalyser;
+}
+
 function getAudioContext(): AudioContext {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  if (!masterAnalyser) {
+    masterAnalyser = audioCtx.createAnalyser();
+    masterAnalyser.fftSize = 128; // standard FFT size for fast voice/hologram wave mapping
+    masterAnalyser.connect(audioCtx.destination);
   }
   if (audioCtx.state === 'suspended') {
     audioCtx.resume();
@@ -30,6 +55,7 @@ function getAudioContext(): AudioContext {
  * Features: dual sine sweeps, dynamic bandpass filter sweep, echo/delay, and a sub-drop resonance frequency.
  */
 export function playCalibrationSynth() {
+  if (isMutedLocally()) return;
   try {
     const ctx = getAudioContext();
     const now = ctx.currentTime;
@@ -38,7 +64,7 @@ export function playCalibrationSynth() {
     const masterGain = ctx.createGain();
     masterGain.gain.setValueAtTime(0.22, now);
     masterGain.gain.exponentialRampToValueAtTime(0.001, now + 1.8);
-    masterGain.connect(ctx.destination);
+    masterGain.connect(masterAnalyser || ctx.destination);
 
     // Biquad Bandpass Filter with narrow resonance
     const filter = ctx.createBiquadFilter();
@@ -98,6 +124,7 @@ export function playCalibrationSynth() {
  * simulating pilot radio link, military-grade intercom and low frequency electromagnetic pilot tones.
  */
 export function startCommsChannel() {
+  if (isMutedLocally()) return;
   try {
     const ctx = getAudioContext();
     const now = ctx.currentTime;
@@ -112,7 +139,7 @@ export function startCommsChannel() {
     carrierGain = ctx.createGain();
     // Low baseline audio gain to avoid excessive distraction
     carrierGain.gain.setValueAtTime(0.06, now);
-    carrierGain.connect(ctx.destination);
+    carrierGain.connect(masterAnalyser || ctx.destination);
 
     // Lowpass filter configuration matching armored communication DSP specs (cockpit voice spectrum)
     lowpassFilter = ctx.createBiquadFilter();
@@ -224,13 +251,14 @@ export function stopCommsChannel() {
  * Dynamic chimes synthesizer utilizing clean double sine wave ringing
  */
 function playChime(type: 'start' | 'stop') {
+  if (isMutedLocally()) return;
   if (!audioCtx) return;
   const now = audioCtx.currentTime;
 
   const gain = audioCtx.createGain();
   gain.gain.setValueAtTime(type === 'start' ? 0.08 : 0.04, now);
   gain.gain.exponentialRampToValueAtTime(0.001, now + (type === 'start' ? 0.35 : 0.2));
-  gain.connect(audioCtx.destination);
+  gain.connect(masterAnalyser || audioCtx.destination);
 
   const filter = audioCtx.createBiquadFilter();
   filter.type = 'bandpass';
@@ -271,6 +299,7 @@ function playChime(type: 'start' | 'stop') {
  * Play a high tech tactile button click chime.
  */
 export function playTactileClick() {
+  if (isMutedLocally()) return;
   try {
     const ctx = getAudioContext();
     const now = ctx.currentTime;
@@ -278,7 +307,7 @@ export function playTactileClick() {
     const clickGain = ctx.createGain();
     clickGain.gain.setValueAtTime(0.05, now);
     clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
-    clickGain.connect(ctx.destination);
+    clickGain.connect(masterAnalyser || ctx.destination);
 
     const bp = ctx.createBiquadFilter();
     bp.type = 'bandpass';
@@ -294,5 +323,27 @@ export function playTactileClick() {
     pulse.connect(bp);
     pulse.start(now);
     pulse.stop(now + 0.08);
+  } catch (e) {}
+}
+
+/**
+ * Modulate carrier synthesizer properties when speech boundaries are passed.
+ * Captures real physical peaks/valleys inside Web Audio Analyser node.
+ */
+export function modulateSynthVolumeForSpeech() {
+  if (!audioCtx || !carrierGain) return;
+  const now = audioCtx.currentTime;
+  try {
+    carrierGain.gain.cancelScheduledValues(now);
+    carrierGain.gain.setValueAtTime(0.06, now);
+    carrierGain.gain.exponentialRampToValueAtTime(0.24, now + 0.04); // vocal burst spike
+    carrierGain.gain.exponentialRampToValueAtTime(0.06, now + 0.25); // fade back
+    
+    if (humNode) {
+      humNode.frequency.cancelScheduledValues(now);
+      humNode.frequency.setValueAtTime(55, now);
+      humNode.frequency.linearRampToValueAtTime(70 + Math.random() * 110, now + 0.04); // high pitch formant accentuation
+      humNode.frequency.exponentialRampToValueAtTime(55, now + 0.25);
+    }
   } catch (e) {}
 }

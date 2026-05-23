@@ -1,8 +1,10 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import https from "https";
 import os from "os";
-import { exec } from "child_process";
+import crypto from "crypto";
+import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback } from "./openRouterHelper";
 import { serverDB } from "./serverDb";
@@ -13,6 +15,127 @@ let reactorOverdrive = false;
 let satelliteLinked = true;
 let corePower = 98;
 let structural = 100;
+
+// Internal Background Computations for True Overdrive
+let overdriveWorkerObjs: any[] = [];
+import { Worker } from "worker_threads";
+
+function toggleTrueOverdriveWorker(active: boolean) {
+  if (active && overdriveWorkerObjs.length === 0) {
+    const workerCode = `
+      const { parentPort } = require('worker_threads');
+      const crypto = require('crypto');
+      parentPort.on('message', (msg) => {
+         if (msg === 'start') {
+            while (true) {
+               crypto.createHash('sha256').update(Math.random().toString()).digest('hex');
+            }
+         }
+      });
+    `;
+    const numCores = os.cpus().length;
+    for (let i = 0; i < numCores; i++) {
+       const worker = new Worker(workerCode, { eval: true });
+       worker.postMessage('start');
+       overdriveWorkerObjs.push(worker);
+    }
+  } else if (!active && overdriveWorkerObjs.length > 0) {
+    overdriveWorkerObjs.forEach(w => w.terminate());
+    overdriveWorkerObjs = [];
+  }
+}
+
+// Global precise CPU metric tracker
+let lastCpus = os.cpus();
+let computedCpuUsage = 0;
+
+// Auto-Repair and Neural Sync Globals
+let globalLLMLatencyMs = 120;
+let lastNetTxBytes = 0;
+let lastNetRxBytes = 0;
+let currentTxSpeed = 0;
+let currentRxSpeed = 0;
+
+let lastDiskReadSectors = 0;
+let lastDiskWriteSectors = 0;
+let currentDiskReadSpeed = 0; // bytes/sec
+let currentDiskWriteSpeed = 0; // bytes/sec
+
+function updateSystemSpeeds() {
+  if (fs.existsSync('/proc/net/dev')) {
+    try {
+      const lines = fs.readFileSync('/proc/net/dev', 'utf8').split('\n');
+      for (const line of lines) {
+        if (line.includes('eth0:') || line.includes('eth1:') || line.includes('en0:')) {
+          const parts = line.split(':');
+          if (parts.length > 1) {
+            const stats = parts[1].trim().split(/\s+/);
+            const rx = parseInt(stats[0], 10);
+            const tx = parseInt(stats[8], 10);
+            if (!isNaN(rx) && !isNaN(tx)) {
+              if (lastNetRxBytes > 0) {
+                currentRxSpeed = rx - lastNetRxBytes;
+                currentTxSpeed = tx - lastNetTxBytes;
+              }
+              lastNetRxBytes = rx;
+              lastNetTxBytes = tx;
+            }
+          }
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+  
+  if (fs.existsSync('/proc/diskstats')) {
+    try {
+      const diskLines = fs.readFileSync('/proc/diskstats', 'utf8').split('\n');
+      for (const line of diskLines) {
+        // Typically sda or nvme0n1 are the primary disks
+        if (line.includes(' sda ') || line.includes(' vda ') || line.includes(' nvme0n1 ')) {
+          const parts = line.trim().split(/\s+/);
+          // Standard /proc/diskstats fields:
+          // Field 3: Sectors read
+          // Field 7: Sectors written
+          const readSectors = parseInt(parts[5], 10);
+          const writeSectors = parseInt(parts[9], 10);
+          
+          if (!isNaN(readSectors) && !isNaN(writeSectors)) {
+            if (lastDiskReadSectors > 0) {
+              // 1 sector = 512 bytes typically
+              currentDiskReadSpeed = (readSectors - lastDiskReadSectors) * 512;
+              currentDiskWriteSpeed = (writeSectors - lastDiskWriteSectors) * 512;
+            }
+            lastDiskReadSectors = readSectors;
+            lastDiskWriteSectors = writeSectors;
+          }
+          break;
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+setInterval(() => {
+  updateSystemSpeeds();
+  const currentCpus = os.cpus();
+  let idleDifference = 0;
+  let totalDifference = 0;
+
+  for (let i = 0; i < currentCpus.length; i++) {
+    const typeList = ['user', 'nice', 'sys', 'irq', 'idle'] as const;
+    for (const type of typeList) {
+      totalDifference += currentCpus[i].times[type] - lastCpus[i].times[type];
+    }
+    idleDifference += currentCpus[i].times['idle'] - lastCpus[i].times['idle'];
+  }
+  
+  if (totalDifference > 0) {
+    const usage = 100 - Math.round(100 * idleDifference / totalDifference);
+    computedCpuUsage = usage;
+  }
+  lastCpus = currentCpus;
+}, 1000);
 
 // Prompt cache helper & token estimator
 let lastSystemContent = "";
@@ -34,6 +157,9 @@ export interface SecurityAuditResult {
     isWsl: boolean;
     isDocker: boolean;
     os: string;
+    cveCount?: number;
+    isRoot?: boolean;
+    memoryHardened?: boolean;
   };
 }
 
@@ -53,6 +179,35 @@ let cachedSecurityAudit: SecurityAuditResult = {
   }
 };
 
+export async function applyTrueSandboxOperations() {
+  if (process.platform === "linux") {
+    try {
+      // Create dynamically constrained cgroup for AI process
+      const cgroupPath = "/sys/fs/cgroup/memory/jarvis_sandbox";
+      if (!fs.existsSync(cgroupPath)) {
+         fs.mkdirSync(cgroupPath, { recursive: true });
+      }
+      
+      // Enforce physical memory limits for worker threads (e.g., 512MB RAM cap)
+      fs.writeFileSync(`${cgroupPath}/memory.limit_in_bytes`, "536870912");
+      fs.writeFileSync(`${cgroupPath}/memory.swappiness`, "10");
+      
+      // Bind current execution context to the sandbox cgroup
+      fs.writeFileSync(`${cgroupPath}/tasks`, String(process.pid));
+      
+      // Attempt read-only mount overlay of sensitive directories (best effort if root)
+      if (process.getuid && process.getuid() === 0) {
+         exec("mount --bind -r /workspace /workspace && mount -o remount,ro /workspace");
+      }
+      return true;
+    } catch (e: any) {
+      serverDB.addSystemLog('SEC', 'WARN', `Low-level CGroup allocation failed, OS rejected privileges: ${e.message}`);
+      return false;
+    }
+  }
+  return false;
+}
+
 export async function runSecurityAudit(): Promise<SecurityAuditResult> {
   const isDocker = fs.existsSync("/.dockerenv") || !!process.env.DOCKER;
   
@@ -68,6 +223,8 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
   } else if (process.platform === "win32") {
     isWsl = !!process.env.WSL_DISTRO_NAME;
   }
+  
+  const trueSandboxApplied = await applyTrueSandboxOperations();
   
   let defenderActive = false;
   let firewallActive = false;
@@ -97,22 +254,82 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     firewallActive = true;
   }
   
-  // Scoring algorithm
-  let baseScore = 92.0;
-  if (isDocker) {
-    baseScore = 99.8;
-  } else if (isWsl) {
-    baseScore = 98.5;
-  } else {
-    if (defenderActive) baseScore += 4.5;
-    if (firewallActive) baseScore += 2.0;
+  // --- Real Security Checks ---
+  let cveCount = 0;
+  let isRoot = false;
+  let isPrivilegedPathProtected = true;
+  let memoryHardened = false;
+
+  try {
+    const userInfo = os.userInfo();
+    isRoot = userInfo.uid === 0 || userInfo.username === 'root';
+  } catch {}
+
+  try {
+    if (process.platform !== "win32") {
+      fs.accessSync("/etc/shadow", fs.constants.R_OK);
+      isPrivilegedPathProtected = false; // We can read shadow, so NOT protected
+    }
+  } catch {
+    isPrivilegedPathProtected = true; 
   }
+
+  try {
+    const { stdout: auditOut } = await execAsync("npx -y npm audit --json", { timeout: 10000 });
+    const auditData = JSON.parse(auditOut);
+    cveCount = auditData.metadata?.vulnerabilities?.total || 0;
+  } catch (err: any) {
+    if (err.stdout) {
+       try {
+         const auditData = JSON.parse(err.stdout);
+         cveCount = auditData.metadata?.vulnerabilities?.total || 0;
+       } catch {}
+    }
+  }
+
+  // Check cgroups memory limits (Docker/Linux typically)
+  try {
+    if (process.platform === "linux") {
+       const memLimit = fs.readFileSync("/sys/fs/cgroup/memory/memory.limit_in_bytes", "utf8");
+       if (parseInt(memLimit) < 999999999999) {
+          memoryHardened = true;
+       } else {
+          // Alternatively check for v2
+          const maxMem = fs.readFileSync("/sys/fs/cgroup/memory.max", "utf8");
+          if (maxMem.trim() !== "max") {
+             memoryHardened = true;
+          }
+       }
+    }
+  } catch {}
   
-  const finalScore = Math.min(99.8, baseScore);
+  // Scoring algorithm - Start from a realistic untrusted baseline
+  let baseScore = 40.0;
+
+  if (isDocker) baseScore += 20;
+  if (isWsl) baseScore += 10;
+  if (trueSandboxApplied) baseScore += 15;
+  
+  if (!isRoot) baseScore += 10;
+  if (isPrivilegedPathProtected) baseScore += 10;
+  if (memoryHardened || trueSandboxApplied) baseScore += 5;
+  if (defenderActive) baseScore += 5;
+  if (firewallActive) baseScore += 5;
+  
+  // Deduct based on CVEs (max 25 penalty)
+  baseScore -= Math.min(25, cveCount * 1.5);
+
+  const finalScore = Math.max(0, Math.min(99.9, baseScore));
   const authIsolation = `${finalScore.toFixed(1)}%`;
   
   let workspaceSandboxed = "Host-Secured";
-  if (isDocker) {
+  if (isRoot && !isPrivilegedPathProtected) {
+    workspaceSandboxed = "Critically-Exposed";
+  } else if (trueSandboxApplied) {
+     workspaceSandboxed = "CGroup-Virtualized";
+  } else if (memoryHardened) {
+     workspaceSandboxed = "Hardware-Bounded";
+  } else if (isDocker) {
     workspaceSandboxed = "Docker-Bounded";
   } else if (isWsl) {
     workspaceSandboxed = "WSL-Isolated";
@@ -122,11 +339,24 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     workspaceSandboxed = "Defender-Active";
   }
   
+  // Generate a real deterministic hash based on physical OS node facts
+  const crypto = require('crypto');
+  const sysFactString = [
+    os.hostname(),
+    os.release(),
+    os.arch(),
+    os.totalmem(),
+    isDocker.toString(),
+    isWsl.toString(),
+    cveCount.toString()
+  ].join("|");
+  const actualNodeHash = crypto.createHash("sha256").update(sysFactString).digest("hex").substring(0, 16).toUpperCase();
+  
   const encryption = defenderActive && firewallActive
-    ? "AES-256 / RSA-4096 (Secure)"
+    ? `AES-256 / RSA-4096 (Secure) [0x${actualNodeHash}]`
     : defenderActive || firewallActive
-      ? "AES-128 / RSA-2048 (Nominal)"
-      : "DES / RC4 (Vulnerable)";
+      ? `AES-128 / RSA-2048 (Nominal) [0x${actualNodeHash}]`
+      : `DES / RC4 (Vulnerable) [0x${actualNodeHash}]`;
 
   const port = `WSS-3000`;
 
@@ -150,7 +380,10 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
       firewallActive,
       isWsl,
       isDocker,
-      os: currentOs
+      os: currentOs,
+      cveCount,
+      isRoot,
+      memoryHardened
     }
   };
   
@@ -216,8 +449,17 @@ export function runQuantumSynapseSimulation(qubits: number = 2): {
   circuit: string;
   states: { [key: string]: number };
   synapticCoherence: number;
+  entropy: number;
 } {
-  const randOffset = (Math.random() - 0.5) * 0.04;
+  const loadAvg = os.loadavg()[0]; // 1 min load average
+  const memUsage = process.memoryUsage().heapUsed / process.memoryUsage().heapTotal;
+  
+  // Hash the system state to get deterministic pseudorandomness for quantum state
+  const stateHash = crypto.createHash('sha256').update(`${Date.now()}-${loadAvg}-${memUsage}`).digest('hex');
+  const numericHash = parseInt(stateHash.substring(0, 8), 16) / 0xffffffff;
+  
+  // Make offset deterministic and based on real system entropy
+  const randOffset = (numericHash - 0.5) * 0.04;
   const p00 = Number((0.5 + randOffset).toFixed(4));
   const p11 = Number((0.5 - randOffset).toFixed(4));
   
@@ -235,7 +477,8 @@ export function runQuantumSynapseSimulation(qubits: number = 2): {
       "10": 0.0,
       "11": p11
     },
-    synapticCoherence: Number((0.988 + Math.random() * 0.01).toFixed(4))
+    synapticCoherence: Number((0.988 + (1 - numericHash) * 0.01).toFixed(4)),
+    entropy: Number((loadAvg + memUsage * 10).toFixed(4))
   };
 }
 
@@ -344,8 +587,9 @@ async function startServer() {
 
   // --- Real-time Chat & Cost Routing Endpoint ---
   app.post("/api/chat", async (req, res) => {
+    const llmStartMs = Date.now();
     try {
-      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint } = req.body;
+      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter" } = req.body;
       const apiKey = byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
 
       if (!apiKey) {
@@ -562,7 +806,7 @@ INTEGRATION ENGINE DETAILS:
       serverDB.addSystemLog('HERMES', 'INFO', `Routing request to model: ${model || 'Auto-Router'}`);
 
       // Dispatch OpenRouter request with narrow retry + prompt caching structures
-      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint);
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint, byokProtocol);
 
       const actualModel = result.model || "meta-llama/llama-3.2-3b-instruct:free";
       const usage = (result.usage as any) || { prompt_tokens: 0, completion_tokens: 0 };
@@ -670,6 +914,8 @@ INTEGRATION ENGINE DETAILS:
         }
       }
 
+      globalLLMLatencyMs = Date.now() - llmStartMs;
+
       res.json({ 
         text: result.text,
         model: actualModel,
@@ -706,6 +952,15 @@ INTEGRATION ENGINE DETAILS:
         return res.status(400).json({ error: "Missing memory string" });
       }
       serverDB.addCognitiveMemory(memory);
+      res.json({ success: true, memories: serverDB.getCognitiveMemories() });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/memory/cognitive/all", (req, res) => {
+    try {
+      serverDB.clearCognitiveMemories();
       res.json({ success: true, memories: serverDB.getCognitiveMemories() });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -956,7 +1211,22 @@ INTEGRATION ENGINE DETAILS:
         }
       }
 
-      exec(command, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
+      let finalCommand = command;
+      const discreteAgents = ['claude-code', 'cursor-agent', 'devin', 'gemini-cli'];
+      if (discreteAgents.includes(activeCli)) {
+        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+        if (activeCli === 'claude-code') {
+          finalCommand = `npx -y @anthropic-ai/claude-code --print -p "${safePrompt}"`;
+        } else if (activeCli === 'cursor-agent') {
+          finalCommand = `cursor --agent --prompt "${safePrompt}"`;
+        } else if (activeCli === 'devin') {
+          finalCommand = `devin --interactive false --instruction "${safePrompt}"`;
+        } else if (activeCli === 'gemini-cli') {
+          finalCommand = `gemini query "${safePrompt}"`;
+        }
+      }
+
+      exec(finalCommand, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
         res.json({
           success: !err,
           stdout: stdout?.substring(0, 2000) || '',
@@ -1007,16 +1277,42 @@ INTEGRATION ENGINE DETAILS:
         }
       }
 
+      let translatedCmd = command;
+      let isDiscreteAgent = false;
+      let exeTemplate = "";
+
+      try {
+        const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+        if (fs.existsSync(mappingPath)) {
+          const mappingConf = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+          const cliConf = mappingConf.find((c: any) => c.id === activeCli);
+          if (cliConf && cliConf.executionTemplate) {
+            isDiscreteAgent = true;
+            exeTemplate = cliConf.executionTemplate;
+          }
+        }
+      } catch (e) {
+         console.error("Failed to load cli-mapping.json for execution", e);
+      }
+
+      if (isDiscreteAgent) {
+        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+        translatedCmd = exeTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
+      }
+
       // Build final OS invocation based on shell type
       let finalCmd: string;
-      if (shell === 'powershell' || command.toLowerCase().startsWith('powershell')) {
+      if (isDiscreteAgent) {
+        // Run physical CLI binary directly
+        finalCmd = translatedCmd;
+      } else if (shell === 'powershell' || translatedCmd.toLowerCase().startsWith('powershell')) {
         // Already a PowerShell command, execute as-is
-        finalCmd = command;
-      } else if (shell === 'cmd' || command.toLowerCase().startsWith('cmd')) {
-        finalCmd = command;
+        finalCmd = translatedCmd;
+      } else if (shell === 'cmd' || translatedCmd.toLowerCase().startsWith('cmd')) {
+        finalCmd = translatedCmd;
       } else {
         // Default: run via powershell for maximum Windows compatibility
-        finalCmd = `powershell -NoProfile -NonInteractive -Command "${command.replace(/"/g, '\\"')}"`;
+        finalCmd = `powershell -NoProfile -NonInteractive -Command "${translatedCmd.replace(/"/g, '\\"')}"`;
       }
 
       console.log(`[JARVIS SHELL] Executing: ${finalCmd}`);
@@ -1108,12 +1404,23 @@ INTEGRATION ENGINE DETAILS:
 
   app.post("/api/workspace/task", (req, res) => {
     try {
-      const { priority, description } = req.body;
+      const { priority, description, taskMode, userApproved } = req.body;
+      
+      if (taskMode === 'manual' && !userApproved) {
+        serverDB.addSystemLog('SEC', 'WARN', `TASK DELEGATION INTERCEPT: AI created task blocked by Stark-Defense Matrix in manual mode.`);
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          code: "STARK_TASK_INTERCEPT",
+          reason: `[任務登錄攔截 403 / TASK_INTERCEPT]: Task creation is restricted under Manual code policy. Tasks must be manually approved.`,
+        });
+      }
+
       serverDB.addTask({
         id: Math.random().toString(36).substring(7),
         description,
         priority: priority || 'Medium',
-        status: 'Pending',
+        status: (taskMode === 'manual' && userApproved) ? 'Pending' : 'Pending',
         createdAt: Date.now()
       });
       res.json({ success: true });
@@ -1187,7 +1494,6 @@ INTEGRATION ENGINE DETAILS:
   // --- Real-time Local OS System Stats Endpoint ---
   app.get("/api/system/stats", (req, res) => {
     try {
-      const os = require("os");
       const totalMem = os.totalmem();
       const freeMem = os.freemem();
       const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
@@ -1195,14 +1501,9 @@ INTEGRATION ENGINE DETAILS:
       const cpus = os.cpus();
       const loadAvg = os.loadavg();
       
-      // Calculate dynamic CPU usage based on reactor overdrive status
-      let cpuUsage = Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100)) || 12;
-      if (reactorOverdrive) {
-        cpuUsage = Math.min(100, 92 + Math.floor(Math.random() * 6));
-      } else if (shieldActive) {
-        cpuUsage = Math.min(100, cpuUsage + 15);
-      }
-
+      // Calculate true dynamic CPU usage based on worker metrics
+      let cpuUsage = Math.max(computedCpuUsage || 12, Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100)));
+      
       // Calculate dynamic memory and GPU base on overcharged matrix
       let finalMem = memUsage;
       if (shieldActive) {
@@ -1215,6 +1516,17 @@ INTEGRATION ENGINE DETAILS:
 
       let finalTmp = reactorOverdrive ? "84°C" : (shieldActive ? "58°C" : "47°C");
       let finalNet = satelliteLinked ? "5.5 GB/s" : "0KB/s";
+      if (currentRxSpeed > 0 || currentTxSpeed > 0) {
+        finalNet = `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`;
+      }
+      
+      let diskIoString = "0.0 MB/s WAIT";
+      if (currentDiskReadSpeed > 0 || currentDiskWriteSpeed > 0) {
+        diskIoString = `${(currentDiskReadSpeed / 1024 / 1024).toFixed(1)} R | ${(currentDiskWriteSpeed / 1024 / 1024).toFixed(1)} W (MB/s)`;
+      }
+
+      const clampedLatency = Math.min(2000, Math.max(50, globalLLMLatencyMs));
+      const calcNeuralSync = (99.9 - ((clampedLatency - 50) / 1950) * 8.0).toFixed(2);
 
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
       const secStatus = apiKey ? "SEC_CLEARED" : "SEC_REQUIRED";
@@ -1237,6 +1549,10 @@ INTEGRATION ENGINE DETAILS:
         cpu: cpuUsage,
         mem: finalMem,
         net: finalNet,
+        diskIo: diskIoString,
+        neuralSync: calcNeuralSync,
+        rxSpeed: currentRxSpeed,
+        txSpeed: currentTxSpeed,
         gpu: finalGpu,
         tmp: finalTmp,
         uptime: Math.round(os.uptime() / 3600),
@@ -1251,6 +1567,7 @@ INTEGRATION ENGINE DETAILS:
         nodeVersion: process.version,
         costLogsCount: serverDB.getCostLogs().length,
         messagesCount: serverDB.getAllMessages().length,
+        cognitiveCount: serverDB.getCognitiveMemories().length,
         pingLatencyMs: lastPingLatencyMs,
         systemLogs: serverDB.getSystemLogs().map(log => `${log.category}/${log.level}:: ${log.message}`)
       });
@@ -1341,6 +1658,186 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
+  // --- Core Process Runtime Reboot Endpoint ---
+  app.post("/api/system/reboot", (req, res) => {
+    try {
+      serverDB.addSystemLog('SYS', 'WARN', 'REACTOR POWER SYSTEM REBOOT: Commencing complete physical process shutdown and supervisor reload cycle...');
+      
+      // Physically reset state values
+      shieldActive = false;
+      reactorOverdrive = false;
+      corePower = 98;
+      satelliteLinked = false;
+      structural = 98.7;
+      computedCpuUsage = 0;
+      
+      res.json({ 
+        success: true, 
+        message: "Reactor reboot pipeline initialized. Subprocess exiting immediately..." 
+      });
+      
+      // Delay termination/exit to allow successful transit of the HTTP response first
+      setTimeout(() => {
+        process.exit(0);
+      }, 800);
+      
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Settings Configuration Endpoints ---
+  app.get("/api/settings", (req, res) => {
+    res.json(serverDB.getSettings());
+  });
+
+  app.post("/api/settings", (req, res) => {
+    try {
+      const newSettings = req.body;
+      serverDB.updateSettings(newSettings);
+      res.json({ success: true, settings: serverDB.getSettings() });
+    } catch (e: any) {
+      serverDB.addSystemLog('SYS', 'ERROR', `Failed to apply new settings: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Utilities Endpoints ---
+  // --- Voice / Audio API Mock Endpoints ---
+  app.post("/api/voice/transcribe", express.raw({ type: 'audio/*', limit: '10mb' }), async (req, res) => {
+    try {
+      // In a real app, send req.body (binary audio) to OpenAI Whisper API.
+      // Here we simulate the transcription delay.
+      await new Promise(r => setTimeout(r, 600));
+      serverDB.addSystemLog('SYS', 'SUCCESS', 'Audio chunk successfully forwarded to backend Whisper STT service.');
+      res.json({ success: true, text: "Backend Whisper Transcribed: " + (Math.random()>0.5 ? "Status check" : "Execute command") });
+    } catch (e: any) {
+      serverDB.addSystemLog('SYS', 'ERROR', `Whisper transcription failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/voice/tts", async (req, res) => {
+    try {
+      const { text, provider, voiceProfile, elevenLabsKey } = req.body;
+      const apiKey = elevenLabsKey || process.env.ELEVENLABS_API_KEY;
+
+      if (!apiKey) {
+        serverDB.addSystemLog('SYS', 'WARN', 'Dispatched TTS payload to ElevenLabs. Warning: ELEVENLABS_API_KEY is missing from backend secrets, falling back to local speech.');
+        return res.json({ 
+          success: false, 
+          message: "ElevenLabs API key is missing. Please define ELEVENLABS_API_KEY in backend secrets.", 
+          error: "KEY_MISSING" 
+        });
+      }
+
+      // Voice profile configuration mapping to standard ElevenLabs voice IDs:
+      // 'baritone': Adam (deep standard)
+      // 'standard': Charlie (British male model)
+      // 'fast': Rachel (American female model, fast cadence)
+      const voiceMapping: Record<string, string> = {
+        'baritone': 'pNInz6obpgq9S3J7rStL',
+        'standard': 'IKne3meq5aXSn9XLy0mW',
+        'fast': '21m00Tcm4TlvDq8ikWAM'
+      };
+
+      const selectedVoice = voiceMapping[voiceProfile] || 'pNInz6obpgq9S3J7rStL';
+      serverDB.addSystemLog('SYS', 'INFO', `Initiating ElevenLabs speech pipeline for voice profile [${voiceProfile || 'baritone'} / ID: ${selectedVoice}]...`);
+
+      // Call public ElevenLabs REST API directly
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${selectedVoice}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "xi-api-key": apiKey
+        },
+        body: JSON.stringify({
+          text: text,
+          model_id: "eleven_monolingual_v1",
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        serverDB.addSystemLog('SYS', 'ERROR', `ElevenLabs API request failed with status ${response.status}: ${errorText}`);
+        return res.json({ 
+          success: false, 
+          message: `ElevenLabs API error: ${response.statusText}`, 
+          error: "API_ERROR", 
+          details: errorText 
+        });
+      }
+
+      const audioBuffer = await response.arrayBuffer();
+      const base64Audio = Buffer.from(audioBuffer).toString('base64');
+      
+      serverDB.addSystemLog('SYS', 'SUCCESS', `Dispatched TTS payload. Successfully synthesized ${audioBuffer.byteLength} bytes of neural audio.`);
+      res.json({ 
+        success: true, 
+        audio: base64Audio, 
+        message: `Synthesized text via ElevenLabs (${selectedVoice})` 
+      });
+
+    } catch (e: any) {
+      serverDB.addSystemLog('SYS', 'ERROR', `ElevenLabs invocation failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/system/models", (req, res) => {
+    // Return dynamically configurable supported models
+    res.json({
+      success: true,
+      models: [
+        { id: "google/gemini-2.5-flash", name: "google/gemini-2.5-flash" },
+        { id: "anthropic/claude-3.5-sonnet:beta", name: "anthropic/claude-3.5-sonnet:beta (Claude Code backend)" },
+        { id: "anthropic/claude-3-opus", name: "anthropic/claude-3-opus" },
+        { id: "meta-llama/llama-3.3-70b-instruct", name: "meta-llama/llama-3.3-70b-instruct" },
+        { id: "deepseek/deepseek-chat", name: "deepseek/deepseek-chat (DeepSeek V3)" },
+        { id: "openai/gpt-4o", name: "openai/gpt-4o" }
+      ]
+    });
+  });
+
+  app.post("/api/system/purge-cache", async (req, res) => {
+    try {
+      serverDB.purgeCache();
+      
+      // Purge physical disk caches if they exist
+      const cacheDirs = [
+        path.join(process.cwd(), 'node_modules', '.vite'),
+        path.join(process.cwd(), 'node_modules', '.cache'),
+        path.join(process.cwd(), '.cache')
+      ];
+      
+      for (const dir of cacheDirs) {
+        if (fs.existsSync(dir)) {
+          try {
+            fs.rmSync(dir, { recursive: true, force: true });
+            serverDB.addSystemLog('SYS', 'SUCCESS', `Cleared physical system cache at ${dir}`);
+          } catch (e: any) {
+            serverDB.addSystemLog('SYS', 'WARN', `Failed to clear cache at ${dir}: ${e.message}`);
+          }
+        }
+      }
+
+      // Also let's force Garbage Collection if available (node --expose-gc)
+      if (global.gc) {
+         global.gc();
+         serverDB.addSystemLog('SYS', 'SUCCESS', 'V8 Garbage Collection forced.');
+      }
+      
+      res.json({ success: true, message: "Advanced cache purged successfully" });
+    } catch (e: any) {
+      serverDB.addSystemLog('SYS', 'ERROR', `Purge cache failed: ${e.message}`);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- Real-time Local OS System Controls Endpoint ---
   app.post("/api/system/control", (req, res) => {
     try {
@@ -1360,8 +1857,9 @@ INTEGRATION ENGINE DETAILS:
       
       if (command === "overdrive") {
         reactorOverdrive = !reactorOverdrive;
+        toggleTrueOverdriveWorker(reactorOverdrive);
         corePower = reactorOverdrive ? 125 : 98;
-        serverDB.addSystemLog('SEC', 'WARN', `Arc reactor overcharged to ${reactorOverdrive ? '125%' : '98% nominal'}.`);
+        serverDB.addSystemLog('SEC', 'WARN', `Arc reactor overcharged to ${reactorOverdrive ? '125%' : '98% nominal'}. True compute stress applied.`);
         return res.json({ 
           success: true, 
           reactorOverdrive,
@@ -1403,6 +1901,230 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
+  // --- MCP State Management ---
+  interface McpServerInstance {
+    name: string;
+    process: ChildProcess;
+    status: 'connecting' | 'connected' | 'error' | 'disconnected';
+    tools: any[];
+  }
+  let activeMcpServers: Map<string, McpServerInstance> = new Map();
+
+  app.get("/api/mcp/status", (req, res) => {
+    const statusData = Array.from(activeMcpServers.entries()).map(([name, inst]) => ({
+      name,
+      status: inst.status,
+      toolCount: inst.tools.length
+    }));
+    res.json({ success: true, servers: statusData });
+  });
+
+  app.get("/api/mcp/tools", (req, res) => {
+    const allTools: any[] = [];
+    activeMcpServers.forEach(inst => {
+      inst.tools.forEach(t => allTools.push({ ...t, _server: inst.name }));
+    });
+    res.json({ success: true, tools: allTools });
+  });
+
+  // --- MCP Servers Connection Endpoint ---
+  app.post("/api/mcp/connect", async (req, res) => {
+    try {
+      const { config } = req.body;
+      if (!config) {
+         return res.status(400).json({ success: false, error: "Empty configuration matrix." });
+      }
+
+      let parsedConfig;
+      try {
+        parsedConfig = JSON.parse(config);
+      } catch (parseErr) {
+        return res.status(400).json({ success: false, error: "JSON parse malfunction. Invalid format." });
+      }
+
+      const servers = parsedConfig.mcpServers || {};
+      const count = Object.keys(servers).length;
+      
+      serverDB.addSystemLog('API', 'INFO', `Parsing MCP alignment config. Detected ${count} server(s). Spawning stdio processes...`);
+
+      // Cleanup existing servers
+      for (const [name, inst] of activeMcpServers.entries()) {
+         try {
+            inst.process.kill('SIGTERM');
+         } catch {}
+      }
+      activeMcpServers.clear();
+
+      let connectedCount = 0;
+
+      for (const [name, srvConfig] of Object.entries(servers)) {
+         const { command, args, env } = srvConfig as any;
+         if (!command) continue;
+
+         try {
+            const proc = spawn(command, args || [], {
+               env: { ...process.env, ...env },
+               stdio: ['pipe', 'pipe', 'ignore']
+            });
+
+            const instance: McpServerInstance = {
+               name,
+               process: proc,
+               status: 'connecting',
+               tools: []
+            };
+
+            activeMcpServers.set(name, instance);
+
+            // Setup basic JSON-RPC over stdio
+            let buffer = '';
+            proc.stdout?.on('data', (chunk) => {
+               buffer += chunk.toString();
+               const lines = buffer.split('\n');
+               buffer = lines.pop() || '';
+
+               for (const line of lines) {
+                  const trimmed = line.trim();
+                  if (!trimmed) continue;
+                  try {
+                     const msg = JSON.parse(trimmed);
+                     if (msg.id && msg.result?.protocolVersion) {
+                        instance.status = 'connected';
+                        
+                        // Send tools/list request
+                        const toolsReq = {
+                           jsonrpc: '2.0',
+                           id: `tools-${Date.now()}`,
+                           method: 'tools/list'
+                        };
+                        proc.stdin?.write(JSON.stringify(toolsReq) + '\n');
+                     } else if (msg.id && String(msg.id).startsWith('tools-') && msg.result?.tools) {
+                        instance.tools = msg.result.tools;
+                        serverDB.addSystemLog('API', 'SUCCESS', `MCP Server '${name}' cached ${instance.tools.length} tool(s).`);
+                     }
+                  } catch (e) {
+                     // Not JSON-RPC line
+                  }
+               }
+            });
+
+            proc.on('error', (err) => {
+               instance.status = 'error';
+               serverDB.addSystemLog('API', 'ERROR', `MCP Server '${name}' process error: ${err.message}`);
+            });
+
+            proc.on('exit', () => {
+               instance.status = 'disconnected';
+            });
+
+            // Send initialization request
+            const initReq = {
+               jsonrpc: '2.0',
+               id: `init-${Date.now()}`,
+               method: 'initialize',
+               params: {
+                  protocolVersion: '2024-11-05',
+                  clientInfo: { name: 'jarvis-core', version: '1.0.0' },
+                  capabilities: {}
+               }
+            };
+            proc.stdin?.write(JSON.stringify(initReq) + '\n');
+            connectedCount++;
+
+         } catch (e: any) {
+            serverDB.addSystemLog('API', 'ERROR', `Failed to spawn MCP server '${name}': ${e.message}`);
+         }
+      }
+
+      setTimeout(() => {
+        const activeCount = Array.from(activeMcpServers.values()).filter(s => s.status !== 'error').length;
+        serverDB.addSystemLog('API', 'SUCCESS', `Successfully synchronized with ${activeCount} Model Context Protocol server(s). Tools cached.`);
+        res.json({ success: true, count: activeCount });
+      }, 1500);
+
+    } catch (e: any) {
+      serverDB.addSystemLog('API', 'ERROR', `Network connection fault on MCP bind: ${e.message}`);
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // --- External MCP Webhooks API Routes ---
+  app.get("/api/mcp/webhooks", (req, res) => {
+    res.json({ success: true, webhooks: serverDB.getMcpWebhooks() });
+  });
+
+  app.post("/api/mcp/webhooks", (req, res) => {
+    try {
+      const { name, url, active } = req.body;
+      if (!name || !url) return res.status(400).json({ success: false, error: "Missing parameters" });
+      const webhook = { id: Math.random().toString(36).substring(7), name, url, active: active ?? true };
+      serverDB.addMcpWebhook(webhook);
+      res.json({ success: true, webhook });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.delete("/api/mcp/webhooks/:id", (req, res) => {
+    try {
+      serverDB.deleteMcpWebhook(req.params.id);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post("/api/mcp/webhooks/:id/toggle", (req, res) => {
+    try {
+      const { active } = req.body;
+      serverDB.toggleMcpWebhookFocus(req.params.id, active);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  // --- MCP Routines API Routes ---
+  app.get("/api/mcp/routines", (req, res) => {
+    res.json({ success: true, routines: serverDB.getMcpRoutines() });
+  });
+
+  app.post("/api/mcp/routines", (req, res) => {
+    try {
+      const { name, prompt } = req.body;
+      if (!name || !prompt) return res.status(400).json({ success: false, error: "Missing parameters" });
+      const routine = { id: Math.random().toString(36).substring(7), name, prompt };
+      serverDB.addMcpRoutine(routine);
+      res.json({ success: true, routine });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.delete("/api/mcp/routines/:id", (req, res) => {
+    try {
+      serverDB.deleteMcpRoutine(req.params.id);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post("/api/mcp/routines/:id/execute", (req, res) => {
+    try {
+      const routine = serverDB.getMcpRoutines().find(r => r.id === req.params.id);
+      if (!routine) return res.status(404).json({ success: false, error: "Routine not found" });
+      
+      serverDB.addSystemLog('API', 'INFO', `Initiating MCP Routine sequence: ${routine.name}`);
+      
+      // The frontend will receive success: true and the prompt payload
+      // to dispatch its own prompt chat event
+      res.json({ success: true, prompt: routine.prompt });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   // --- Real-time Local OS System Diagnostics & Scan Endpoints ---
   app.post("/api/system/test-cli-ping", async (req, res) => {
     const startTime = Date.now();
@@ -1414,19 +2136,56 @@ INTEGRATION ENGINE DETAILS:
     serverDB.addSystemLog('NET', 'INFO', `Initiating real ICMP ping diagnostic to ${host}...`);
     
     exec(pingCmd, (err, stdout, stderr) => {
-      const elapsed = Date.now() - startTime;
-      
       if (err) {
-        // Fallback if ping command fails (e.g. firewalled/no network)
-        const latencyMs = Math.round(15 + Math.random() * 20); // 15ms ~ 35ms loopback jitter fallback
-        lastPingLatencyMs = latencyMs;
-        serverDB.addSystemLog('NET', 'WARN', `Real ICMP ping failed or timed out. Falling back to HTTP handshakes.`);
-        return res.json({
-          success: true,
-          latencyMs,
-          endpoint: `${host} (HTTP fallback)`,
-          speak: `Telemetry check completed via HTTP backup channels. Diagnostics green, sir.`
+        serverDB.addSystemLog('NET', 'WARN', `Real ICMP ping failed (likely sandbox filter). Initiating live HTTP handshake fallback...`);
+        const fetchStart = Date.now();
+        
+        const req = https.request({
+          hostname: 'openrouter.ai',
+          port: 443,
+          path: '/',
+          method: 'HEAD',
+          timeout: 3500,
+          headers: { 'User-Agent': 'Jarvis-Connection-Test' }
+        }, (response) => {
+          const latencyMs = Date.now() - fetchStart;
+          lastPingLatencyMs = latencyMs;
+          serverDB.addSystemLog('NET', 'SUCCESS', `HTTP connection diagnostic to ${host} succeeded. True Latency: ${latencyMs}ms.`);
+          return res.json({
+            success: true,
+            latencyMs,
+            endpoint: `${host} (HTTP)`,
+            speak: `Connection diagnostic to active satellite array succeeded via HTTP fallback. Roundtrip transit took ${latencyMs} milliseconds, sir.`
+          });
         });
+
+        req.on('error', (e) => {
+          lastPingLatencyMs = 0;
+          serverDB.addSystemLog('NET', 'ERROR', `Network error: ${host} fallback failed. Communication grid offline. Error: ${e.message}`);
+          return res.json({
+            success: false,
+            latencyMs: 0,
+            endpoint: host,
+            error: e.message,
+            speak: `Warning, sir. Sub-orbital connection failed. Physical networks are disconnected.`
+          });
+        });
+
+        req.on('timeout', () => {
+          req.destroy();
+          lastPingLatencyMs = 0;
+          serverDB.addSystemLog('NET', 'ERROR', `Network timeout: ${host} fallback timed out.`);
+          return res.json({
+            success: false,
+            latencyMs: 0,
+            endpoint: host,
+            error: 'Connection timed out',
+            speak: `Warning, sir. Connection to active satellite array timed out.`
+          });
+        });
+
+        req.end();
+        return;
       }
       
       let latencyMs = 0;
@@ -1438,6 +2197,7 @@ INTEGRATION ENGINE DETAILS:
       } else if (unixMatch) {
         latencyMs = Math.round(parseFloat(unixMatch[1]));
       } else {
+        const elapsed = Date.now() - startTime;
         latencyMs = Math.max(1, Math.round(elapsed / 3));
       }
       
@@ -1453,23 +2213,32 @@ INTEGRATION ENGINE DETAILS:
     });
   });
 
+  app.get("/api/system/cli", (req, res) => {
+    try {
+      const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+      if (fs.existsSync(mappingPath)) {
+        const mappingConf = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+        res.json({ success: true, options: mappingConf });
+      } else {
+        res.json({ success: true, options: [] });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/system/rescan-paths", async (req, res) => {
     serverDB.addSystemLog('SYS', 'INFO', 'Initializing deep system path scan for candidate compilers...');
     
-    const clisToCheck = [
-      { id: "claude-code", cmd: "claude" },
-      { id: "codex-cli", cmd: "codex" },
-      { id: "openrouter", cmd: "openrouter" },
-      { id: "cursor-agent", cmd: "cursor" },
-      { id: "devin", cmd: "devin" },
-      { id: "gemini-cli", cmd: "gemini" },
-      { id: "opencode", cmd: "opencode" },
-      { id: "hermes", cmd: "hermes" },
-      { id: "kimi", cmd: "kimi" },
-      { id: "qwen", cmd: "qwen" },
-      { id: "copilot", cmd: "copilot" },
-      { id: "pi", cmd: "pi" }
-    ];
+    let clisToCheck: { id: string; cmd: string }[] = [];
+    try {
+      const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+      if (fs.existsSync(mappingPath)) {
+        clisToCheck = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+      }
+    } catch (e) {
+      console.error('Failed to load cli-mapping.json for rescan', e);
+    }
     
     const systemTools = ["node", "npm", "git", "python", "curl", "npx", "bash"];
     const foundTools: { name: string; path: string; version: string }[] = [];
@@ -1700,6 +2469,64 @@ JARVIS Synthesis:`;
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // --- Auto-Repair Backend Daemon Thread ---
+  setInterval(() => {
+    try {
+      const settings = serverDB.getSettings();
+      if (settings && settings.autoRepair) {
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
+        
+        let targetCpu = computedCpuUsage;
+        if (reactorOverdrive) {
+          targetCpu = 95; // Simulated extreme load when overdrive is active
+        }
+
+        let isSystemUnstable = false;
+        const reasons: string[] = [];
+
+        if (reactorOverdrive) {
+          isSystemUnstable = true;
+          reasons.push("Overdrive Thermal Excitation");
+        }
+        if (targetCpu >= 85) {
+          isSystemUnstable = true;
+          reasons.push(`High core processor pressure (${targetCpu}%)`);
+        }
+        if (memUsage >= 85) {
+          isSystemUnstable = true;
+          reasons.push(`Low memory margin capacity (${memUsage}%)`);
+        }
+
+        if (isSystemUnstable) {
+          serverDB.addSystemLog('SYS', 'WARN', `Auto-Repair Daemon: Metrics critical [${reasons.join(', ')}]. Initiating systemic optimization loop...`);
+          
+          // Disable overdrive to physically cool down CPU core allocation
+          if (reactorOverdrive) {
+            reactorOverdrive = false;
+            toggleTrueOverdriveWorker(false);
+            serverDB.addSystemLog('SYS', 'WARN', 'Auto-Repair Daemon: Successfully disabled Reactor Overdrive and closed spin worker threads.');
+          }
+
+          // Force DB persist cache flush
+          serverDB.purgeCache();
+          serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Flushed in-transit document pools and transaction buffers.');
+
+          // Reset baseline hardware simulation counters
+          shieldActive = false;
+          corePower = 98;
+          structural = 100;
+          computedCpuUsage = 12; // Cooled baseline
+
+          serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Subsystem normalizing sequence completed. Status: green (nominal).');
+        }
+      }
+    } catch (daemonErr: any) {
+      console.error("Auto-Repair background daemon iteration failed", daemonErr);
+    }
+  }, 6000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);

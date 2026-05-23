@@ -1,0 +1,135 @@
+[
+  {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "cmd": "claude",
+    "executionTemplate": "npx -y @anthropic-ai/claude-code --print -p \"{{prompt}}\"",
+    "statusColor": "green",
+    "iconText": "🎛️",
+    "iconBg": "bg-amber-950/40 border-amber-500/30",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "codex-cli",
+    "name": "Codex CLI",
+    "cmd": "codex",
+    "executionTemplate": "codex --prompt \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🦾",
+    "iconBg": "bg-emerald-950/40 border-emerald-500/30",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "openrouter",
+    "name": "OpenRouter API CLI",
+    "cmd": "openrouter",
+    "executionTemplate": "curl -s -d '{\"prompt\":\"{{prompt}}\"}' http://localhost:3000/api/mock-openrouter",
+    "statusColor": "green",
+    "iconText": "📡",
+    "iconBg": "bg-cyan-950/40 border-cyan-500/30",
+    "tag": "Remote API (Active)",
+    "isInstalled": true,
+    "version": "Remote API (Active)"
+  },
+  {
+    "id": "cursor-agent",
+    "name": "Cursor Agent",
+    "cmd": "cursor",
+    "executionTemplate": "cursor --agent --prompt \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🌀",
+    "iconBg": "bg-slate-900 border-slate-700/50",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "devin",
+    "name": "Devin for Terminal",
+    "cmd": "devin",
+    "executionTemplate": "devin --interactive false --instruction \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🤖",
+    "iconBg": "bg-purple-950/20 border-purple-900/20",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "gemini-cli",
+    "name": "Gemini CLI",
+    "cmd": "gemini",
+    "executionTemplate": "gemini query \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "⭐",
+    "iconBg": "bg-blue-950/30 border-blue-600/30",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "cmd": "opencode",
+    "executionTemplate": "opencode execute \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "⏹️",
+    "iconBg": "bg-slate-900 border-slate-700/50",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "hermes",
+    "name": "Hermes (Local LLM)",
+    "cmd": "hermes",
+    "executionTemplate": "hermes-cli infer \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🪽",
+    "iconBg": "bg-rose-950/30 border-rose-600/30",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi CLI",
+    "cmd": "kimi",
+    "executionTemplate": "kimi chat \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🌙",
+    "iconBg": "bg-indigo-950/30 border-indigo-600/30",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "qwen",
+    "name": "Qwen Code",
+    "cmd": "qwen",
+    "executionTemplate": "qwen --task \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🟣",
+    "iconBg": "bg-slate-900 border-slate-700/50",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "copilot",
+    "name": "GitHub Copilot CLI",
+    "cmd": "copilot",
+    "executionTemplate": "gh copilot suggest -t shell \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🐈",
+    "iconBg": "bg-slate-900 border-slate-700/50",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  },
+  {
+    "id": "pi",
+    "name": "Inflection Pi",
+    "cmd": "pi",
+    "executionTemplate": "pi chat \"{{prompt}}\"",
+    "statusColor": "red",
+    "iconText": "🟢",
+    "iconBg": "bg-green-950/20 border-green-900/20",
+    "isInstalled": false,
+    "version": "Checking environment..."
+  }
+]

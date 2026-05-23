@@ -103,7 +103,8 @@ export async function fetchOpenRouterWithFallback(
   prompt: string, 
   validator?: (text: string) => string,
   requestedModel?: string,
-  apiEndpoint?: string
+  apiEndpoint?: string,
+  protocol: string = "openrouter"
 ) {
   let lastError: Error | null = null;
 
@@ -176,41 +177,76 @@ export async function fetchOpenRouterWithFallback(
           }
         }
 
+        let systemPrompt = "";
+        let userPrompt = prompt;
+        if (prompt.includes("System:") && prompt.includes("User:")) {
+          const sysStart = prompt.indexOf("System:") + "System:".length;
+          const userStart = prompt.indexOf("User:");
+          systemPrompt = prompt.substring(sysStart, userStart).trim();
+          userPrompt = prompt.substring(userStart + "User:".length).trim();
+        }
+
         const headers: { [key: string]: string } = {
           'Content-Type': 'application/json'
         };
 
-        if (apiKey) {
-          headers['Authorization'] = `Bearer ${apiKey}`;
-        }
-        
-        if (!isCustomEndpoint) {
-          headers['HTTP-Referer'] = 'https://roamjelly.app';
-          headers['X-Title'] = 'RoamJelly';
-        }
-
         let bodyPayload: any;
-        if (isOllamaDirectGenerate) {
+
+        if (protocol === 'anthropic') {
+          if (apiKey) headers['x-api-key'] = apiKey;
+          headers['anthropic-version'] = '2023-06-01';
+          if (!isCustomEndpoint) {
+             fetchUrl = 'https://api.anthropic.com/v1/messages';
+          }
+
           bodyPayload = {
-            model,
-            prompt: prompt,
-            stream: false
+            model: model.replace('anthropic/', ''), 
+            max_tokens: 4000,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: userPrompt }]
           };
-        } else if (isOllamaDirectChat) {
+        } else if (protocol === 'gemini') {
+          if (!isCustomEndpoint && apiKey) {
+            fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model.replace('google/', '')}:generateContent?key=${apiKey}`;
+          } else if (isCustomEndpoint && apiKey && !fetchUrl.includes('?key=')) {
+            fetchUrl += `?key=${apiKey}`;
+          }
+
           bodyPayload = {
-            model,
-            messages: messagesPayload.map(m => ({
-              role: m.role,
-              content: typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || m.content?.[0] || "")
-            })),
-            stream: false
+            system_instruction: { parts: { text: systemPrompt } },
+            contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+            generationConfig: { maxOutputTokens: 4000 }
           };
         } else {
-          bodyPayload = {
-            model,
-            messages: messagesPayload,
-            max_tokens: 4000
-          };
+          // Default: openai / openrouter / ollama
+          if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+          if (!isCustomEndpoint) {
+            headers['HTTP-Referer'] = 'https://roamjelly.app';
+            headers['X-Title'] = 'RoamJelly';
+          }
+
+          if (protocol === 'ollama' || isOllamaDirectGenerate) {
+            if (fetchUrl.includes('/api/generate')) {
+              bodyPayload = { model, prompt: prompt, stream: false };
+            } else {
+              bodyPayload = {
+                model,
+                messages: messagesPayload.map(m => ({
+                  role: m.role,
+                  content: typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || m.content?.[0] || "")
+                })),
+                stream: false
+              };
+            }
+          } else {
+            bodyPayload = {
+              model,
+              messages: messagesPayload,
+              max_tokens: 4000
+            };
+          }
         }
 
         const response = await fetch(fetchUrl, {
@@ -261,11 +297,23 @@ export async function fetchOpenRouterWithFallback(
 
         const data = await response.json();
         
-        // Dynamic response payload adapter
+        // Dynamic response payload adapter depending on protocol and model shapes
         let text = "";
         let usage = { prompt_tokens: 0, completion_tokens: 0 };
 
-        if (data.choices?.[0]?.message?.content !== undefined) {
+        if (protocol === 'anthropic' && data.content && Array.isArray(data.content)) {
+          text = data.content.map((c: any) => c.text).join("");
+          usage = {
+            prompt_tokens: data.usage?.input_tokens || 0,
+            completion_tokens: data.usage?.output_tokens || 0
+          };
+        } else if (protocol === 'gemini' && data.candidates && data.candidates.length > 0) {
+          text = data.candidates[0].content?.parts?.map((p: any) => p.text).join("") || "";
+          usage = {
+            prompt_tokens: data.usageMetadata?.promptTokenCount || 0,
+            completion_tokens: data.usageMetadata?.candidatesTokenCount || 0
+          };
+        } else if (data.choices?.[0]?.message?.content !== undefined) {
           text = data.choices[0].message.content;
           usage = data.usage || { prompt_tokens: 0, completion_tokens: 0 };
         } else if (data.message?.content !== undefined) {

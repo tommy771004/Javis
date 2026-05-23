@@ -12,7 +12,7 @@ import { hermesDB } from './services/db';
 
 import { SettingsModal, SecuritySettings } from './components/SettingsModal';
 import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
-import { startCommsChannel, stopCommsChannel, playTactileClick } from './services/audioSynth';
+import { startCommsChannel, stopCommsChannel, playTactileClick, getMasterAnalyser, modulateSynthVolumeForSpeech } from './services/audioSynth';
 
 interface PlannedAction {
   type: 'write' | 'execute' | 'create_task';
@@ -39,8 +39,11 @@ export default function App() {
       try {
         localStorage.setItem('jarvis_is_muted', String(newVal));
       } catch (e) {}
-      if (newVal && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
+      if (newVal) {
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+        }
+        stopCommsChannel();
       }
       return newVal;
     });
@@ -92,8 +95,24 @@ export default function App() {
     shellMode: 'manual',
     writeMode: 'manual',
     taskMode: 'manual',
-    voiceProfile: 'baritone'
+    voiceProfile: 'baritone',
+    autoRepair: false
   });
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then(res => res.json())
+      .then(data => {
+        if (data) {
+          setSecuritySettings(data);
+          if (data.shellMode === 'auto' && data.writeMode === 'auto' && data.taskMode === 'auto') {
+            setIsHermesActive(true);
+          }
+        }
+      })
+      .catch(e => console.error("Failed to load settings from server", e));
+  }, []);
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   // Phase 3: Cognitive HUD and Voice amplitude sync states
@@ -127,6 +146,11 @@ export default function App() {
   const animationFrameRef = useRef<number | null>(null);
   const prevBytesReceivedRef = useRef<number>(0);
   const prevTimestampRef = useRef<number>(0);
+  
+  const isMicActiveRef = useRef(isMicActive);
+  useEffect(() => {
+    isMicActiveRef.current = isMicActive;
+  }, [isMicActive]);
 
   // Phase 2: Planned filesystem action pending consent check
   const [pendingAction, setPendingAction] = useState<PlannedAction | null>(null);
@@ -155,21 +179,45 @@ export default function App() {
     syncLogsFromBackend();
   }, [isHermesActive]);
 
-  // Load configured security matrices on startup configuration
+  // Auto-Repair Health Monitor Polling
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('jarvis_security_settings');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setSecuritySettings(parsed);
-        if (parsed.shellMode === 'auto' && parsed.writeMode === 'auto' && parsed.taskMode === 'auto') {
-          setIsHermesActive(true);
+    let pollingInterval: NodeJS.Timeout | null = null;
+    if (securitySettings.autoRepair) {
+      pollingInterval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/system/stats');
+          if (res.ok) {
+            const data = await res.json();
+            // Critical Thresholds simulating system instability
+            if (data.cpu >= 90 || data.mem >= 90 || data.tmp === '84°C') {
+              setLogs(prev => [...prev, "SYS: WARNING - Health metrics critical. CPU/MEM unstable."]);
+              setLogs(prev => [...prev, "SYS: INITIATING AUTO-REPAIR PROTOCOLS..."]);
+              
+              // Trigger Auto-Repair (Reboot) logic on the backend
+              await fetch('/api/system/reboot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+              });
+              
+              const resetResp = await fetch('/api/gateway/reset-budget', { method: 'POST' });
+              const purgeResp = await fetch('/api/system/purge-cache', { method: 'POST' });
+              
+              if (purgeResp.ok) {
+                 setLogs(prev => [...prev, "SYS: AUTO-REPAIR SUCCESSFUL. Core metrics normalizing."]);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Auto-repair stat poll failed", e);
         }
-      }
-    } catch (e) {
-      console.error("Failed to load security settings from localStorage", e);
+      }, 8000);
     }
-  }, []);
+    
+    return () => {
+      if (pollingInterval) clearInterval(pollingInterval);
+    };
+  }, [securitySettings.autoRepair]);
 
   // WebRTC Active Switch Effect
   useEffect(() => {
@@ -193,6 +241,48 @@ export default function App() {
       }
     };
   }, [isMicActive]);
+
+  // Real-time physical voice wave amplitude visualization when speaking
+  useEffect(() => {
+    if (cognitiveState !== 'speaking') {
+      return;
+    }
+
+    let speakingFrameId: number;
+    const analyser = getMasterAnalyser();
+    if (!analyser) return;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const checkOutputVolume = () => {
+      analyser.getByteFrequencyData(dataArray);
+
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) {
+        sum += dataArray[i];
+      }
+      const average = sum / bufferLength;
+
+      // Scale average fft values smoothly for holographic dashboard radar
+      const normalizedAmp = Math.min(100, Math.round(average * 4.2));
+      
+      // Keep a very subtle organic vibration when active so the HUD remains lively
+      const finalAmp = normalizedAmp > 2 ? normalizedAmp : (8 + Math.floor(Math.random() * 5));
+      setVoiceAmplitude(finalAmp);
+
+      speakingFrameId = requestAnimationFrame(checkOutputVolume);
+    };
+
+    const startDelay = setTimeout(() => {
+      checkOutputVolume();
+    }, 40);
+
+    return () => {
+      clearTimeout(startDelay);
+      cancelAnimationFrame(speakingFrameId);
+    };
+  }, [cognitiveState]);
 
   const startVoiceBridge = async () => {
     setWebrtcLogs([
@@ -363,9 +453,37 @@ export default function App() {
         }
       }, 500);
 
-      // 6. Web Speech Recognition Setup
+      // 6. Web Speech Recognition Setup or Backend Whisper processing
+      const sttProvider = localStorage.getItem('jarvis_stt_provider') || 'webspeech';
       const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognitionClass) {
+      
+      if (sttProvider === 'whisper' && (window as any).MediaRecorder) {
+        // Mock Whisper Backend Processing via MediaRecorder
+        setWebrtcLogs(prev => [...prev, "[WebRTC Speech] Initializing Backend Whisper API Stream..."]);
+        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data.size > 0 && isMicActiveRef.current) {
+            try {
+               const res = await fetch('/api/voice/transcribe', {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'audio/webm' },
+                 body: e.data
+               });
+               const json = await res.json();
+               if (json.success && json.text && isMicActiveRef.current) {
+                 handleCommand(json.text);
+               }
+            } catch (err) {
+               console.error("Whisper backend error: ", err);
+            }
+          }
+        };
+        // Record in 3-second chunks for transcription
+        mediaRecorder.start(3000);
+        recognitionRef.current = mediaRecorder; // Using the same ref to stop later
+        
+      } else if (SpeechRecognitionClass) {
         const recognition = new SpeechRecognitionClass();
         recognition.continuous = true;
         recognition.interimResults = true;
@@ -399,7 +517,7 @@ export default function App() {
             // Auto-trigger command dispatch after 2.0s of physical silence
             if (autoDispatchTimer) clearTimeout(autoDispatchTimer);
             autoDispatchTimer = setTimeout(() => {
-              if (currentWords.trim()) {
+              if (currentWords.trim() && isMicActiveRef.current) {
                 handleCommand(currentWords);
                 setLogs(prev => prev.filter(l => !l.startsWith("USER [Transcribing]:")));
               }
@@ -544,48 +662,177 @@ export default function App() {
     const spokenText = cleanTextForSpeech(text);
     if (!spokenText) return;
 
-    const utterance = new SpeechSynthesisUtterance(spokenText);
-    
-    // Voice selection with JARVIS British baritone priority
+    // Helper for local Web Speech rendering
     const selectJarvisVoice = () => {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length === 0) return null;
 
-      // Tier 1: Google UK English Male (best match for Paul Bettany's JARVIS)
       let voice = voices.find(v => 
         v.name === 'Google UK English Male' ||
         v.name.includes('Google UK English Male')
       );
 
-      // Tier 2: Microsoft George (Windows British male)
       if (!voice) voice = voices.find(v => v.name.includes('George'));
 
-      // Tier 3: Any en-GB male voice
       if (!voice) voice = voices.find(v => 
         v.lang === 'en-GB' && 
         (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('james') || v.name.toLowerCase().includes('daniel'))
       );
 
-      // Tier 4: Any en-GB voice
       if (!voice) voice = voices.find(v => v.lang === 'en-GB');
 
-      // Tier 5: en-US male fallback (David is deep)
       if (!voice) voice = voices.find(v => 
         v.lang.startsWith('en') &&
         (v.name.includes('David') || v.name.includes('James') || v.name.includes('Alex'))
       );
 
-      // Tier 6: Any English voice
       if (!voice) voice = voices.find(v => v.lang.startsWith('en'));
 
       return voice || null;
     };
 
+    const speakWithLocalSpeech = (targetText: string) => {
+      const utterance = new SpeechSynthesisUtterance(targetText);
+      const selectedVoice = selectJarvisVoice();
+      if (selectedVoice) utterance.voice = selectedVoice;
+
+      let customRate = 0.95;
+      let customPitch = 0.80;
+
+      if (securitySettings.voiceProfile === 'fast') {
+        customRate = 1.08;
+        customPitch = 0.90;
+      } else if (securitySettings.voiceProfile === 'standard') {
+        customRate = 1.00;
+        customPitch = 1.00;
+      }
+
+      utterance.rate = customRate;
+      utterance.pitch = customPitch;
+      utterance.volume = 1.0;
+      
+      utterance.onstart = () => {
+        setCognitiveState('speaking');
+        startCommsChannel();
+      };
+
+      utterance.onboundary = () => {
+        modulateSynthVolumeForSpeech();
+      };
+
+      utterance.onend = () => {
+        setCognitiveState('idle');
+        setVoiceAmplitude(0);
+        stopCommsChannel();
+      };
+
+      utterance.onerror = () => {
+        setCognitiveState('idle');
+        setVoiceAmplitude(0);
+        stopCommsChannel();
+      };
+      
+      window.speechSynthesis.speak(utterance);
+    };
+
+    const ttsProvider = localStorage.getItem('jarvis_tts_provider') || 'webspeech';
+    
+    if (ttsProvider === 'elevenlabs') {
+      setCognitiveState('speaking');
+      startCommsChannel();
+      
+      const elevenLabsKey = localStorage.getItem('jarvis_elevenlabs_key') || '';
+      const payload = { text: spokenText, provider: 'elevenlabs', voiceProfile: securitySettings.voiceProfile, elevenLabsKey };
+
+      fetch('/api/voice/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.audio) {
+          try {
+            const audioSrc = `data:audio/mp3;base64,${data.audio}`;
+            const audioEl = new Audio(audioSrc);
+            
+            const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+            const audioCtx = new AudioContextClass();
+            const sourceNode = audioCtx.createMediaElementSource(audioEl);
+            const analyserNode = audioCtx.createAnalyser();
+            
+            sourceNode.connect(analyserNode);
+            analyserNode.connect(audioCtx.destination);
+            
+            analyserNode.fftSize = 32;
+            const bufferLength = analyserNode.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            
+            let animationId: number;
+            const updateAmplitude = () => {
+              if (audioEl.paused || audioEl.ended) {
+                cancelAnimationFrame(animationId);
+                return;
+              }
+              analyserNode.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i];
+              }
+              const average = sum / bufferLength;
+              setVoiceAmplitude(average / 140.0);
+              animationId = requestAnimationFrame(updateAmplitude);
+            };
+
+            audioEl.onplay = () => {
+              audioCtx.resume();
+              updateAmplitude();
+            };
+
+            audioEl.onended = () => {
+              cancelAnimationFrame(animationId);
+              audioCtx.close();
+              setCognitiveState('idle');
+              setVoiceAmplitude(0);
+              stopCommsChannel();
+            };
+
+            audioEl.onerror = () => {
+              cancelAnimationFrame(animationId);
+              audioCtx.close();
+              console.warn("ElevenLabs audio decode error, falling back to browser-native speech.");
+              speakWithLocalSpeech(spokenText);
+            };
+
+            audioEl.play().catch(playErr => {
+              console.warn("Playback error - direct fallback:", playErr);
+              speakWithLocalSpeech(spokenText);
+            });
+
+          } catch (audioContextError) {
+            console.warn("WebAudio dynamic analyser setup failed, falling back to local local voice engine", audioContextError);
+            speakWithLocalSpeech(spokenText);
+          }
+        } else {
+          // KEY_MISSING or parsing/backend API error. Warn system notify and apply local fallback.
+          setLogs(prev => [...prev, `SYS: ElevenLabs API Key missing or expired. Falling back to native British vocalist...`]);
+          speakWithLocalSpeech(spokenText);
+        }
+      })
+      .catch(err => {
+         console.warn("Severe ElevenLabs network call intersection, resorting to local vocal lines:", err);
+         speakWithLocalSpeech(spokenText);
+      });
+
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(spokenText);
+    
     const applyVoiceAndSpeak = () => {
       const selectedVoice = selectJarvisVoice();
       if (selectedVoice) utterance.voice = selectedVoice;
 
-      // JARVIS acoustic profile adjusted dynamically based on active voice settings profile
       let customRate = 0.95;
       let customPitch = 0.80;
 
@@ -600,29 +847,23 @@ export default function App() {
       utterance.rate = customRate;   // Gravitas or fastpaced operational control
       utterance.pitch = customPitch;  // Deep British Baritone or custom robotic voice override
       utterance.volume = 1.0;
-
-      let amplitudeTimer: NodeJS.Timeout | null = null;
       
       utterance.onstart = () => {
         setCognitiveState('speaking');
         startCommsChannel();
-        amplitudeTimer = setInterval(() => {
-          // Organic vocal amplitude simulation — peaks and valleys like real speech
-          const base = 20;
-          const spike = Math.random() > 0.7 ? Math.floor(Math.random() * 45) : Math.floor(Math.random() * 20);
-          setVoiceAmplitude(base + spike);
-        }, 90);
+      };
+
+      utterance.onboundary = () => {
+        modulateSynthVolumeForSpeech();
       };
 
       utterance.onend = () => {
-        if (amplitudeTimer) clearInterval(amplitudeTimer);
         setCognitiveState('idle');
         setVoiceAmplitude(0);
         stopCommsChannel();
       };
 
       utterance.onerror = () => {
-        if (amplitudeTimer) clearInterval(amplitudeTimer);
         setCognitiveState('idle');
         setVoiceAmplitude(0);
         stopCommsChannel();
@@ -704,6 +945,8 @@ export default function App() {
     }
   };
 
+  const handleCommandRef = useRef<any>(null);
+
   const handleCommand = async (text: string) => {
     setLogs(prev => [...prev, `USER: ${text}`]);
     
@@ -732,6 +975,7 @@ export default function App() {
       const byokKey = localStorage.getItem('jarvis_byok_key') || '';
       const byokModel = localStorage.getItem('jarvis_byok_model') || '';
       const byokEndpoint = localStorage.getItem('jarvis_byok_endpoint') || '';
+      const byokProtocol = localStorage.getItem('jarvis_byok_protocol') || 'openrouter';
 
       // Dispatch request to Express server
       const response = await fetch('/api/chat', {
@@ -743,7 +987,8 @@ export default function App() {
           sessionId: "default-session",
           activeCli: activeCli,
           byokKey: byokKey,
-          byokEndpoint: byokEndpoint
+          byokEndpoint: byokEndpoint,
+          byokProtocol: byokProtocol
         })
       });
 
@@ -853,7 +1098,7 @@ export default function App() {
         const taskRes = await fetch('/api/workspace/task', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ priority, description })
+          body: JSON.stringify({ priority, description, taskMode: securitySettings.taskMode, userApproved: true })
         });
         
         if (taskRes.ok) {
@@ -989,6 +1234,21 @@ export default function App() {
     setPendingAction(null);
     setCognitiveState('idle');
   };
+
+  handleCommandRef.current = handleCommand;
+
+  useEffect(() => {
+    const handleMcpRoutine = (e: any) => {
+      const prompt = e.detail;
+      if (prompt && handleCommandRef.current) {
+        handleCommandRef.current(prompt);
+      }
+    };
+    window.addEventListener('jarvis-mcp-routine', handleMcpRoutine);
+    return () => {
+      window.removeEventListener('jarvis-mcp-routine', handleMcpRoutine);
+    };
+  }, []);
 
   return (
     <div className="h-screen w-screen bg-[#02060b] text-cyan-50 font-sans selection:bg-cyan-500/30 overflow-y-auto lg:overflow-hidden flex flex-col p-4 bg-[radial-gradient(ellipse_at_center,rgba(0,30,50,0.5)_0%,rgba(0,0,0,1)_100%)] relative">
@@ -1141,7 +1401,9 @@ export default function App() {
       <SettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)} 
-        onSettingsChange={handleSettingsChange} 
+        onSettingsChange={handleSettingsChange}
+        isMuted={isMuted}
+        onToggleMute={handleToggleMute}
       />
 
       <SpectrumRebootOverlay />
