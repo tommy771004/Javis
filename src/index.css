@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+.scrollbar-cyan::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-cyan::-webkit-scrollbar-track {
+  background: rgba(0, 255, 255, 0.05); 
+}
+.scrollbar-cyan::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 255, 0.2); 
+  border-radius: 2px;
+}
+.scrollbar-cyan::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 255, 0.4); 
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
