@@ -122,11 +122,28 @@ export async function fetchOpenRouterWithFallback(
   apiEndpoint?: string,
   protocol: string = "openrouter",
   customBodyTemplate?: string,
-  customResponsePath?: string
+  customResponsePath?: string,
+  routingPolicy: string = "auto"
 ) {
   let lastError: Error | null = null;
 
-  const modelsToTry = requestedModel ? [requestedModel, ...FALLBACK_MODELS] : FALLBACK_MODELS;
+  // Cost-Aware Pipeline Implementation based on routingPolicy
+  let targetFallbackModels = FALLBACK_MODELS;
+  
+  if (routingPolicy === 'haiku') {
+    targetFallbackModels = FREE_MODELS;
+  } else if (routingPolicy === 'sonnet') {
+    targetFallbackModels = process.env.ALLOW_PAID_FALLBACK === 'true' ? PAID_FALLBACK_MODELS : FALLBACK_MODELS;
+  } else if (routingPolicy === 'auto') {
+    const isComplex = prompt.length >= 10000;
+    if (isComplex && process.env.ALLOW_PAID_FALLBACK === 'true') {
+      targetFallbackModels = [...PAID_FALLBACK_MODELS, ...FREE_MODELS];
+    } else {
+      targetFallbackModels = FALLBACK_MODELS;
+    }
+  }
+
+  const modelsToTry = requestedModel ? [requestedModel, ...targetFallbackModels] : targetFallbackModels;
 
   // Split prompt into system (context) and user parts for prompt caching
   const systemMarker = "System:";

@@ -132,7 +132,9 @@ export default function App() {
     packetsReceived: 0,
     bytesSent: 0,
     bytesReceived: 0,
-    bitrate: 0
+    bitrate: 0,
+    offerSdp: '',
+    answerSdp: ''
   });
 
   // WebRTC refs
@@ -389,12 +391,14 @@ export default function App() {
       const offer = await pc1.createOffer();
       await pc1.setLocalDescription(offer);
       setWebrtcLogs(prev => [...prev, `[WebRTC Offer SDP (truncated)]:\n${offer.sdp?.substring(0, 180)}...`]);
+      setWebrtcStats(prev => ({ ...prev, offerSdp: offer.sdp || '' }));
 
       await pc2.setRemoteDescription(offer);
       
       const answer = await pc2.createAnswer();
       await pc2.setLocalDescription(answer);
       setWebrtcLogs(prev => [...prev, `[WebRTC Answer SDP (truncated)]:\n${answer.sdp?.substring(0, 180)}...`]);
+      setWebrtcStats(prev => ({ ...prev, answerSdp: answer.sdp || '' }));
 
       await pc1.setRemoteDescription(answer);
       setWebrtcLogs(prev => [...prev, "[WebRTC] Handshake complete. Awaiting connection stability..."]);
@@ -955,20 +959,9 @@ export default function App() {
     setIsThinking(true);
 
     // Dynamic Cost-Aware Routing
+    // We let the backend (server.ts & openRouterHelper) handle the actual model selection
+    // based on the persisted gatewayRoutingModel and prompt complexity.
     let requestedModel = "auto";
-    if (isHermesActive) {
-      const queryLower = text.toLowerCase();
-      const requiresSonnet = text.length > 8000 || 
-                            queryLower.includes("ast") || 
-                            queryLower.includes("refactor") || 
-                            queryLower.includes("curate") ||
-                            queryLower.includes("evolve");
-      if (requiresSonnet) {
-        requestedModel = "claude-3-5-sonnet-latest";
-      } else {
-        requestedModel = "claude-3-5-haiku-latest";
-      }
-    }
 
     try {
       const activeCli = localStorage.getItem('jarvis_active_cli') || 'openrouter';

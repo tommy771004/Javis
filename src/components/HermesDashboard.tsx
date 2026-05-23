@@ -20,6 +20,8 @@ interface HermesDashboardProps {
     bytesSent: number;
     bytesReceived: number;
     bitrate: number;
+    offerSdp?: string;
+    answerSdp?: string;
   };
   isMicActive?: boolean;
 }
@@ -74,6 +76,8 @@ export function HermesDashboard({
   const [spent, setSpent] = useState(0.00);
   const [cacheHits, setCacheHits] = useState(84);
   const [selectedModel, setSelectedModel] = useState<'haiku' | 'sonnet' | 'auto'>('auto');
+  const [newTaskText, setNewTaskText] = useState('');
+  const [newTaskPriority, setNewTaskPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [costLogs, setCostLogs] = useState<DbCostLog[]>([]);
 
   // Autoscroll terminal
@@ -95,7 +99,23 @@ export function HermesDashboard({
       setCacheHits(stats.cacheHits);
       setCostLogs(stats.costLogs);
       
+      const settingsRes = await fetch('/api/settings');
       const tasksRes = await fetch('/api/tasks');
+      
+      if (settingsRes.ok) {
+        const data = await settingsRes.json();
+        setGatewaySettings(data);
+        if (data.gatewayRoutingModel) {
+          setSelectedModel(data.gatewayRoutingModel);
+        } else {
+          // Fallback to local storage if not in DB yet
+          const localModel = localStorage.getItem('jarvis_gateway_routing_model');
+          if (localModel === 'haiku' || localModel === 'sonnet' || localModel === 'auto') {
+            setSelectedModel(localModel as 'haiku' | 'sonnet' | 'auto');
+          }
+        }
+      }
+
       if (tasksRes.ok) {
         const tasksData = await tasksRes.json();
         setTasks(tasksData);
@@ -114,6 +134,43 @@ export function HermesDashboard({
     }
   };
 
+  const handleAddTask = async () => {
+    if (!newTaskText.trim()) return;
+    
+    const res = await fetch('/api/workspace/task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        description: newTaskText, 
+        priority: newTaskPriority, 
+        taskMode: 'manual', 
+        userApproved: true 
+      })
+    });
+    
+    if (res.ok) {
+      setNewTaskText('');
+      setNewTaskPriority('Medium');
+      loadDataFromBackend();
+    }
+  };
+
+  const saveRoutingPolicy = async (mode: 'haiku' | 'sonnet' | 'auto') => {
+    setSelectedModel(mode);
+    localStorage.setItem('jarvis_gateway_routing_model', mode);
+    
+    // Optionally persist to backend settings
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gatewayRoutingModel: mode })
+      });
+    } catch (e) {
+      console.warn("Failed to save routing policy to backend", e);
+    }
+  };
+
   useEffect(() => {
     loadDataFromBackend();
     const handleUpdate = () => loadDataFromBackend();
@@ -128,49 +185,35 @@ export function HermesDashboard({
     setCognitiveState('thinking'); // Set HUD to thinking color
     setTerminalLogs(prev => [...prev, '\n--- TRIGGERING DSPy + GEPA SELF-EVOLUTION LOOP ---']);
     
-    let step = 0;
-    const steps = [
-      '[GEPA] Initializing DSPy bootstrap optimizer...',
-      '[GEPA] Loading historic execution traces from server state.db...',
-      '[GEPA] Compiling teleprompter. Starting mutation search on prompt parameters...',
-      '[GEPA] Running Genetic-Pareto Prompt Mutator (Gen 1/3)...',
-      '[GEPA] Mutating prompt signature in local skills repository...',
-      '[GEPA] Candidate mutation 1 (fitness: 0.94, token_cost_delta: -24.8%)',
-      '[GEPA] Caching headers optimized. ephem_caching_control=true active.',
-      '[GEPA] Candidate validation complete. Selection phase converged.',
-      '[SUCCESS] Writing optimized prompt versions back to server SQLite database...',
-    ];
+    setTerminalLogs(prev => [...prev, '[GEPA] Connecting to Cognitive Quantum Matrix...']);
+    setTerminalLogs(prev => [...prev, '[GEPA] Waiting for LLM evolutionary mutation response... (This may take a moment)']);
 
-    const timer = setInterval(async () => {
-      if (step < steps.length) {
-        setTerminalLogs(prev => [...prev, steps[step]]);
-        step++;
-      } else {
-        clearInterval(timer);
-        
-        try {
-          // Mutate the actual skills on the server
-          const res = await fetch('/api/skills/evolve', { method: 'POST' });
-          if (!res.ok) throw new Error('Evolution mutation request failed');
-          
-          const data = await res.json();
-          setSkills(data.skills);
+    try {
+      // Mutate the actual skills on the server
+      const res = await fetch('/api/skills/evolve', { method: 'POST' });
+      if (!res.ok) throw new Error('Evolution mutation request failed');
+      
+      const data = await res.json();
+      setSkills(data.skills);
 
-          setTerminalLogs(prev => [
-            ...prev,
-            '[SUCCESS] github-pr-reviewer.md upgraded successfully in database.',
-            '[SUCCESS] cost-aware-router.md upgraded successfully in database.',
-            '[SYSTEM] Hermes Core self-evolution complete. Skills database fully optimized!'
-          ]);
-        } catch (err) {
-          console.error(err);
-          setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to write mutations to server database.']);
-        } finally {
-          setIsEvolving(false);
-          setCognitiveState('idle'); // Set HUD back to idle cyan
+      if (data.logs && Array.isArray(data.logs)) {
+        for (const log of data.logs) {
+           setTerminalLogs(prev => [...prev, log]);
+           await new Promise(r => setTimeout(r, 400)); // visual stagger for effect
         }
       }
-    }, 900);
+
+      setTerminalLogs(prev => [
+        ...prev,
+        '[SYSTEM] Hermes Core self-evolution complete. Skills database fully optimized!'
+      ]);
+    } catch (err) {
+      console.error(err);
+      setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to write mutations to server database.']);
+    } finally {
+      setIsEvolving(false);
+      setCognitiveState('idle'); // Set HUD back to idle cyan
+    }
   };
 
   // Real FTS5 search over server database
@@ -281,6 +324,53 @@ export function HermesDashboard({
                     <span className="text-emerald-800">|</span>
                     <span className="text-emerald-600 animate-pulse">{t.hermesRightClickTip}</span>
                   </div>
+                </div>
+
+                {/* Task Search Input Bar */}
+                <div className="mb-3 relative">
+                  <input
+                    type="text"
+                    placeholder={t.hermesSearchPlaceholder}
+                    value={taskSearchQuery}
+                    onChange={(e) => setTaskSearchQuery(e.target.value)}
+                    className="w-full bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-widest text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase"
+                  />
+                  {taskSearchQuery && (
+                    <button 
+                      onClick={() => setTaskSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500 hover:text-emerald-300 text-[9px] font-bold font-mono"
+                    >
+                      [CLEAR]
+                    </button>
+                  )}
+                </div>
+
+                {/* Task Creation Input Bar */}
+                <div className="mb-4 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="ENTER NEW OBJECTIVE..."
+                    value={newTaskText}
+                    onChange={(e) => setNewTaskText(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddTask()}
+                    className="flex-1 bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-widest text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase"
+                  />
+                  <select
+                    value={newTaskPriority}
+                    onChange={(e) => setNewTaskPriority(e.target.value as any)}
+                    className="bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] text-emerald-400 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase cursor-pointer"
+                  >
+                    <option value="Low">LOW</option>
+                    <option value="Medium">MED</option>
+                    <option value="High">HIGH</option>
+                  </select>
+                  <button
+                    onClick={handleAddTask}
+                    disabled={!newTaskText.trim()}
+                    className="px-4 py-2 bg-emerald-900/20 hover:bg-emerald-800/40 border border-emerald-700/50 text-emerald-400 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 disabled:cursor-not-allowed rounded-sm"
+                  >
+                    ADD
+                  </button>
                 </div>
 
                 {/* Task Search Input Bar */}
@@ -866,18 +956,23 @@ export function HermesDashboard({
                   COST-AWARE ROUTING MATRIX POLICY
                 </div>
                 
-                <div className="flex gap-2">
-                  {(['auto', 'haiku', 'sonnet'] as const).map(mode => (
+                <div className="grid grid-cols-1 gap-2">
+                  {([
+                    { mode: 'auto', label: 'Auto Router', desc: 'Hybrid routing' },
+                    { mode: 'haiku', label: 'Haiku Only', desc: 'Fast & Cheap' },
+                    { mode: 'sonnet', label: 'Sonnet Only', desc: 'Complex Logic' }
+                  ] as const).map(({ mode, label, desc }) => (
                     <button
                       key={mode}
-                      onClick={() => setSelectedModel(mode)}
-                      className={`flex-1 py-1 border text-[9px] tracking-wider uppercase transition-all ${
+                      onClick={() => saveRoutingPolicy(mode)}
+                      className={`p-2 border text-left transition-all ${
                         selectedModel === mode 
                           ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300' 
                           : 'border-emerald-900/40 text-emerald-600 hover:border-emerald-700'
                       }`}
                     >
-                      {mode === 'auto' ? 'Auto Router' : mode === 'haiku' ? 'Haiku Only' : 'Sonnet Only'}
+                      <div className="text-[10px] font-bold">{label}</div>
+                      <div className="text-[8px] opacity-70">{desc}</div>
                     </button>
                   ))}
                 </div>
@@ -979,7 +1074,7 @@ export function HermesDashboard({
                   <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP OFFER MATRIX (TRANS)</span>
                   <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
                     {isMicActive 
-                      ? `v=0\no=- ${Math.floor(Math.random()*10000000)} IN IP4 127.0.0.1\ns=-\nt=0 0\na=group:BUNDLE 0\na=msid-semantic: WMS\nm=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=rtpmap:111 opus/48000/2\na=fmtp:111 minptime=10;useinbandfec=1\na=setup:actpass\na=mid:0\na=crypto:1 AES_CM_128_HMAC_SHA1_80`
+                      ? (webrtcStats?.offerSdp || "Awaiting SDP offer generation...")
                       : "Awaiting mic stream capture..."
                     }
                   </div>
@@ -988,7 +1083,7 @@ export function HermesDashboard({
                   <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP ANSWER MATRIX (RECV)</span>
                   <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
                     {isMicActive && webrtcStats?.state === 'connected'
-                      ? `v=0\no=- ${Math.floor(Math.random()*10000000)} IN IP4 127.0.0.1\ns=-\nt=0 0\na=group:BUNDLE 0\na=msid-semantic: WMS\nm=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=rtpmap:111 opus/48000/2\na=setup:active\na=mid:0\na=crypto:1 AES_CM_128_HMAC_SHA1_80`
+                      ? (webrtcStats?.answerSdp || "Awaiting receiver SDP answer...")
                       : "Awaiting receiver SDP answer..."
                     }
                   </div>

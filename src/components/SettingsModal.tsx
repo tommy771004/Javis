@@ -32,6 +32,7 @@ export interface SecuritySettings {
   elevenLabsKey?: string;
   alwaysOnTop?: boolean;
   launchOnStartup?: boolean;
+  gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
 }
 
 const DEFAULT_SETTINGS: SecuritySettings = {
@@ -54,7 +55,8 @@ const DEFAULT_SETTINGS: SecuritySettings = {
   activeCli: 'openrouter',
   elevenLabsKey: '',
   alwaysOnTop: false,
-  launchOnStartup: false
+  launchOnStartup: false,
+  gatewayRoutingModel: 'auto',
 };
 
 interface SettingsModalProps {

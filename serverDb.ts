@@ -71,6 +71,7 @@ export interface DbSettings {
   elevenLabsKey?: string;
   alwaysOnTop?: boolean;
   launchOnStartup?: boolean;
+  gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
 }
 
 export interface DbMcpWebhook {
@@ -255,6 +256,7 @@ class ServerPersistenceEngine {
         taskMode: 'manual',
         voiceProfile: 'baritone',
         autoRepair: false,
+        gatewayRoutingModel: 'auto',
         activeSkin: 'cyan',
         satelliteName: 'STARK-SAT-4',
         armorModel: 'Mark LXXXV',

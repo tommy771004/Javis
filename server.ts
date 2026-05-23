@@ -968,8 +968,11 @@ INTEGRATION ENGINE DETAILS:
 
       serverDB.addSystemLog('HERMES', 'INFO', `Routing request to model: ${model || 'Auto-Router'}`);
 
+      const settings = serverDB.getSettings();
+      const gatewayRoutingModel = settings.gatewayRoutingModel || 'auto';
+
       // Dispatch OpenRouter request with narrow retry + prompt caching structures
-      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint, byokProtocol, byokTemplate, byokResponsePath);
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint, byokProtocol, byokTemplate, byokResponsePath, gatewayRoutingModel);
 
       const actualModel = result.model || "meta-llama/llama-3.2-3b-instruct:free";
       const usage = (result.usage as any) || { prompt_tokens: 0, completion_tokens: 0 };
@@ -1158,20 +1161,71 @@ INTEGRATION ENGINE DETAILS:
   // --- Evolve Core Mutation Route ---
   app.post("/api/skills/evolve", async (req, res) => {
     try {
-      const skills = serverDB.getSkills();
-      for (const s of skills) {
-        if (s.name === 'github-pr-reviewer' || s.name === 'cost-aware-router') {
-          const currentVer = parseFloat(s.version.substring(1));
-          const nextVer = `v${(currentVer + 0.1).toFixed(1)}`;
-          serverDB.addOrUpdateSkill({
-            ...s,
-            version: nextVer,
-            description: s.description.replace('AST-Optimized', 'AST-Optimized-v2')
-          });
-        }
+      const skills = serverDB.getSkills().filter(s => s.status === 'active');
+      if (skills.length === 0) {
+        return res.json({ success: true, logs: ["[GEPA] No active skills found to evolve."], skills: serverDB.getSkills() });
       }
-      res.json({ success: true, skills: serverDB.getSkills() });
+
+      // Pick a random active skill
+      const targetSkill = skills[Math.floor(Math.random() * skills.length)];
+      
+      const settings = serverDB.getSettings();
+      const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (settings.byokEndpoint ? "custom-auth" : "");
+      
+      const prompt = `System: You are J.A.R.V.I.S's internal Genetic Evaluation and Prompt Algorithm (GEPA). Your task is to evolve and optimize an AI Agent Skill. 
+Make the description more concise, highly agentic, and precise. Do not invent new skills, just rewrite the existing instruction.
+Target Skill Name: ${targetSkill.name}
+Current Description: ${targetSkill.description}
+
+Respond ONLY with a valid JSON object matching this schema, no markdown blocks:
+{
+  "mutatedDescription": "new optimized description",
+  "mutationLog": "[GEPA] Optimized XYZ..."
+}
+
+User: Optimize the skill.`;
+
+      // Dispatch request
+      const routingPolicy = settings.gatewayRoutingModel || 'auto';
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, settings.byokModel || undefined, settings.byokEndpoint, settings.byokProtocol, settings.byokTemplate, settings.byokResponsePath, routingPolicy);
+      
+      let mutatedDescription = targetSkill.description;
+      let mutationLog = "[GEPA] Evolution failed to produce valid JSON. Fallback to standard AST parsing.";
+      let parsed = false;
+
+      try {
+        const textToParse = result.text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const json = JSON.parse(textToParse);
+        if (json.mutatedDescription && json.mutationLog) {
+          mutatedDescription = json.mutatedDescription;
+          mutationLog = json.mutationLog;
+          parsed = true;
+        }
+      } catch(e) {
+        serverDB.addSystemLog('GEPA', 'WARN', 'Failed to parse JSON from LLM: ' + result.text.substring(0, 50));
+      }
+
+      if (parsed) {
+        const currentVer = parseFloat(targetSkill.version.replace(/[^0-9.]/g, '')) || 1.0;
+        const nextVer = `v${(currentVer + 0.1).toFixed(1)}`;
+        serverDB.addOrUpdateSkill({
+          ...targetSkill,
+          version: nextVer,
+          description: mutatedDescription
+        });
+        serverDB.addSystemLog('GEPA', 'SUCCESS', `Successfully evolved skill ${targetSkill.name} to ${nextVer}`);
+      }
+
+      const logs = [
+        `[GEPA] Initializing DSPy bootstrap optimizer for target: ${targetSkill.name}...`,
+        `[GEPA] Sending mutation request to routing matrix...`,
+        mutationLog,
+        parsed ? `[SUCCESS] ${targetSkill.name} upgraded to next version in database.` : `[WARN] Mutation aborted due to instability.`
+      ];
+
+      res.json({ success: true, logs, skills: serverDB.getSkills() });
     } catch (e: any) {
+      serverDB.addSystemLog('GEPA', 'ERROR', `Evolution fault: ${e.message}`);
       res.status(500).json({ error: e.message });
     }
   });
