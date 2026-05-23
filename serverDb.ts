@@ -56,6 +56,21 @@ export interface DbSettings {
   taskMode: 'manual' | 'auto';
   voiceProfile: 'baritone' | 'fast' | 'standard';
   autoRepair: boolean;
+  activeSkin?: string;
+  satelliteName?: string;
+  armorModel?: string;
+  operatorName?: string;
+  byokKey?: string;
+  byokModel?: string;
+  byokEndpoint?: string;
+  byokProtocol?: string;
+  byokTemplate?: string;
+  byokResponsePath?: string;
+  systemPrompt?: string;
+  activeCli?: string;
+  elevenLabsKey?: string;
+  alwaysOnTop?: boolean;
+  launchOnStartup?: boolean;
 }
 
 export interface DbMcpWebhook {
@@ -232,7 +247,6 @@ class ServerPersistenceEngine {
     this.addSystemLog('SYS', 'SUCCESS', 'Persistent memory and temporal logs successfully purged.');
   }
 
-  // --- Settings API ---
   getSettings(): DbSettings {
     if (!this.cache.settings) {
       this.cache.settings = {
@@ -240,9 +254,40 @@ class ServerPersistenceEngine {
         writeMode: 'manual',
         taskMode: 'manual',
         voiceProfile: 'baritone',
-        autoRepair: false
+        autoRepair: false,
+        activeSkin: 'cyan',
+        satelliteName: 'STARK-SAT-4',
+        armorModel: 'Mark LXXXV',
+        operatorName: 'T. STARK',
+        byokKey: '',
+        byokModel: 'google/gemini-2.5-flash',
+        byokEndpoint: 'https://openrouter.ai/api/v1',
+        byokProtocol: 'openrouter',
+        byokTemplate: '{\n  "model": "${model}",\n  "messages": "${messages}"\n}',
+        byokResponsePath: 'choices[0].message.content',
+        systemPrompt: '',
+        activeCli: 'openrouter',
+        elevenLabsKey: '',
+        alwaysOnTop: false,
+        launchOnStartup: false
       };
       this.saveDb();
+    } else {
+      if (this.cache.settings.activeSkin === undefined) this.cache.settings.activeSkin = 'cyan';
+      if (this.cache.settings.satelliteName === undefined) this.cache.settings.satelliteName = 'STARK-SAT-4';
+      if (this.cache.settings.armorModel === undefined) this.cache.settings.armorModel = 'Mark LXXXV';
+      if (this.cache.settings.operatorName === undefined) this.cache.settings.operatorName = 'T. STARK';
+      if (this.cache.settings.byokKey === undefined) this.cache.settings.byokKey = '';
+      if (this.cache.settings.byokModel === undefined) this.cache.settings.byokModel = 'google/gemini-2.5-flash';
+      if (this.cache.settings.byokEndpoint === undefined) this.cache.settings.byokEndpoint = 'https://openrouter.ai/api/v1';
+      if (this.cache.settings.byokProtocol === undefined) this.cache.settings.byokProtocol = 'openrouter';
+      if (this.cache.settings.byokTemplate === undefined) this.cache.settings.byokTemplate = '{\n  "model": "${model}",\n  "messages": "${messages}"\n}';
+      if (this.cache.settings.byokResponsePath === undefined) this.cache.settings.byokResponsePath = 'choices[0].message.content';
+      if (this.cache.settings.systemPrompt === undefined) this.cache.settings.systemPrompt = '';
+      if (this.cache.settings.activeCli === undefined) this.cache.settings.activeCli = 'openrouter';
+      if (this.cache.settings.elevenLabsKey === undefined) this.cache.settings.elevenLabsKey = '';
+      if (this.cache.settings.alwaysOnTop === undefined) this.cache.settings.alwaysOnTop = false;
+      if (this.cache.settings.launchOnStartup === undefined) this.cache.settings.launchOnStartup = false;
     }
     return this.cache.settings;
   }

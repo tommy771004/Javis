@@ -61,6 +61,44 @@ let lastDiskWriteSectors = 0;
 let currentDiskReadSpeed = 0; // bytes/sec
 let currentDiskWriteSpeed = 0; // bytes/sec
 
+// Real OS Hardware Telemetry
+let osProcessCount = 0;
+let osGpuTemp = 0;
+let osGpuUsage = 0;
+
+function updateRealHardwareMetrics() {
+  if (process.platform === 'win32') {
+    exec("wmic os get numberofprocesses", (err, stdout) => {
+      if (!err) {
+        const match = stdout.match(/\d+/);
+        if (match) osProcessCount = parseInt(match[0], 10);
+      }
+    });
+    exec("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader", (err, stdout) => {
+      if (!err) {
+        const parts = stdout.split(',');
+        if (parts.length >= 2) {
+          osGpuTemp = parseInt(parts[0].trim(), 10);
+          osGpuUsage = parseInt(parts[1].trim(), 10);
+        }
+      }
+    });
+  } else if (process.platform === 'linux') {
+    exec("ps -e | wc -l", (err, stdout) => {
+      if (!err) osProcessCount = parseInt(stdout.trim(), 10);
+    });
+    exec("nvidia-smi --query-gpu=temperature.gpu,utilization.gpu --format=csv,noheader", (err, stdout) => {
+      if (!err) {
+        const parts = stdout.split(',');
+        if (parts.length >= 2) {
+          osGpuTemp = parseInt(parts[0].trim(), 10);
+          osGpuUsage = parseInt(parts[1].trim(), 10);
+        }
+      }
+    });
+  }
+}
+
 function updateSystemSpeeds() {
   if (fs.existsSync('/proc/net/dev')) {
     try {
@@ -116,7 +154,14 @@ function updateSystemSpeeds() {
   }
 }
 
+let hardwareTick = 0;
+updateRealHardwareMetrics(); // initial call
+
 setInterval(() => {
+  hardwareTick++;
+  if (hardwareTick % 5 === 0) {
+    updateRealHardwareMetrics();
+  }
   updateSystemSpeeds();
   const currentCpus = os.cpus();
   let idleDifference = 0;
@@ -498,12 +543,110 @@ export async function getPowerShellDetails(): Promise<{ policy: string; version:
   }
 }
 
+function isBinaryOnPathSync(command: string): boolean {
+  try {
+    const { execSync } = require('child_process');
+    const checkCmd = process.platform === "win32"
+      ? `powershell -NoProfile -NonInteractive -Command "Get-Command ${command} -ErrorAction Stop"`
+      : `which ${command}`;
+    execSync(checkCmd, { stdio: 'ignore', timeout: 2000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isWslAvailable(): boolean {
+  if (fs.existsSync("C:\\Windows\\System32\\wsl.exe")) return true;
+  try {
+    const { execSync } = require('child_process');
+    execSync('where.exe wsl', { stdio: 'ignore', timeout: 2000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function deobfuscateCommand(cmd: string): { cleanCommand: string; decodedPayloads: string[] } {
+  let processed = cmd;
+  const decodedPayloads: string[] = [];
+
+  // 1. Detect and recursively decode Base64 patterns in PowerShell/Bash
+  // Pattern A: [System.Convert]::FromBase64String("...") or [Convert]::FromBase64String("...")
+  const psBase64Regex = /(?:\[System\.Convert\]::|\[Convert\]::)?FromBase64String\(\s*(['"])([a-zA-Z0-9+/=]{4,})\1\s*\)/gi;
+  let match;
+  while ((match = psBase64Regex.exec(processed)) !== null) {
+    try {
+      const decoded = Buffer.from(match[2], 'base64').toString('utf8');
+      decodedPayloads.push(decoded);
+      processed = processed.replace(match[0], ` "${decoded.replace(/"/g, '\\"')}" `);
+    } catch (e) {
+      // Decode failed, ignore
+    }
+  }
+
+  // Pattern B: general Base64 decoders in shell (e.g. echo "..." | base64 -d)
+  const pipeBase64Regex = /(?:echo|printf)\s+(?:-n\s+)?(['"])([a-zA-Z0-9+/=]{4,})\1\s*\|\s*base64\s+(?:-d|--decode)/gi;
+  while ((match = pipeBase64Regex.exec(processed)) !== null) {
+    try {
+      const decoded = Buffer.from(match[2], 'base64').toString('utf8');
+      decodedPayloads.push(decoded);
+      processed = processed.replace(match[0], ` "${decoded.replace(/"/g, '\\"')}" `);
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  // 2. PowerShell/Bash variable tracking and splicing
+  // E.g., $a = 'rm'; $b = ' -rf'
+  const envVars: { [key: string]: string } = {};
+  
+  // Extract PowerShell variables: $var = "val"
+  const psVarAssignRegex = /\$([a-zA-Z0-9_]+)\s*=\s*(['"])(.*?)\2/gi;
+  let varMatch;
+  while ((varMatch = psVarAssignRegex.exec(processed)) !== null) {
+    envVars[varMatch[1]] = varMatch[3];
+  }
+  // Extract unquoted variables: $var = value
+  const psVarAssignUnquotedRegex = /\$([a-zA-Z0-9_]+)\s*=\s*([a-zA-Z0-9_\-]+)(?!\s*=)/gi;
+  while ((varMatch = psVarAssignUnquotedRegex.exec(processed)) !== null) {
+    envVars[varMatch[1]] = varMatch[2];
+  }
+
+  // Extract Bash variables: var="val"
+  const bashVarAssignRegex = /\b([a-zA-Z0-9_]+)\s*=\s*(['"])(.*?)\2/gi;
+  while ((varMatch = bashVarAssignRegex.exec(processed)) !== null) {
+    envVars[varMatch[1]] = varMatch[3];
+  }
+
+  // Resolve variable additions: $a + $b
+  const additionRegex = /\(\s*\$([a-zA-Z0-9_]+)\s*\+\s*\$([a-zA-Z0-9_]+)\s*\)/gi;
+  while ((varMatch = additionRegex.exec(processed)) !== null) {
+    const val1 = envVars[varMatch[1]] || '';
+    const val2 = envVars[varMatch[2]] || '';
+    processed = processed.replace(varMatch[0], ` "${val1}${val2}" `);
+  }
+
+  // Substitute simple variable references: $var or %var%
+  for (const [name, val] of Object.entries(envVars)) {
+    const varPattern = new RegExp(`\\$${name}\\b(?!\\s*=)`, 'g');
+    processed = processed.replace(varPattern, val);
+    
+    const cmdPattern = new RegExp(`%${name}%`, 'g');
+    processed = processed.replace(cmdPattern, val);
+  }
+
+  return { cleanCommand: processed.trim(), decodedPayloads };
+}
+
 export function helperValidateCommand(command: string): { safe: boolean; reason: string } {
   if (!command || typeof command !== "string") {
     return { safe: false, reason: "Command statement is empty or invalid structure." };
   }
 
-  const cmdTrim = command.trim();
+  const { cleanCommand, decodedPayloads } = deobfuscateCommand(command);
+
+  const cmdTrim = cleanCommand.trim();
   const subStatements = cmdTrim.split(/[;&\n]|\&\&|\|\||\|/).map(s => s.trim()).filter(Boolean);
 
   let isSafe = true;
@@ -537,7 +680,15 @@ export function helperValidateCommand(command: string): { safe: boolean; reason:
     const tokens = cleanStmt.split(/\s+/).filter(Boolean);
     if (tokens.length === 0) continue;
 
-    const primaryVerb = tokens[0].toLowerCase();
+    // Strip quotes for verification to prevent "r"m bypasses
+    const primaryVerb = tokens[0].toLowerCase().replace(/['"]/g, '');
+
+    // Block invocation operators to prevent variable splicing execution (e.g. & $a or . $b)
+    if (primaryVerb === '&' || primaryVerb === '.') {
+      isSafe = false;
+      reason = "Script invocation operators (&, .) are strictly blocked to prevent AST obfuscation bypasses.";
+      break;
+    }
 
     if (primaryVerb.includes('-')) {
       const parts = primaryVerb.split('-');
@@ -571,6 +722,18 @@ export function helperValidateCommand(command: string): { safe: boolean; reason:
     }
   }
 
+  // Recursive validation of decoded Base64 payloads
+  if (isSafe && decodedPayloads.length > 0) {
+    for (const payload of decodedPayloads) {
+      const recurse = helperValidateCommand(payload);
+      if (!recurse.safe) {
+        isSafe = false;
+        reason = `Obfuscated/Base64 payload contains blocked elements: ${recurse.reason}`;
+        break;
+      }
+    }
+  }
+
   return { safe: isSafe, reason };
 }
 
@@ -589,7 +752,7 @@ async function startServer() {
   app.post("/api/chat", async (req, res) => {
     const llmStartMs = Date.now();
     try {
-      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter" } = req.body;
+      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter", byokTemplate, byokResponsePath } = req.body;
       const apiKey = byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
 
       if (!apiKey) {
@@ -806,7 +969,7 @@ INTEGRATION ENGINE DETAILS:
       serverDB.addSystemLog('HERMES', 'INFO', `Routing request to model: ${model || 'Auto-Router'}`);
 
       // Dispatch OpenRouter request with narrow retry + prompt caching structures
-      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint, byokProtocol);
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint, byokProtocol, byokTemplate, byokResponsePath);
 
       const actualModel = result.model || "meta-llama/llama-3.2-3b-instruct:free";
       const usage = (result.usage as any) || { prompt_tokens: 0, completion_tokens: 0 };
@@ -1211,20 +1374,71 @@ INTEGRATION ENGINE DETAILS:
         }
       }
 
-      let finalCommand = command;
-      const discreteAgents = ['claude-code', 'cursor-agent', 'devin', 'gemini-cli'];
-      if (discreteAgents.includes(activeCli)) {
-        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-        if (activeCli === 'claude-code') {
-          finalCommand = `npx -y @anthropic-ai/claude-code --print -p "${safePrompt}"`;
-        } else if (activeCli === 'cursor-agent') {
-          finalCommand = `cursor --agent --prompt "${safePrompt}"`;
-        } else if (activeCli === 'devin') {
-          finalCommand = `devin --interactive false --instruction "${safePrompt}"`;
-        } else if (activeCli === 'gemini-cli') {
-          finalCommand = `gemini query "${safePrompt}"`;
+      const cliBinaryMap: { [key: string]: string } = {
+        'copilot': 'gh',
+        'github-cli': 'gh',
+        'claude-code': 'npx',
+        'cursor-agent': 'cursor',
+        'devin': 'devin',
+        'gemini-cli': 'gemini',
+        'codex-cli': 'codex',
+        'opencode': 'opencode',
+        'kimi': 'kimi',
+        'qwen': 'qwen',
+        'pi': 'pi'
+      };
+
+      const requiredBinary = cliBinaryMap[activeCli];
+      let useFallbackShell = false;
+      if (requiredBinary) {
+        if (!isBinaryOnPathSync(requiredBinary)) {
+          const warnMsg = `[EXEC/WARN] Binary for active CLI "${activeCli}" (${requiredBinary}) is missing from system PATH. Redirecting execution and falling back to standard terminal shell.`;
+          serverDB.addSystemLog('EXEC', 'WARN', warnMsg);
+          extraStderr += warnMsg + "\n";
+          useFallbackShell = true;
         }
       }
+
+      let finalCommand = command;
+      let isAgentUsed = false;
+      let exeTemplate = "";
+
+      try {
+        const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+        if (fs.existsSync(mappingPath)) {
+          const mappingConf = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+          const cliConf = mappingConf.find((c: any) => c.id === activeCli);
+          // If a custom execution template is found (ignoring openrouter baseline REST fallback)
+          if (cliConf && cliConf.executionTemplate && activeCli !== 'openrouter') {
+            isAgentUsed = true;
+            exeTemplate = cliConf.executionTemplate;
+          }
+        }
+      } catch (e) {
+         console.error("Failed to load cli-mapping.json for workspace run", e);
+      }
+
+      if (isAgentUsed && !useFallbackShell) {
+        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+        finalCommand = exeTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
+        serverDB.addSystemLog('EXEC', 'INFO', `Routing workspace pipeline via active engine: ${activeCli}`);
+      } else {
+        const isBashCmd = command.startsWith('bash ') || command.startsWith('wsl ') || activeCli === 'pi' || activeCli === 'kimi';
+        if (isBashCmd && isWslAvailable()) {
+          finalCommand = `wsl -e bash -c "${command.replace(/"/g, '\\"')}"`;
+          serverDB.addSystemLog('EXEC', 'INFO', 'Isolated execution pipeline: Routing via WSL Linux subshell.');
+        } else {
+          if (isBashCmd && !isWslAvailable()) {
+            const warnMsg = `[EXEC/WARN] WSL is not detected on this Windows host. Falling back to clean isolated PowerShell subshell.`;
+            serverDB.addSystemLog('EXEC', 'WARN', warnMsg);
+            extraStderr += warnMsg + "\n";
+          }
+          finalCommand = `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command.replace(/"/g, '\\"')}"`;
+          serverDB.addSystemLog('EXEC', 'INFO', 'Isolated execution pipeline: Enforcing clean PowerShell -NoProfile environment.');
+        }
+      }
+
+      console.log(`[JARVIS RUN] Executing: ${finalCommand}`);
 
       exec(finalCommand, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
         res.json({
@@ -1295,24 +1509,56 @@ INTEGRATION ENGINE DETAILS:
          console.error("Failed to load cli-mapping.json for execution", e);
       }
 
-      if (isDiscreteAgent) {
+      const cliBinaryMap: { [key: string]: string } = {
+        'copilot': 'gh',
+        'github-cli': 'gh',
+        'claude-code': 'npx',
+        'cursor-agent': 'cursor',
+        'devin': 'devin',
+        'gemini-cli': 'gemini',
+        'codex-cli': 'codex',
+        'opencode': 'opencode',
+        'kimi': 'kimi',
+        'qwen': 'qwen',
+        'pi': 'pi'
+      };
+
+      const requiredBinary = cliBinaryMap[activeCli];
+      let useFallbackShell = false;
+      if (requiredBinary && isDiscreteAgent) {
+        if (!isBinaryOnPathSync(requiredBinary)) {
+          const warnMsg = `[EXEC/WARN] Binary for active CLI "${activeCli}" (${requiredBinary}) is missing from system PATH. Redirecting execution and falling back to standard terminal shell.`;
+          serverDB.addSystemLog('EXEC', 'WARN', warnMsg);
+          extraStderr += warnMsg + "\n";
+          useFallbackShell = true;
+          isDiscreteAgent = false;
+        }
+      }
+
+      if (isDiscreteAgent && !useFallbackShell) {
         const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
         translatedCmd = exeTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
       }
 
       // Build final OS invocation based on shell type
       let finalCmd: string;
-      if (isDiscreteAgent) {
+      if (isDiscreteAgent && !useFallbackShell) {
         // Run physical CLI binary directly
         finalCmd = translatedCmd;
-      } else if (shell === 'powershell' || translatedCmd.toLowerCase().startsWith('powershell')) {
-        // Already a PowerShell command, execute as-is
-        finalCmd = translatedCmd;
-      } else if (shell === 'cmd' || translatedCmd.toLowerCase().startsWith('cmd')) {
-        finalCmd = translatedCmd;
+      } else if (shell === 'bash' || shell === 'linux' || command.startsWith('bash ') || command.startsWith('wsl ')) {
+        if (isWslAvailable()) {
+          finalCmd = `wsl -e bash -c "${command.replace(/"/g, '\\"')}"`;
+          serverDB.addSystemLog('EXEC', 'INFO', 'Isolated execution pipeline: Routing via WSL Linux subshell.');
+        } else {
+          finalCmd = `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command.replace(/"/g, '\\"')}"`;
+          const warnMsg = `[EXEC/WARN] WSL is not detected on this Windows host. Falling back to clean isolated PowerShell subshell.`;
+          serverDB.addSystemLog('EXEC', 'WARN', warnMsg);
+          extraStderr += warnMsg + "\n";
+        }
       } else {
-        // Default: run via powershell for maximum Windows compatibility
-        finalCmd = `powershell -NoProfile -NonInteractive -Command "${translatedCmd.replace(/"/g, '\\"')}"`;
+        // Default: run via isolated powershell -NoProfile for security/UTF-8 correctness
+        finalCmd = `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command.replace(/"/g, '\\"')}"`;
+        serverDB.addSystemLog('EXEC', 'INFO', 'Isolated execution pipeline: Enforcing clean PowerShell -NoProfile environment.');
       }
 
       console.log(`[JARVIS SHELL] Executing: ${finalCmd}`);
@@ -1335,6 +1581,26 @@ INTEGRATION ENGINE DETAILS:
   });
 
   // --- CLI Subsystem installer endpoint ---
+  const activeCliInstalls = new Map<string, { status: 'installing' | 'success' | 'error', message?: string }>();
+
+  app.get("/api/system/install-status", (req, res) => {
+    try {
+      const cliId = req.query.cliId as string;
+      const statusData = activeCliInstalls.get(cliId);
+      if (statusData) {
+        res.json({ success: true, ...statusData });
+        if (statusData.status === 'success' || statusData.status === 'error') {
+            // Clean up once read by client
+            activeCliInstalls.delete(cliId);
+        }
+      } else {
+        res.json({ success: true, status: 'none' });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post("/api/system/install-cli", async (req, res) => {
     try {
       const { cliId } = req.body;
@@ -1360,11 +1626,15 @@ INTEGRATION ENGINE DETAILS:
 
       serverDB.addSystemLog('SYS', 'INFO', `INITIATING PHYSICAL CLI DEPLOYMENT: npm install -g ${pkg}...`);
       
+      activeCliInstalls.set(cliId, { status: 'installing' });
+      
       // Run background installation
       exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
         if (err) {
+          activeCliInstalls.set(cliId, { status: 'error', message: err.message });
           serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
         } else {
+          activeCliInstalls.set(cliId, { status: 'success' });
           serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
         }
       });
@@ -1510,11 +1780,21 @@ INTEGRATION ENGINE DETAILS:
         finalMem = Math.min(100, finalMem + 8);
       }
       
-      let finalGpu = reactorOverdrive 
-        ? 88 + Math.floor(Math.random() * 8) 
-        : (shieldActive ? 28 + Math.floor(Math.random() * 8) : 8 + Math.floor(Math.random() * 8));
+      let finalGpu = osGpuUsage > 0 ? osGpuUsage : (reactorOverdrive 
+        ? Math.min(100, Math.round(cpuUsage * 0.8 + 15 + Math.random() * 5)) 
+        : (shieldActive ? Math.min(100, Math.round(cpuUsage * 0.3 + 10 + Math.random() * 4)) : Math.min(100, Math.round(cpuUsage * 0.1 + 2 + Math.random() * 2))));
 
-      let finalTmp = reactorOverdrive ? "84°C" : (shieldActive ? "58°C" : "47°C");
+      const ambientTemp = 35; // Standard base temp inside a computer case
+      const loadFactor = cpuUsage / 100;
+      const overdriveOffset = reactorOverdrive ? 38 : (shieldActive ? 14 : 0);
+      const simulatedTemp = Math.round(ambientTemp + (42 * loadFactor) + overdriveOffset + (Math.random() - 0.5) * 1.5);
+      const finalTmp = osGpuTemp > 0 ? `${osGpuTemp}°C` : `${simulatedTemp}°C`;
+
+      const coreCount = cpus.length || 4;
+      const baseTDP = coreCount * 10; // 10W max TDP per core
+      const estPower = (baseTDP * loadFactor + 8 + (reactorOverdrive ? 35 : (shieldActive ? 8 : 0)) + Math.random() * 2).toFixed(1);
+      const powerDraw = `${estPower} W`;
+
       let finalNet = satelliteLinked ? "5.5 GB/s" : "0KB/s";
       if (currentRxSpeed > 0 || currentTxSpeed > 0) {
         finalNet = `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`;
@@ -1555,8 +1835,9 @@ INTEGRATION ENGINE DETAILS:
         txSpeed: currentTxSpeed,
         gpu: finalGpu,
         tmp: finalTmp,
+        powerDraw: powerDraw,
         uptime: Math.round(os.uptime() / 3600),
-        processes: reactorOverdrive ? 298 + Math.floor(Math.random() * 5) : 256 + Math.floor(Math.random() * 20),
+        processes: osProcessCount > 0 ? osProcessCount : (reactorOverdrive ? 298 + Math.floor(Math.random() * 5) : 256 + Math.floor(Math.random() * 20)),
         os: os.platform().toUpperCase(),
         secStatus,
         shieldActive,

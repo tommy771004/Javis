@@ -50,6 +50,22 @@ const tryParseJSON = (text: string) => {
   }
 };
 
+const getNestedValue = (obj: any, path: string): any => {
+  if (!path) return undefined;
+  const segments = path.split(/\.|\[|\]/).filter(Boolean);
+  let current = obj;
+  for (const segment of segments) {
+    if (current == null) return undefined;
+    const index = parseInt(segment, 10);
+    if (!isNaN(index)) {
+      current = current[index];
+    } else {
+      current = current[segment];
+    }
+  }
+  return current;
+};
+
 const getProviderErrorMetadata = (status: number, rawText: string) => {
   const parsed = tryParseJSON(rawText);
   const outerError = parsed?.error ?? null;
@@ -104,7 +120,9 @@ export async function fetchOpenRouterWithFallback(
   validator?: (text: string) => string,
   requestedModel?: string,
   apiEndpoint?: string,
-  protocol: string = "openrouter"
+  protocol: string = "openrouter",
+  customBodyTemplate?: string,
+  customResponsePath?: string
 ) {
   let lastError: Error | null = null;
 
@@ -192,7 +210,29 @@ export async function fetchOpenRouterWithFallback(
 
         let bodyPayload: any;
 
-        if (protocol === 'anthropic') {
+        if (protocol === 'custom' && customBodyTemplate) {
+          const messages = messagesPayload.map(m => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || m.content?.[0] || "")
+          }));
+
+          let templateStr = customBodyTemplate;
+          templateStr = templateStr.replace(/\$\{model\}/g, JSON.stringify(model));
+          templateStr = templateStr.replace(/\$\{prompt\}/g, JSON.stringify(prompt));
+          templateStr = templateStr.replace(/\$\{userPrompt\}/g, JSON.stringify(userPrompt));
+          templateStr = templateStr.replace(/\$\{systemPrompt\}/g, JSON.stringify(systemPrompt));
+          templateStr = templateStr.replace(/\$\{messages\}/g, JSON.stringify(messages));
+
+          try {
+            bodyPayload = JSON.parse(templateStr);
+          } catch (e: any) {
+            throw new Error(`Failed to parse custom JSON body template: ${e.message}. Template: ${templateStr}`);
+          }
+          
+          if (apiKey) {
+            headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+        } else if (protocol === 'anthropic') {
           if (apiKey) headers['x-api-key'] = apiKey;
           headers['anthropic-version'] = '2023-06-01';
           if (!isCustomEndpoint) {
@@ -301,7 +341,18 @@ export async function fetchOpenRouterWithFallback(
         let text = "";
         let usage = { prompt_tokens: 0, completion_tokens: 0 };
 
-        if (protocol === 'anthropic' && data.content && Array.isArray(data.content)) {
+        if (protocol === 'custom' && customResponsePath) {
+          const extracted = getNestedValue(data, customResponsePath);
+          if (extracted !== undefined) {
+            text = typeof extracted === 'string' ? extracted : JSON.stringify(extracted);
+          } else {
+            text = data.choices?.[0]?.message?.content || data.response || (typeof data === 'string' ? data : JSON.stringify(data));
+          }
+          usage = data.usage || {
+            prompt_tokens: data.prompt_eval_count || 0,
+            completion_tokens: data.eval_count || 0
+          };
+        } else if (protocol === 'anthropic' && data.content && Array.isArray(data.content)) {
           text = data.content.map((c: any) => c.text).join("");
           usage = {
             prompt_tokens: data.usage?.input_tokens || 0,

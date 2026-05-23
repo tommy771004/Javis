@@ -62,6 +62,24 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                     if (data.reactorOverdrive !== undefined) setOverloaded(data.reactorOverdrive);
                     if (data.corePower !== undefined) setCorePower(data.corePower);
                     if (data.structural !== undefined) setStructural(data.structural);
+
+                    // Physical calibration loop binding spectra and reactor flux to actual CPU workload & power draw
+                    const cpuUsage = data.cpu || 0;
+                    const powerVal = parseFloat(data.powerDraw) || 15.0;
+                    const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
+                    
+                    let baseWavelength = 480;
+                    if (skin === 'emerald') baseWavelength = 530;
+                    else if (skin === 'amber') baseWavelength = 590;
+                    else if (skin === 'red') baseWavelength = 650;
+
+                    // Micro-fluctuation of wavelength based on CPU activity (spectroscopic thermal drift!)
+                    const dynamicWavelength = (baseWavelength + (cpuUsage * 0.015) + (Math.random() - 0.5) * 0.05).toFixed(2);
+                    setActiveWavelength(`${dynamicWavelength} nm`);
+
+                    // Estimated reactor flux directly mapped to CPU power draw in Gigawatts scaled!
+                    const dynamicFlux = (powerVal * 0.015 + (Math.random() - 0.5) * 0.002).toFixed(3);
+                    setActiveFlux(`${dynamicFlux} GW`);
                 }
             } catch (err) {
                 console.warn("Failed to fetch server system vitals", err);

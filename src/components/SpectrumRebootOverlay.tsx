@@ -8,6 +8,7 @@ export function SpectrumRebootOverlay() {
   const [activeSkin, setActiveSkin] = useState('cyan');
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState('');
+  const [sensorData, setSensorData] = useState({ temp: 45, load: 1.21 });
 
   useEffect(() => {
     const handleSkinUpdated = () => {
@@ -58,12 +59,15 @@ export function SpectrumRebootOverlay() {
         setCurrentStep(`SYS: STORAGE VERIFIED. LAST RECORD: [${data.length > 0 ? data[0].module : 'OK'}]`);
         await new Promise(r => setTimeout(r, 500));
 
-        // Step 3: Fetch MCP Status
+        // Step 3: Fetch MCP Status and Hardware Telemetry
         setProgress(85);
         setCurrentStep("SYS: BINDING MCP AND EXTERNAL CONTEXT SERVERS...");
         res = await fetch('/api/system/stats');
         data = await res.json();
         if (!isSubscribed) return;
+        
+        // Feed real sensor data to drive dynamic UI aesthetics
+        setSensorData({ temp: data.gpuTemperature || 45, load: data.osProcessCount ? (data.osProcessCount / 200).toFixed(2) : 1.21 });
 
         setProgress(95);
         setCurrentStep(`SYS: ${data.mcpServersConnected} EXTERNAL MCP SERVER(S) BOUND. UPTIME: ${Math.floor(data.uptime)}s`);
@@ -96,12 +100,16 @@ export function SpectrumRebootOverlay() {
   }, [isRebooting]);
 
   const getSkinData = () => {
+    // Generate derived aesthetics from real hardware metrics
+    const dynamicWavelength = (base: number) => `${base + Math.floor(sensorData.temp / 10)} nm`;
+    const dynamicFlux = `${sensorData.load} GW`;
+
     switch (activeSkin) {
       case 'emerald':
         return {
           title: 'ARC REACTOR EMERALD',
-          wavelength: '530 nm [Low Light Output]',
-          flux: '1.10 GW Delta',
+          wavelength: `${dynamicWavelength(530)} [Optical Coherence: Normal]`,
+          flux: `${dynamicFlux} Delta`,
           color: 'text-emerald-500',
           borderColor: 'border-emerald-500/55',
           glowColor: 'rgba(16, 185, 129, 0.25)',
@@ -110,8 +118,8 @@ export function SpectrumRebootOverlay() {
       case 'amber':
         return {
           title: 'RETRO GARAGE AMBER',
-          wavelength: '590 nm [Caramel Retro Glow]',
-          flux: '0.98 GW Delta',
+          wavelength: `${dynamicWavelength(590)} [Caramel Retro Glow]`,
+          flux: `${dynamicFlux} Delta`,
           color: 'text-amber-500',
           borderColor: 'border-amber-500/55',
           glowColor: 'rgba(245, 158, 11, 0.25)',
@@ -120,8 +128,8 @@ export function SpectrumRebootOverlay() {
       case 'red':
         return {
           title: 'MARK LXXXV ARMOR OVERDRIVE',
-          wavelength: '650 nm [Hotrod Combustion]',
-          flux: '1.65 GW Delta [Warning: Overload Peak]',
+          wavelength: `${dynamicWavelength(650)} [Hotrod Combustion]`,
+          flux: `${dynamicFlux} Delta [Warning: Overload Peak]`,
           color: 'text-red-500',
           borderColor: 'border-red-500/55',
           glowColor: 'rgba(239, 68, 68, 0.25)',
@@ -131,8 +139,8 @@ export function SpectrumRebootOverlay() {
       default:
         return {
           title: 'HOLOGRAPHIC STANDARD CYAN',
-          wavelength: '480 nm [Optical Coherence]',
-          flux: '1.21 GW Standard',
+          wavelength: `${dynamicWavelength(480)} [Optimal Resonance]`,
+          flux: `${dynamicFlux} Standard`,
           color: 'text-cyan-500',
           borderColor: 'border-cyan-500/55',
           glowColor: 'rgba(6, 182, 212, 0.25)',

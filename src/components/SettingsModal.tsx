@@ -17,6 +17,21 @@ export interface SecuritySettings {
   taskMode: 'manual' | 'auto';
   voiceProfile: 'baritone' | 'fast' | 'standard';
   autoRepair: boolean;
+  activeSkin?: string;
+  satelliteName?: string;
+  armorModel?: string;
+  operatorName?: string;
+  byokKey?: string;
+  byokModel?: string;
+  byokEndpoint?: string;
+  byokProtocol?: string;
+  byokTemplate?: string;
+  byokResponsePath?: string;
+  systemPrompt?: string;
+  activeCli?: string;
+  elevenLabsKey?: string;
+  alwaysOnTop?: boolean;
+  launchOnStartup?: boolean;
 }
 
 const DEFAULT_SETTINGS: SecuritySettings = {
@@ -25,6 +40,21 @@ const DEFAULT_SETTINGS: SecuritySettings = {
   taskMode: 'manual',
   voiceProfile: 'baritone',
   autoRepair: false,
+  activeSkin: 'cyan',
+  satelliteName: 'STARK-SAT-4',
+  armorModel: 'Mark LXXXV',
+  operatorName: 'T. STARK',
+  byokKey: '',
+  byokModel: 'google/gemini-2.5-flash',
+  byokEndpoint: 'https://openrouter.ai/api/v1',
+  byokProtocol: 'openrouter',
+  byokTemplate: '{\n  "model": "${model}",\n  "messages": "${messages}"\n}',
+  byokResponsePath: 'choices[0].message.content',
+  systemPrompt: '',
+  activeCli: 'openrouter',
+  elevenLabsKey: '',
+  alwaysOnTop: false,
+  launchOnStartup: false
 };
 
 interface SettingsModalProps {
@@ -62,12 +92,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const [installingCli, setInstallingCli] = useState<string | null>(null);
 
   // Dynamic system security audit and telemetry fetching
-  const [synapseLatency, setSynapseLatency] = useState<string>('374 ms');
-  const [authIsolation, setAuthIsolation] = useState<string>('100.0%');
-  const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('Offline-Bounded');
-  const [encryptionLevel, setEncryptionLevel] = useState<string>('AES-128 / RSA-2048');
-  const [activePort, setActivePort] = useState<string>('WSS-3000');
-  const [sandboxControl, setSandboxControl] = useState<string>('HOST-UNSECURED');
+  const [synapseLatency, setSynapseLatency] = useState<string>('SCANNING...');
+  const [authIsolation, setAuthIsolation] = useState<string>('SCANNING...');
+  const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('SCANNING...');
+  const [encryptionLevel, setEncryptionLevel] = useState<string>('SCANNING...');
+  const [activePort, setActivePort] = useState<string>('SCANNING...');
+  const [sandboxControl, setSandboxControl] = useState<string>('SCANNING...');
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
 
   useEffect(() => {
@@ -121,6 +151,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const [openRouterModel, setOpenRouterModel] = useState<string>('google/gemini-2.5-flash');
   const [openRouterEndpoint, setOpenRouterEndpoint] = useState<string>('https://openrouter.ai/api/v1');
   const [openRouterProtocol, setOpenRouterProtocol] = useState<string>('openrouter');
+  const [customBodyTemplate, setCustomBodyTemplate] = useState<string>('{\n  "model": "${model}",\n  "messages": "${messages}"\n}');
+  const [customResponsePath, setCustomResponsePath] = useState<string>('choices[0].message.content');
   
   const [elevenLabsKey, setElevenLabsKey] = useState<string>('');
   const [envSaveStatus, setEnvSaveStatus] = useState<string>('');
@@ -207,7 +239,37 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       fetch('/api/settings')
         .then(res => res.json())
         .then(data => {
-          if (data) setSettings({ ...DEFAULT_SETTINGS, ...data });
+          if (data) {
+            setSettings({ ...DEFAULT_SETTINGS, ...data });
+            if (data.operatorName) {
+              setOperatorName(data.operatorName);
+              localStorage.setItem('jarvis_operator_name', data.operatorName);
+            }
+            if (data.armorModel) {
+              setArmorModel(data.armorModel);
+              localStorage.setItem('jarvis_armor_model', data.armorModel);
+            }
+            if (data.satelliteName) {
+              setSatelliteName(data.satelliteName);
+              localStorage.setItem('jarvis_satellite_name', data.satelliteName);
+            }
+            if (data.activeSkin) {
+              setActiveSkin(data.activeSkin);
+              localStorage.setItem('jarvis_active_skin', data.activeSkin);
+              window.dispatchEvent(new CustomEvent('skin-updated'));
+            }
+            if (data.byokKey) setOpenRouterKey(data.byokKey);
+            if (data.byokModel) setOpenRouterModel(data.byokModel);
+            if (data.byokEndpoint) setOpenRouterEndpoint(data.byokEndpoint);
+            if (data.byokProtocol) setOpenRouterProtocol(data.byokProtocol);
+            if (data.byokTemplate) setCustomBodyTemplate(data.byokTemplate);
+            if (data.byokResponsePath) setCustomResponsePath(data.byokResponsePath);
+            if (data.systemPrompt) setSystemPrompt(data.systemPrompt);
+            if (data.activeCli) setSelectedCLI(data.activeCli);
+            if (data.elevenLabsKey) setElevenLabsKey(data.elevenLabsKey);
+            if (data.alwaysOnTop !== undefined) setAlwaysOnTop(data.alwaysOnTop);
+            if (data.launchOnStartup !== undefined) setLaunchOnStartup(data.launchOnStartup);
+          }
         })
         .catch(err => {
           console.warn("Failed to fetch settings from server on mount", err);
@@ -236,6 +298,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const savedCLI = localStorage.getItem('jarvis_active_cli');
       const elevenlabs = localStorage.getItem('jarvis_elevenlabs_key');
 
+      const savedTemplate = localStorage.getItem('jarvis_byok_template');
+      const savedPath = localStorage.getItem('jarvis_byok_response_path');
+
       if (key) setOpenRouterKey(key);
       if (model) setOpenRouterModel(model);
       if (endpoint) setOpenRouterEndpoint(endpoint);
@@ -243,6 +308,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       if (savedPrompt) setSystemPrompt(savedPrompt);
       if (savedCLI) setSelectedCLI(savedCLI);
       if (elevenlabs) setElevenLabsKey(elevenlabs);
+      if (savedTemplate) setCustomBodyTemplate(savedTemplate);
+      if (savedPath) setCustomResponsePath(savedPath);
 
       runPathScan(true);
 
@@ -260,6 +327,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const saveSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings);
     localStorage.setItem('jarvis_security_settings', JSON.stringify(newSettings));
+    
+    // Explicitly mirror individual keys so we don't break existing local reads
+    if (newSettings.byokKey !== undefined) localStorage.setItem('jarvis_byok_key', newSettings.byokKey);
+    if (newSettings.byokModel !== undefined) localStorage.setItem('jarvis_byok_model', newSettings.byokModel);
+    if (newSettings.byokEndpoint !== undefined) localStorage.setItem('jarvis_byok_endpoint', newSettings.byokEndpoint);
+    if (newSettings.byokProtocol !== undefined) localStorage.setItem('jarvis_byok_protocol', newSettings.byokProtocol);
+    if (newSettings.byokTemplate !== undefined) localStorage.setItem('jarvis_byok_template', newSettings.byokTemplate);
+    if (newSettings.byokResponsePath !== undefined) localStorage.setItem('jarvis_byok_response_path', newSettings.byokResponsePath);
+    if (newSettings.systemPrompt !== undefined) localStorage.setItem('jarvis_system_prompt', newSettings.systemPrompt);
+    if (newSettings.activeCli !== undefined) localStorage.setItem('jarvis_active_cli', newSettings.activeCli);
+    if (newSettings.elevenLabsKey !== undefined) localStorage.setItem('jarvis_elevenlabs_key', newSettings.elevenLabsKey);
+
     if (onSettingsChange) {
       onSettingsChange(newSettings);
     }
@@ -312,14 +391,31 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     if (key === 'operatorName') {
       setOperatorName(val);
       localStorage.setItem('jarvis_operator_name', val);
+      const updated = { ...settings, operatorName: val };
+      saveSettings(updated);
     } else if (key === 'armorModel') {
       setArmorModel(val);
       localStorage.setItem('jarvis_armor_model', val);
+      const updated = { ...settings, armorModel: val };
+      saveSettings(updated);
     } else if (key === 'satelliteName') {
       setSatelliteName(val);
       localStorage.setItem('jarvis_satellite_name', val);
+      const updated = { ...settings, satelliteName: val };
+      saveSettings(updated);
     }
     window.dispatchEvent(new Event('identity-updated'));
+  };
+
+  const handleSkinChange = (skin: string, logMsg: string, speakMsg: string) => {
+    playTactileClick();
+    localStorage.setItem('jarvis_active_skin', skin);
+    setActiveSkin(skin);
+    window.dispatchEvent(new CustomEvent('skin-updated'));
+    triggerLog(logMsg, speakMsg);
+
+    const updated = { ...settings, activeSkin: skin };
+    saveSettings(updated);
   };
 
   const handleDesktopToggle = (type: 'always-on-top' | 'startup', enabled: boolean) => {
@@ -363,11 +459,17 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   };
 
   const handleSaveBYOK = () => {
-    localStorage.setItem('jarvis_byok_key', openRouterKey);
-    localStorage.setItem('jarvis_byok_model', openRouterModel);
-    localStorage.setItem('jarvis_byok_endpoint', openRouterEndpoint);
-    localStorage.setItem('jarvis_byok_protocol', openRouterProtocol);
-    localStorage.setItem('jarvis_system_prompt', systemPrompt);
+    const updated = {
+       ...settings,
+       byokKey: openRouterKey,
+       byokModel: openRouterModel,
+       byokEndpoint: openRouterEndpoint,
+       byokProtocol: openRouterProtocol,
+       byokTemplate: customBodyTemplate,
+       byokResponsePath: customResponsePath,
+       systemPrompt: systemPrompt
+    };
+    saveSettings(updated);
     
     triggerLog(
       `SYS: BYOK API PARAMETERS UPDATE. MODEL: ${openRouterModel}`,
@@ -377,7 +479,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
   const handleSelectCLI = async (cliId: string) => {
     setSelectedCLI(cliId);
-    localStorage.setItem('jarvis_active_cli', cliId);
+    saveSettings({ ...settings, activeCli: cliId });
     
     let engineParam = "powershell";
     if (cliId === "copilot") {
@@ -592,11 +694,30 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           data.speak || "Active package installation pipeline triggered as background daemon."
         );
         
-        // Wait 12 seconds then schedule a hot-reload path check
-        setTimeout(async () => {
-          await runPathScan(true);
-          setInstallingCli(null);
-        }, 12000);
+        // Accurate background polling rather than blind 12-second timeout
+        const intervalId = setInterval(async () => {
+          try {
+            const statusResp = await fetch(`/api/system/install-status?cliId=${cliId}`);
+            if (statusResp.ok) {
+              const statusData = await statusResp.json();
+              if (statusData.status === 'success') {
+                clearInterval(intervalId);
+                await runPathScan(true);
+                setInstallingCli(null);
+              } else if (statusData.status === 'error') {
+                clearInterval(intervalId);
+                setInstallingCli(null);
+                triggerLog(
+                  `SYS: DEPLOYMENT LOGIC FAILURE. ${statusData.message}`,
+                  "An unexpected intercept in our package pipelines, sir."
+                );
+                await runPathScan(true);
+              }
+            }
+          } catch (e) {
+            console.error("Failed to poll install status", e);
+          }
+        }, 2000);
       } else {
         throw new Error(data.error || "Installation API returned status false");
       }
@@ -1145,6 +1266,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                             <option value="anthropic">Anthropic Native</option>
                             <option value="gemini">Google Gemini</option>
                             <option value="ollama">Ollama Local</option>
+                            <option value="custom">Custom Adaptor</option>
                           </select>
                           <input
                             type="text"
@@ -1155,6 +1277,41 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                           />
                         </div>
                       </div>
+
+                      {openRouterProtocol === 'custom' && (
+                        <>
+                          <div className="flex flex-col gap-1.5 mt-1">
+                            <label className="text-[10px] text-cyan-500 uppercase tracking-wider">
+                              {locale === 'zh-TW' ? '自訂請求 JSON 範本 (Request JSON Template)' : 'CUSTOM REQUEST JSON TEMPLATE'}
+                            </label>
+                            <textarea
+                              value={customBodyTemplate}
+                              onChange={(e) => setCustomBodyTemplate(e.target.value)}
+                              placeholder='{"model": "${model}", "messages": "${messages}"}'
+                              className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] font-mono text-cyan-300 focus:outline-none focus:border-cyan-500 min-h-[60px]"
+                            />
+                            <span className="text-[9px] text-cyan-600/80">
+                              Use variables like <code>{"${model}"}</code>, <code>{"${messages}"}</code>, or <code>{"${prompt}"}</code>.
+                            </span>
+                          </div>
+
+                          <div className="flex flex-col gap-1.5 mt-1">
+                            <label className="text-[10px] text-cyan-500 uppercase tracking-wider">
+                              {locale === 'zh-TW' ? '自訂回傳提取路徑 (Response Path Selector)' : 'CUSTOM RESPONSE PATH SELECTOR'}
+                            </label>
+                            <input
+                              type="text"
+                              value={customResponsePath}
+                              onChange={(e) => setCustomResponsePath(e.target.value)}
+                              placeholder="choices[0].message.content"
+                              className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
+                            />
+                            <span className="text-[9px] text-cyan-600/80">
+                              Dot-notation path to extract string, e.g. <code>choices[0].message.content</code> or <code>data.results[0].text</code>.
+                            </span>
+                          </div>
+                        </>
+                      )}
 
                       <div className="flex flex-col gap-1.5">
                         <label className="text-[10px] text-cyan-500 uppercase tracking-wider">{locale === 'zh-TW' ? '系統提示詞 (System Prompt)' : 'SYSTEM PROMPT'}</label>
@@ -1590,13 +1747,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
                 <div className="grid grid-cols-2 gap-3 pb-2">
                   <div 
-                    onClick={() => {
-                      playTactileClick();
-                      localStorage.setItem('jarvis_active_skin', 'cyan');
-                      setActiveSkin('cyan');
-                      window.dispatchEvent(new CustomEvent('skin-updated'));
-                      triggerLog("SYS: CALIBRATING HOLOGRAPHIC CYAN SPECTRA.", "Calibrating hologram emission wavelength, sir.");
-                    }}
+                    onClick={() => handleSkinChange('cyan', "SYS: CALIBRATING HOLOGRAPHIC CYAN SPECTRA.", "Calibrating hologram emission wavelength, sir.")}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'cyan' 
                         ? 'border-2 border-cyan-500/80 bg-cyan-950/15 shadow-[0_0_12px_rgba(6,182,212,0.25)]' 
@@ -1611,13 +1762,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => {
-                      playTactileClick();
-                      localStorage.setItem('jarvis_active_skin', 'emerald');
-                      setActiveSkin('emerald');
-                      window.dispatchEvent(new CustomEvent('skin-updated'));
-                      triggerLog("SYS: ADJUSTING FREQUENCY TO EMERALD RAYS.", "Reactor plasma aligned to Emerald, sir.");
-                    }}
+                    onClick={() => handleSkinChange('emerald', "SYS: ADJUSTING FREQUENCY TO EMERALD RAYS.", "Reactor plasma aligned to Emerald, sir.")}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'emerald' 
                         ? 'border-2 border-emerald-500 bg-emerald-950/15 shadow-[0_0_12px_rgba(16,185,129,0.25)]' 
@@ -1632,13 +1777,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => {
-                      playTactileClick();
-                      localStorage.setItem('jarvis_active_skin', 'amber');
-                      setActiveSkin('amber');
-                      window.dispatchEvent(new CustomEvent('skin-updated'));
-                      triggerLog("SYS: SHIFTING SPECTRUM TO BARITONE AMBER.", "Tactical warm amber profiles established.");
-                    }}
+                    onClick={() => handleSkinChange('amber', "SYS: SHIFTING SPECTRUM TO BARITONE AMBER.", "Tactical warm amber profiles established.")}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'amber' 
                         ? 'border-2 border-amber-500 bg-amber-950/15 shadow-[0_0_12px_rgba(245,158,11,0.25)]' 
@@ -1653,13 +1792,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => {
-                      playTactileClick();
-                      localStorage.setItem('jarvis_active_skin', 'red');
-                      setActiveSkin('red');
-                      window.dispatchEvent(new CustomEvent('skin-updated'));
-                      triggerLog("SYS: WARNING: OVERLOAD THRESHOLD TRIGGERED.", "Combat Mark Eighty-Five mode activated, sir.");
-                    }}
+                    onClick={() => handleSkinChange('red', "SYS: WARNING: OVERLOAD THRESHOLD TRIGGERED.", "Combat Mark Eighty-Five mode activated, sir.")}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'red' 
                         ? 'border-2 border-red-500 bg-red-950/15 shadow-[0_0_12px_rgba(239,68,68,0.25)]' 

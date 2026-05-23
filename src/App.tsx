@@ -976,6 +976,8 @@ export default function App() {
       const byokModel = localStorage.getItem('jarvis_byok_model') || '';
       const byokEndpoint = localStorage.getItem('jarvis_byok_endpoint') || '';
       const byokProtocol = localStorage.getItem('jarvis_byok_protocol') || 'openrouter';
+      const byokTemplate = localStorage.getItem('jarvis_byok_template') || '';
+      const byokResponsePath = localStorage.getItem('jarvis_byok_response_path') || '';
 
       // Dispatch request to Express server
       const response = await fetch('/api/chat', {
@@ -988,7 +990,9 @@ export default function App() {
           activeCli: activeCli,
           byokKey: byokKey,
           byokEndpoint: byokEndpoint,
-          byokProtocol: byokProtocol
+          byokProtocol: byokProtocol,
+          byokTemplate: byokTemplate,
+          byokResponsePath: byokResponsePath
         })
       });
 
