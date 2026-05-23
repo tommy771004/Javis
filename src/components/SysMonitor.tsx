@@ -9,21 +9,34 @@ export function SysMonitor({
 }) {
     const [stats, setStats] = useState({
         cpu: 0,
-        mem: 57,
+        mem: 0,
         net: '0KB/s',
-        gpu: 14,
-        tmp: 'N/A'
+        gpu: 0,
+        tmp: 'N/A',
+        uptime: 0,
+        processes: 0,
+        os: 'WIN',
+        secStatus: 'SEC_REQUIRED'
     });
 
+    const fetchSystemStats = async () => {
+        try {
+            const res = await fetch('/api/system/stats');
+            if (res.ok) {
+                const data = await res.json();
+                setStats(data);
+            }
+        } catch (e) {
+            console.error("Failed to fetch system stats from API", e);
+        }
+    };
+
     useEffect(() => {
-        const interval = setInterval(() => {
-            setStats(prev => ({
-                ...prev,
-                cpu: Math.floor(Math.random() * 20),
-                mem: 50 + Math.floor(Math.random() * 20),
-                gpu: 10 + Math.floor(Math.random() * 15),
-            }));
-        }, 2000);
+        // Initial fetch
+        fetchSystemStats();
+        
+        // Dynamic interval query
+        const interval = setInterval(fetchSystemStats, 2000);
         return () => clearInterval(interval);
     }, []);
 
@@ -31,14 +44,14 @@ export function SysMonitor({
         <div className="mb-4 border border-cyan-900/50 p-2 relative bg-cyan-950/10">
             <div className="flex justify-between text-[10px] tracking-widest mb-2 opacity-80">
                 <span>{label}</span>
-                <span className={typeof value === 'number' && value > 50 ? 'text-amber-500' : 'text-cyan-500'}>
+                <span className={typeof value === 'number' && value > 75 ? 'text-amber-500' : 'text-cyan-500'}>
                     {value}{type === 'percent' ? '%' : ''}
                 </span>
             </div>
             {type === 'percent' && (
                 <div className="h-1 bg-cyan-950 w-full overflow-hidden">
                     <div 
-                        className={`h-full transition-all duration-1000 ${Number(value) > 50 ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' : 'bg-cyan-500 shadow-[0_0_8px_rgba(0,255,255,0.5)]'}`} 
+                        className={`h-full transition-all duration-1000 ${Number(value) > 75 ? 'bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' : 'bg-cyan-500 shadow-[0_0_8px_rgba(0,255,255,0.5)]'}`} 
                         style={{ width: `${value}%` }}
                     />
                 </div>
@@ -54,16 +67,16 @@ export function SysMonitor({
                 </div>
                 
                 <div className="flex-1 overflow-y-auto pr-2 scrollbar-cyan">
-                    <StatBar label="CPU" value={stats.cpu} />
-                    <StatBar label="MEM" value={stats.mem} />
-                    <StatBar label="NET" value={stats.net} type="text" />
-                    <StatBar label="GPU" value={stats.gpu} />
-                    <StatBar label="TMP" value={stats.tmp} type="text" />
+                    <StatBar label="CPU LOAD" value={stats.cpu} />
+                    <StatBar label="RAM MEM" value={stats.mem} />
+                    <StatBar label="NET SPEED" value={stats.net} type="text" />
+                    <StatBar label="GPU ACTIVE" value={stats.gpu} />
+                    <StatBar label="SYS TEMP" value={stats.tmp} type="text" />
  
                     <div className="mt-2 border border-cyan-900/50 p-3 text-[10px] opacity-80 tracking-widest space-y-1">
-                        <div className="flex"><span className="w-16">UP</span> <span className="text-green-400">00:49</span></div>
-                        <div className="flex"><span className="w-16">PROC</span> <span>256</span></div>
-                        <div className="flex"><span className="w-16">OS</span> <span>WIN</span></div>
+                        <div className="flex"><span className="w-16">UPTIME</span> <span className="text-green-400">{stats.uptime}h</span></div>
+                        <div className="flex"><span className="w-16">PROCS</span> <span>{stats.processes}</span></div>
+                        <div className="flex"><span className="w-16">HOST OS</span> <span>{stats.os}</span></div>
                     </div>
                 </div>
             </div>
@@ -84,11 +97,19 @@ export function SysMonitor({
                         AI CORE<br/>ACTIVE
                     </div>
                 )}
+
+                {stats.secStatus === 'SEC_CLEARED' ? (
+                    <div className="border border-green-500/50 text-green-400 text-center py-2 text-[10px] tracking-[0.2em] opacity-85 hover:opacity-100 hover:border-green-400 transition-all cursor-pointer bg-green-950/5">
+                        SEC<br/>CLEARED
+                    </div>
+                ) : (
+                    <div className="border border-amber-500/80 text-amber-500 text-center py-2 text-[10px] tracking-[0.2em] opacity-85 hover:opacity-100 hover:border-amber-400 transition-all cursor-pointer bg-amber-950/10 animate-pulse">
+                        SEC<br/>KEY_REQUIRED
+                    </div>
+                )}
+
                 <div className="border border-cyan-800/50 text-center py-2 text-[10px] tracking-[0.2em] opacity-70 hover:opacity-100 hover:border-cyan-500 transition-all cursor-pointer">
-                    SEC<br/>CLEARED
-                </div>
-                <div className="border border-cyan-800/50 text-center py-2 text-[10px] tracking-[0.2em] opacity-70 hover:opacity-100 hover:border-cyan-500 transition-all cursor-pointer">
-                    PROTOCOL<br/>XXXVIII
+                    PROTOCOL<br/>XXXIX
                 </div>
             </div>
         </div>

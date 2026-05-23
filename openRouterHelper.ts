@@ -105,118 +105,153 @@ export async function fetchOpenRouterWithFallback(
   requestedModel?: string
 ) {
   let lastError: Error | null = null;
-  let rateLimitedCount = 0;
-  let notFoundCount = 0;
-  let quotaLimitedCount = 0;
 
   const modelsToTry = requestedModel ? [requestedModel, ...FALLBACK_MODELS] : FALLBACK_MODELS;
 
+  // Split prompt into system (context) and user parts for prompt caching
+  const systemMarker = "System:";
+  const userMarker = "User:";
+  let messagesPayload: any[] = [];
+
+  if (prompt.includes(systemMarker) && prompt.includes(userMarker)) {
+    const sysStart = prompt.indexOf(systemMarker) + systemMarker.length;
+    const userStart = prompt.indexOf(userMarker);
+    
+    const systemContent = prompt.substring(sysStart, userStart).trim();
+    const userContent = prompt.substring(userStart + userMarker.length).trim();
+
+    messagesPayload = [
+      {
+        role: "system",
+        content: [
+          {
+            type: "text",
+            text: systemContent,
+            cache_control: { type: "ephemeral" } // Prompt caching trigger
+          }
+        ]
+      },
+      {
+        role: "user",
+        content: userContent
+      }
+    ];
+  } else {
+    messagesPayload = [{ role: "user", content: prompt }];
+  }
+
   for (const model of modelsToTry) {
-    try {
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://roamjelly.app',
-          'X-Title': 'RoamJelly'
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 4000
-        })
-      });
+    let rateLimitedCount = 0;
+    const maxRetries = 3;
 
-      // Auth failure — no point retrying any model.
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(`API key invalid or forbidden (${response.status}). Stopping retries.`);
-      }
+    // Narrow Retry Loop with Exponential Backoff
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://roamjelly.app',
+            'X-Title': 'RoamJelly'
+          },
+          body: JSON.stringify({
+            model,
+            messages: messagesPayload,
+            max_tokens: 4000
+          })
+        });
 
-      // Rate limited — wait then try next model.
-      if (response.status === 429) {
-        console.warn(`Rate limited on model ${model}, trying next model...`);
-        await sleep(1200);
-        rateLimitedCount++;
-        lastError = new Error(`429 rate limited on ${model}`);
-        continue;
-      }
+        // Fail fast on Auth failures (no retries)
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`API key invalid or forbidden (${response.status}). Stopping retries.`);
+        }
 
-      // Model not found — skip silently (stale model ID in list).
-      if (response.status === 404) {
-        console.warn(`Model ${model} not found (404), skipping...`);
-        notFoundCount++;
-        continue;
-      }
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
-
-        if (isQuotaLimitedProviderError(response.status, errText)) {
-          console.warn(`Model ${model} exhausted provider quota, skipping...`);
-          quotaLimitedCount++;
-          lastError = new Error(`402 insufficient quota on ${model}`);
+        // Narrow Retry: Transient Rate Limits (429) -> Wait and retry
+        if (response.status === 429) {
+          console.warn(`Rate limited on model ${model} (attempt ${attempt + 1}/${maxRetries}), waiting...`);
+          await sleep(Math.pow(2, attempt) * 1000 + 500); // Exponential backoff
+          lastError = new Error(`429 rate limited on ${model}`);
           continue;
         }
 
-        throw new Error(`OpenRouter API Error (${model}): ${compactProviderError(response.status, errText)}`);
-      }
+        // Fail fast or try next model on Model Not Found (404)
+        if (response.status === 404) {
+          console.warn(`Model ${model} not found (404), skipping to next fallback...`);
+          break; // Try next model in fallback list
+        }
 
-      const data = await response.json();
-      const text = data.choices?.[0]?.message?.content;
+        if (!response.ok) {
+          const errText = await response.text().catch(() => '');
 
-      if (text) {
-        if (validator) {
-          try {
-            const result = validator(text);
-            console.log(`Successfully generated and validated content using model: ${model}`);
-            return {
-              text: result,
-              model: data.model || model,
-              usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
-            };
-          } catch (e: any) {
-            // Try to auto-repair if validator validation fails directly on text
+          // Narrow Retry: Quota exhaustion -> Try next model
+          if (isQuotaLimitedProviderError(response.status, errText)) {
+            console.warn(`Model ${model} exhausted provider quota, skipping to next fallback...`);
+            lastError = new Error(`402 insufficient quota on ${model}`);
+            break; // Try next model
+          }
+
+          // Transient errors (502, 503, 504) -> Wait and retry
+          if (response.status >= 500 && response.status <= 504) {
+            console.warn(`Server temporary error ${response.status} on model ${model}, retrying...`);
+            await sleep(Math.pow(2, attempt) * 1000); // Exponential backoff
+            lastError = new Error(`Temporary ${response.status} server error on ${model}`);
+            continue;
+          }
+
+          throw new Error(`OpenRouter API Error (${model}): ${compactProviderError(response.status, errText)}`);
+        }
+
+        const data = await response.json();
+        const text = data.choices?.[0]?.message?.content;
+
+        if (text) {
+          if (validator) {
             try {
-              const repairedObj = parseAndRepairJSON(text);
-              const revalidated = validator(JSON.stringify(repairedObj));
-              console.log(`Successfully repaired and validated content using model: ${model}`);
+              const result = validator(text);
+              console.log(`Successfully generated and validated content using model: ${model}`);
               return {
-                text: revalidated,
+                text: result,
                 model: data.model || model,
                 usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
               };
-            } catch (repairErr: any) {
-              throw new Error(
-                looksLikeStructuredOutput(text)
-                  ? 'Model returned unusable structured output'
-                  : 'Model ignored JSON-only response requirement'
-              );
+            } catch (e: any) {
+              try {
+                const repairedObj = parseAndRepairJSON(text);
+                const revalidated = validator(JSON.stringify(repairedObj));
+                console.log(`Successfully repaired and validated content using model: ${model}`);
+                return {
+                  text: revalidated,
+                  model: data.model || model,
+                  usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+                };
+              } catch (repairErr: any) {
+                throw new Error(
+                  looksLikeStructuredOutput(text)
+                    ? 'Model returned unusable structured output'
+                    : 'Model ignored JSON-only response requirement'
+                );
+              }
             }
           }
+          console.log(`Successfully generated content using model: ${model}`);
+          return {
+            text,
+            model: data.model || model,
+            usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+          };
+        } else {
+          throw new Error(`Model ${model} returned empty content`);
         }
-        console.log(`Successfully generated content using model: ${model}`);
-        return {
-          text,
-          model: data.model || model,
-          usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
-        };
-      } else {
-        throw new Error(`Model ${model} returned empty content`);
+      } catch (err: any) {
+        if (err.message?.includes('Stopping retries')) throw err;
+        console.warn(`Attempt failed with model ${model}, trying fallback options...`, err.message);
+        lastError = err;
+        break; // Try next model in fallback array
       }
-    } catch (err: any) {
-      if (err.message?.includes('Stopping retries')) throw err;
-      console.warn(`Failed with model ${model}, trying next...`, err.message);
-      lastError = err;
     }
   }
 
-  // All models tried: distinguish rate-limit saturation from other failures.
-  const totalTried = modelsToTry.length;
-  const unavailable = rateLimitedCount + notFoundCount + quotaLimitedCount;
-  if (unavailable === totalTried) {
-    throw new Error('ALL_MODELS_RATE_LIMITED');
-  }
   throw lastError || new Error('All fallback models failed.');
 }
 

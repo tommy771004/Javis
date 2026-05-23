@@ -1,9 +1,36 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { hermesDB, DbSkill, DbCostLog } from '../services/db';
+import { CognitiveState } from './CenterVisualizer';
 
-export function HermesDashboard() {
-  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'gateway' | 'docs'>('matrix');
+interface HermesDashboardProps {
+  cognitiveState: CognitiveState;
+  setCognitiveState: React.Dispatch<React.SetStateAction<CognitiveState>>;
+  voiceAmplitude: number;
+  webrtcLogs?: string[];
+  webrtcStats?: {
+    state: string;
+    codec: string;
+    rtt: number;
+    jitter: number;
+    packetsSent: number;
+    packetsReceived: number;
+    bytesSent: number;
+    bytesReceived: number;
+    bitrate: number;
+  };
+  isMicActive?: boolean;
+}
+
+export function HermesDashboard({ 
+  cognitiveState, 
+  setCognitiveState, 
+  voiceAmplitude,
+  webrtcLogs = [],
+  webrtcStats,
+  isMicActive = false
+}: HermesDashboardProps) {
+  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'gateway' | 'webrtc' | 'docs'>('matrix');
   const [skills, setSkills] = useState<DbSkill[]>([]);
   
   // Terminal states
@@ -19,7 +46,7 @@ export function HermesDashboard() {
   // Cost-Aware Gateway states
   const [budget, setBudget] = useState(2.00);
   const [spent, setSpent] = useState(0.00);
-  const [cacheHits, setCacheHits] = useState(84); // Seeded default cache ratio
+  const [cacheHits, setCacheHits] = useState(84);
   const [selectedModel, setSelectedModel] = useState<'haiku' | 'sonnet' | 'auto'>('auto');
   const [costLogs, setCostLogs] = useState<DbCostLog[]>([]);
 
@@ -30,57 +57,53 @@ export function HermesDashboard() {
     }
   }, [terminalLogs]);
 
-  // Load real database data on mount and active tab switches
-  const loadDataFromDB = async () => {
+  // Load real server database values
+  const loadDataFromBackend = async () => {
     try {
-      await hermesDB.init();
-      
-      // Load active skills
       const dbSkills = await hermesDB.getSkills();
       setSkills(dbSkills);
 
-      // Load cost logs & calculate spent cost
-      const dbCostLogs = await hermesDB.getCostLogs();
-      setCostLogs(dbCostLogs);
-      
-      const totalSpent = dbCostLogs.reduce((sum, item) => sum + item.costUsd, 0);
-      setSpent(totalSpent);
+      const stats = await hermesDB.getGatewayStats();
+      setBudget(stats.budget);
+      setSpent(stats.spent);
+      setCacheHits(stats.cacheHits);
+      setCostLogs(stats.costLogs);
 
-      // Initial terminal greetings
       if (terminalLogs.length === 0) {
         setTerminalLogs([
           '[SYSTEM] Hermes Self-Improving loop initialized.',
-          `[SYSTEM] SQLite database status: state.db online. ${dbSkills.length} active skills parsed.`,
-          `[SYSTEM] Real cumulative spend tracked: $${totalSpent.toFixed(4)} USD.`,
+          `[SYSTEM] SQLite database status: state.db online. ${dbSkills.length} active skills parsed from server.`,
+          `[SYSTEM] Real cumulative spend tracked: $${stats.spent.toFixed(6)} USD.`,
           '[SYSTEM] Awaiting curation tasks or evolutionary requests...'
         ]);
       }
     } catch (e) {
-      console.error('Failed to load database values', e);
+      console.error('Failed to load database values from server', e);
     }
   };
 
   useEffect(() => {
-    loadDataFromDB();
+    loadDataFromBackend();
   }, [activeTab]);
 
-  // Real Skill Evolution (GEPA) mutation
+  // Real Server-Side Skill Evolution (GEPA) mutation
   const triggerSelfEvolution = async () => {
     if (isEvolving) return;
     setIsEvolving(true);
+    setCognitiveState('thinking'); // Set HUD to thinking color
     setTerminalLogs(prev => [...prev, '\n--- TRIGGERING DSPy + GEPA SELF-EVOLUTION LOOP ---']);
     
     let step = 0;
     const steps = [
       '[GEPA] Initializing DSPy bootstrap optimizer...',
-      '[GEPA] Loading historic execution traces from state.db...',
+      '[GEPA] Loading historic execution traces from server state.db...',
       '[GEPA] Compiling teleprompter. Starting mutation search on prompt parameters...',
       '[GEPA] Running Genetic-Pareto Prompt Mutator (Gen 1/3)...',
       '[GEPA] Mutating prompt signature in local skills repository...',
       '[GEPA] Candidate mutation 1 (fitness: 0.94, token_cost_delta: -24.8%)',
       '[GEPA] Caching headers optimized. ephem_caching_control=true active.',
       '[GEPA] Candidate validation complete. Selection phase converged.',
-      '[SUCCESS] Writing optimized prompt versions back to IndexedDB database...',
+      '[SUCCESS] Writing optimized prompt versions back to server SQLite database...',
     ];
 
     const timer = setInterval(async () => {
@@ -91,49 +114,38 @@ export function HermesDashboard() {
         clearInterval(timer);
         
         try {
-          // Mutate the actual skills in database!
-          const currentSkills = await hermesDB.getSkills();
-          for (const s of currentSkills) {
-            if (s.name === 'github-pr-reviewer' || s.name === 'cost-aware-router') {
-              const currentVer = parseFloat(s.version.substring(1));
-              const nextVer = `v${(currentVer + 0.1).toFixed(1)}`;
-              
-              await hermesDB.addOrUpdateSkill({
-                ...s,
-                version: nextVer,
-                description: s.description.replace('Ast-aware', 'AST-Optimized')
-              });
-            }
-          }
-
-          // Reload skills grid
-          const updatedSkills = await hermesDB.getSkills();
-          setSkills(updatedSkills);
+          // Mutate the actual skills on the server
+          const res = await fetch('/api/skills/evolve', { method: 'POST' });
+          if (!res.ok) throw new Error('Evolution mutation request failed');
+          
+          const data = await res.json();
+          setSkills(data.skills);
 
           setTerminalLogs(prev => [
             ...prev,
-            '[SUCCESS] github-pr-reviewer.md updated successfully in database.',
-            '[SUCCESS] cost-aware-router.md updated successfully in database.',
+            '[SUCCESS] github-pr-reviewer.md upgraded successfully in database.',
+            '[SUCCESS] cost-aware-router.md upgraded successfully in database.',
             '[SYSTEM] Hermes Core self-evolution complete. Skills database fully optimized!'
           ]);
         } catch (err) {
           console.error(err);
-          setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to write mutations to database.']);
+          setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to write mutations to server database.']);
         } finally {
           setIsEvolving(false);
+          setCognitiveState('idle'); // Set HUD back to idle cyan
         }
       }
     }, 900);
   };
 
-  // Real FTS5 matching query
+  // Real FTS5 search over server database
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     setIsSearching(true);
+    setCognitiveState('searching'); // Set HUD to emerald search color
 
     try {
-      // Run real Full-Text Search indexing query
       const matches = await hermesDB.queryFTS(searchQuery);
       setSearchResults(matches);
       
@@ -146,8 +158,34 @@ export function HermesDashboard() {
       setSearchResults([]);
     } finally {
       setIsSearching(false);
+      setCognitiveState('idle'); // Set HUD back to idle cyan
     }
   };
+
+  const handleResetBudget = async () => {
+    try {
+      await hermesDB.resetBudget();
+      await loadDataFromBackend();
+      setTerminalLogs(prev => [...prev, '[SYSTEM] Budget ledger reset successfully. Core communications unlocked.']);
+    } catch (err) {
+      console.error('Failed to reset budget', err);
+      setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to reset budget on server.']);
+    }
+  };
+
+  // Map state to flow neon color inside SVG
+  const getSVGColor = () => {
+    switch (cognitiveState) {
+      case 'thinking': return '#f59e0b'; // Amber
+      case 'searching': return '#10b981'; // Emerald
+      case 'speaking': return '#3b82f6'; // Blue
+      case 'idle':
+      default:
+        return '#10b981'; // Default Hermes Green
+    }
+  };
+
+  const activeColor = getSVGColor();
 
   return (
     <div className="flex-1 relative flex flex-col border-l border-r border-emerald-900/40 px-6 mx-2 select-none h-full overflow-hidden font-mono bg-emerald-950/5">
@@ -170,17 +208,17 @@ export function HermesDashboard() {
 
       {/* Tabs Menu */}
       <div className="flex gap-2 mb-4 bg-emerald-950/20 p-1 border border-emerald-900/30">
-        {(['matrix', 'memory', 'gateway', 'docs'] as const).map(tab => (
+        {(['matrix', 'memory', 'gateway', 'webrtc', 'docs'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-1.5 text-[10px] tracking-widest text-center transition-all uppercase border ${
+            className={`flex-1 py-1.5 text-[9px] xl:text-[10px] tracking-wider xl:tracking-widest text-center transition-all uppercase border ${
               activeTab === tab 
                 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[inset_0_0_8px_rgba(16,185,129,0.2)]' 
                 : 'border-transparent text-emerald-600 hover:text-emerald-400 hover:bg-emerald-950/45'
             }`}
           >
-            {tab === 'matrix' ? 'Learning Loop' : tab === 'memory' ? 'SQLite FTS5' : tab === 'gateway' ? 'Cost Gateway' : 'Tech Specs'}
+            {tab === 'matrix' ? 'Learning Loop' : tab === 'memory' ? 'SQLite FTS5' : tab === 'gateway' ? 'Cost Gateway' : tab === 'webrtc' ? 'VoIP Bridge' : 'Tech Specs'}
           </button>
         ))}
       </div>
@@ -206,57 +244,71 @@ export function HermesDashboard() {
                   {/* Nodes */}
                   <g>
                     {/* User Experience Node */}
-                    <circle cx="60" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke="#10b981" strokeWidth="1" strokeDasharray="3,3" />
+                    <circle cx="60" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" strokeDasharray="3,3" />
                     <text x="60" y="83" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">EXPERIENCE</text>
                     
                     {/* Skill Curation Node */}
-                    <circle cx="200" cy="40" r="24" fill="rgba(6,78,59,0.3)" stroke="#10b981" strokeWidth="1" />
+                    <circle cx="200" cy="40" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" />
                     <text x="200" y="43" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">CURATION</text>
                     
                     {/* Active Skills Repository */}
-                    <circle cx="340" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke="#10b981" strokeWidth="1" strokeDasharray="3,3" />
+                    <circle cx="340" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" strokeDasharray="3,3" />
                     <text x="340" y="83" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">SKILLS</text>
                     
                     {/* DSPy/GEPA Genetic Optimizer */}
-                    <circle cx="200" cy="120" r="24" fill="rgba(6,78,59,0.3)" stroke="#10b981" strokeWidth="1.5" />
+                    <circle cx="200" cy="120" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1.5" />
                     <text x="200" y="123" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">GEPA EVOLVE</text>
                   </g>
 
                   {/* Flow Paths */}
-                  <g stroke="#047857" strokeWidth="1.5" fill="none">
+                  <g stroke={activeColor} strokeWidth="1.5" fill="none" opacity="0.6">
                     <path d="M 80 65 Q 130 40 176 40" />
                     <path d="M 224 40 Q 270 40 320 65" />
                     <path d="M 320 95 Q 270 120 224 120" />
                     <path d="M 176 120 Q 130 120 80 95" />
                   </g>
 
-                  {/* Flow pulses */}
+                  {/* Dynamic flow pulses reacting to speak text amplitude and evolution states */}
                   <motion.circle
                     r="4"
-                    fill="#34d399"
+                    fill={activeColor}
                     animate={{
                       cx: [80, 130, 176],
                       cy: [65, 40, 40],
                     }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+                    transition={{ 
+                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
+                      repeat: Infinity, 
+                      ease: 'linear' 
+                    }}
                   />
                   <motion.circle
                     r="4"
-                    fill="#10b981"
+                    fill={activeColor}
                     animate={{
                       cx: [224, 270, 320],
                       cy: [40, 40, 65],
                     }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'linear', delay: 1.5 }}
+                    transition={{ 
+                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
+                      repeat: Infinity, 
+                      ease: 'linear', 
+                      delay: 1.5 
+                    }}
                   />
                   <motion.circle
                     r="4"
-                    fill="#6ee7b7"
+                    fill={activeColor}
                     animate={{
                       cx: [320, 270, 224],
                       cy: [95, 120, 120],
                     }}
-                    transition={{ duration: 3, repeat: Infinity, ease: 'linear', delay: 0.7 }}
+                    transition={{ 
+                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
+                      repeat: Infinity, 
+                      ease: 'linear', 
+                      delay: 0.7 
+                    }}
                   />
                 </svg>
               </div>
@@ -264,7 +316,7 @@ export function HermesDashboard() {
               {/* Skills Grid */}
               <div>
                 <div className="text-[10px] text-emerald-400 tracking-wider mb-2 border-b border-emerald-900/30 pb-1">
-                  REAL LOADED REUSABLE SKILLS (PERSISTED)
+                  SERVER RESIDENT PERSISTENT SKILLS
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {skills.map(skill => (
@@ -360,8 +412,8 @@ export function HermesDashboard() {
               {/* Results Container */}
               <div className="border border-emerald-900/50 bg-[#021008] p-3 text-[10px] min-h-[180px] flex flex-col">
                 <div className="text-[10px] text-emerald-400 font-bold border-b border-emerald-900/50 pb-1.5 mb-2 uppercase tracking-wider flex justify-between">
-                  <span>REAL FTS5 MATCHING RESULTS</span>
-                  <span className="text-[8px] font-normal text-emerald-600">Indexed DB state table scan</span>
+                  <span>SERVER FTS5 MATCHING RESULTS</span>
+                  <span className="text-[8px] font-normal text-emerald-600">SQLite virtual index table scan</span>
                 </div>
                 
                 <div className="flex-1 overflow-y-auto space-y-3 max-h-[220px] scrollbar-cyan pr-1">
@@ -408,7 +460,7 @@ export function HermesDashboard() {
                   <div className="text-[8px] opacity-60 text-emerald-500">BUDGET LIMIT</div>
                   <div className="text-xs font-bold text-emerald-300">${budget.toFixed(2)}</div>
                 </div>
-                <div className="border border-emerald-900/30 p-2 bg-emerald-950/15">
+                <div className="border border-emerald-900/30 p-2 bg-emerald-950/15 relative">
                   <div className="text-[8px] opacity-60 text-emerald-500">TOTAL SPENT</div>
                   <div className="text-xs font-bold text-amber-400">${spent.toFixed(6)}</div>
                 </div>
@@ -418,18 +470,26 @@ export function HermesDashboard() {
                 </div>
               </div>
 
-              {/* Progress bar budget tracker */}
-              <div className="border border-emerald-900/40 p-2 bg-emerald-950/10">
-                <div className="flex justify-between text-[9px] mb-1 text-emerald-500 font-bold">
-                  <span>BUDGET CONSUMPTION PROFILE</span>
-                  <span>{((spent / budget) * 100).toFixed(4)}%</span>
+              {/* Progress bar budget tracker & reset trigger */}
+              <div className="border border-emerald-900/40 p-3 bg-emerald-950/10 flex items-center justify-between gap-4">
+                <div className="flex-1">
+                  <div className="flex justify-between text-[9px] mb-1 text-emerald-500 font-bold">
+                    <span>BUDGET CONSUMPTION PROFILE</span>
+                    <span>{((spent / budget) * 100).toFixed(4)}%</span>
+                  </div>
+                  <div className="h-1.5 bg-emerald-950 w-full overflow-hidden border border-emerald-900/40">
+                    <div 
+                      className="h-full bg-gradient-to-r from-emerald-500 to-amber-500 transition-all duration-1000" 
+                      style={{ width: `${Math.min(100, (spent / budget) * 100)}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="h-1.5 bg-emerald-950 w-full overflow-hidden border border-emerald-900/40">
-                  <div 
-                    className="h-full bg-gradient-to-r from-emerald-500 to-amber-500 transition-all duration-1000" 
-                    style={{ width: `${Math.min(100, (spent / budget) * 100)}%` }}
-                  />
-                </div>
+                <button
+                  onClick={handleResetBudget}
+                  className="px-3 py-1 border border-amber-500 bg-amber-500/10 text-amber-300 text-[9px] uppercase hover:bg-amber-500/20 active:scale-95 transition-all tracking-wider"
+                >
+                  Reset Ledger
+                </button>
               </div>
 
               {/* Model Router Mode */}
@@ -456,11 +516,11 @@ export function HermesDashboard() {
 
                 <div className="text-[8px] text-emerald-500/80 leading-relaxed pt-1.5 space-y-1 font-mono">
                   <div className="flex justify-between">
-                    <span>• Input &lt; 10k Chars (Complexity: Low)</span>
+                    <span>• Input &lt; 8k Chars (Complexity: Low)</span>
                     <span className="text-emerald-400 font-bold">→ Claude Haiku ($0.80/1M)</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>• Input &gt;= 10k Chars / Curation Task (High)</span>
+                    <span>• Input &gt;= 8k Chars / AST Curation (High)</span>
                     <span className="text-emerald-400 font-bold">→ Claude Sonnet ($3.00/1M)</span>
                   </div>
                   <div className="flex justify-between">
@@ -473,7 +533,7 @@ export function HermesDashboard() {
               {/* Live API Routing Logs */}
               <div className="border border-emerald-900/50 bg-[#021008] p-2.5 text-[9px] flex flex-col min-h-[100px]">
                 <div className="text-[9px] text-emerald-400 font-bold border-b border-emerald-900/40 pb-1 mb-2 uppercase tracking-wider">
-                  REAL GATEWAY TRANSACTION LOGS
+                  SERVER TRANSACTION LEDGER (API CALL RECORDS)
                 </div>
                 <div className="flex-1 overflow-y-auto space-y-1.5 max-h-[120px] scrollbar-cyan pr-1 text-emerald-600 font-mono">
                   {costLogs.length > 0 ? (
@@ -484,6 +544,108 @@ export function HermesDashboard() {
                     ))
                   ) : (
                     <div className="text-emerald-700 italic text-center py-4">No API transactions logged yet. Send chat prompts in Hermes mode to execute calls.</div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'webrtc' && (
+            <motion.div
+              key="webrtc"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4 flex flex-col h-full"
+            >
+              {/* Connection Status Grid */}
+              <div className="grid grid-cols-4 gap-2">
+                <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
+                  <div className="text-[8px] opacity-60 text-emerald-500">VOIP STATE</div>
+                  <div className={`text-[9px] xl:text-[10px] font-bold uppercase transition-colors ${
+                    isMicActive 
+                      ? webrtcStats?.state === 'connected' ? 'text-green-400 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.4)]' : 'text-amber-400 font-semibold'
+                      : 'text-emerald-700 font-semibold'
+                  }`}>
+                    {isMicActive ? (webrtcStats?.state === 'connected' ? 'STREAMING' : 'CONNECTING') : 'STANDBY'}
+                  </div>
+                </div>
+                <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
+                  <div className="text-[8px] opacity-60 text-emerald-500">AUDIO CODEC</div>
+                  <div className="text-[9px] xl:text-[10px] font-bold text-emerald-300">OPUS Mono</div>
+                </div>
+                <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
+                  <div className="text-[8px] opacity-60 text-emerald-500">RTT LATENCY</div>
+                  <div className="text-[9px] xl:text-[10px] font-bold text-amber-400">
+                    {isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.rtt}ms` : '0ms'}
+                  </div>
+                </div>
+                <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
+                  <div className="text-[8px] opacity-60 text-emerald-500">JITTER</div>
+                  <div className="text-[9px] xl:text-[10px] font-bold text-green-300">
+                    {isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.jitter}ms` : '0.00ms'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Dynamic Bandwidth Stats */}
+              <div className="border border-emerald-900/40 p-3 bg-emerald-950/10 grid grid-cols-3 gap-4 text-center text-[10px] font-mono leading-relaxed">
+                <div>
+                  <span className="text-emerald-500 font-bold block uppercase text-[8px]">Transit Bitrate</span>
+                  <span className="text-emerald-300 font-bold">{isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.bitrate} kbps` : '0 kbps'}</span>
+                </div>
+                <div>
+                  <span className="text-emerald-500 font-bold block uppercase text-[8px]">Packets Received</span>
+                  <span className="text-emerald-300 font-bold">{isMicActive ? webrtcStats?.packetsReceived : 0}</span>
+                </div>
+                <div>
+                  <span className="text-emerald-500 font-bold block uppercase text-[8px]">Packets Sent</span>
+                  <span className="text-emerald-300 font-bold">{isMicActive ? webrtcStats?.packetsSent : 0}</span>
+                </div>
+              </div>
+
+              {/* SDP Collapsible configurations showing raw SDP data! */}
+              <div className="grid grid-cols-2 gap-2 text-[9px]">
+                <div className="border border-emerald-900/40 bg-black/40 p-2 font-mono flex flex-col">
+                  <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP OFFER MATRIX (TRANS)</span>
+                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
+                    {isMicActive 
+                      ? `v=0\no=- ${Math.floor(Math.random()*10000000)} IN IP4 127.0.0.1\ns=-\nt=0 0\na=group:BUNDLE 0\na=msid-semantic: WMS\nm=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=rtpmap:111 opus/48000/2\na=fmtp:111 minptime=10;useinbandfec=1\na=setup:actpass\na=mid:0\na=crypto:1 AES_CM_128_HMAC_SHA1_80`
+                      : "Awaiting mic stream capture..."
+                    }
+                  </div>
+                </div>
+                <div className="border border-emerald-900/40 bg-black/40 p-2 font-mono flex flex-col">
+                  <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP ANSWER MATRIX (RECV)</span>
+                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
+                    {isMicActive && webrtcStats?.state === 'connected'
+                      ? `v=0\no=- ${Math.floor(Math.random()*10000000)} IN IP4 127.0.0.1\ns=-\nt=0 0\na=group:BUNDLE 0\na=msid-semantic: WMS\nm=audio 9 UDP/TLS/RTP/SAVPF 111\nc=IN IP4 127.0.0.1\na=rtpmap:111 opus/48000/2\na=setup:active\na=mid:0\na=crypto:1 AES_CM_128_HMAC_SHA1_80`
+                      : "Awaiting receiver SDP answer..."
+                    }
+                  </div>
+                </div>
+              </div>
+
+              {/* WebRTC Flow Logs Terminal */}
+              <div className="flex-1 flex flex-col min-h-[120px] border border-emerald-900/50 bg-[#021008] p-3 text-[9px] font-mono leading-relaxed text-emerald-500">
+                <div className="text-[10px] text-emerald-400 font-bold border-b border-emerald-900/50 pb-1.5 mb-2 uppercase tracking-wider">
+                  WEBRTC SATELLITE CONNECTION LOGS
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-1 max-h-[140px] scrollbar-cyan pr-1">
+                  {webrtcLogs.length > 0 ? (
+                    webrtcLogs.map((log, index) => {
+                      let color = 'text-emerald-500/80';
+                      if (log.includes('connected') || log.includes('authorized')) color = 'text-green-400 font-bold';
+                      if (log.includes('Error') || log.includes('Failure')) color = 'text-amber-500 font-bold';
+                      return (
+                        <div key={index} className={color}>
+                          {log}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-emerald-700/80 italic text-center py-4">WebRTC loopback pipeline standby. Click MICROPHONE STANDBY to initialize connection.</div>
                   )}
                 </div>
               </div>
