@@ -394,21 +394,84 @@ export default function App() {
   useEffect(() => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
     }
   }, []);
+
+  const cleanTextForSpeech = (rawText: string): string => {
+    let clean = rawText;
+    
+    // 1. Remove filesystem write labels & headers
+    clean = clean.replace(/\[WRITE_FILE\]:[^\n]*/gi, '');
+    
+    // 2. Remove markdown code blocks ```...```
+    clean = clean.replace(/```[\s\S]*?```/g, '');
+    
+    // 3. Remove inline code `...`
+    clean = clean.replace(/`[^`]+`/g, '');
+    
+    // 4. Remove HTML tags
+    clean = clean.replace(/<[^>]+>/g, '');
+    
+    // 5. Remove markdown links [text](url) -> keep text only
+    clean = clean.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    
+    // 6. Clean up excessive whitespace
+    clean = clean.replace(/\s+/g, ' ').trim();
+
+    // Friendly Jarvis default alert if output is purely code/files
+    if (!clean) {
+      return "I have completed the requested operations on the local workspace, Tommy.";
+    }
+
+    // Limit length to keep the voice answer concise, clean and immersive
+    if (clean.length > 280) {
+      const truncated = clean.substring(0, 280);
+      const lastPeriod = Math.max(truncated.lastIndexOf('.'), truncated.lastIndexOf('。'), truncated.lastIndexOf('!'), truncated.lastIndexOf('?'));
+      if (lastPeriod > 100) {
+        return clean.substring(0, lastPeriod + 1);
+      }
+      return truncated + "...";
+    }
+
+    return clean;
+  };
 
   const speakText = (text: string) => {
     if (!('speechSynthesis' in window)) return;
     
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    
+    // Strip markdown code blocks & raw parameters so Javis only speaks elegant conversational lines
+    const spokenText = cleanTextForSpeech(text);
+    const utterance = new SpeechSynthesisUtterance(spokenText);
     
     const voices = window.speechSynthesis.getVoices();
-    let selectedVoice = voices.find(voice => voice.name.includes('Google UK English Male'));
     
+    // Prioritize English British en-GB Male or George to match Paul Bettany's Javis voice
+    let selectedVoice = voices.find(voice => 
+      voice.lang.startsWith('en-GB') && 
+      (voice.name.toLowerCase().includes('male') || 
+       voice.name.toLowerCase().includes('george') || 
+       voice.name.toLowerCase().includes('hazel') ||
+       voice.name.toLowerCase().includes('jarvis'))
+    );
+    
+    // Fallback 1: English US en-US Male
     if (!selectedVoice) {
-      selectedVoice = voices.find(voice => voice.lang === 'en-GB' && voice.name.includes('Male')) || 
-                      voices.find(voice => voice.lang === 'en-GB') || 
+      selectedVoice = voices.find(voice => 
+        voice.lang.startsWith('en') && 
+        (voice.name.toLowerCase().includes('male') || 
+         voice.name.toLowerCase().includes('david') ||
+         voice.name.toLowerCase().includes('google uk'))
+      );
+    }
+    
+    // Fallback 2: Any English voice or default
+    if (!selectedVoice) {
+      selectedVoice = voices.find(voice => voice.lang.startsWith('en-GB')) || 
                       voices.find(voice => voice.lang.startsWith('en')) || 
                       voices[0];
     }
@@ -417,9 +480,9 @@ export default function App() {
       utterance.voice = selectedVoice;
     }
     
-    utterance.rate = 1.0; 
-    utterance.pitch = isHermesActive ? 0.95 : 0.8; 
-
+    utterance.rate = 1.02; // Polite rhythmic British pacing
+    utterance.pitch = 0.82; // Deep, calm, British baritone sound mimicking Paul Bettany
+ 
     let amplitudeTimer: NodeJS.Timeout | null = null;
     
     utterance.onstart = () => {

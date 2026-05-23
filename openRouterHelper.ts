@@ -142,7 +142,7 @@ export async function fetchOpenRouterWithFallback(
 
   for (const model of modelsToTry) {
     let rateLimitedCount = 0;
-    const maxRetries = 3;
+    const maxRetries = 1;
 
     // Narrow Retry Loop with Exponential Backoff
     for (let attempt = 0; attempt < maxRetries; attempt++) {
