@@ -9,6 +9,7 @@ export interface DbMessage {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  cachedTokens?: number;
 }
 
 export interface DbSkill {
@@ -28,6 +29,14 @@ export interface DbCostLog {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
+  cachedTokens?: number;
+}
+
+export interface SystemLogEntry {
+  timestamp: number;
+  category: 'SYS' | 'HERMES' | 'DB' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC';
+  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
+  message: string;
 }
 
 class HermesDBClient {
@@ -70,6 +79,33 @@ class HermesDBClient {
     return res.json();
   }
 
+  // --- Cognitive Memory Bank API ---
+  async getCognitiveMemories(): Promise<string[]> {
+    const res = await fetch('/api/memory/cognitive');
+    if (!res.ok) throw new Error('Failed to fetch cognitive memories');
+    return res.json();
+  }
+
+  async addCognitiveMemory(memory: string): Promise<string[]> {
+    const res = await fetch('/api/memory/cognitive', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memory })
+    });
+    if (!res.ok) throw new Error('Failed to store cognitive memory');
+    const data = await res.json();
+    return data.memories;
+  }
+
+  async deleteCognitiveMemory(index: number): Promise<string[]> {
+    const res = await fetch(`/api/memory/cognitive/${index}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Failed to purge cognitive memory fragment');
+    const data = await res.json();
+    return data.memories;
+  }
+
   // --- Cost Logs & Stats ---
   async getCostLogs(): Promise<DbCostLog[]> {
     const res = await fetch('/api/gateway/stats');
@@ -87,6 +123,12 @@ class HermesDBClient {
   async resetBudget(): Promise<void> {
     const res = await fetch('/api/gateway/reset-budget', { method: 'POST' });
     if (!res.ok) throw new Error('Failed to reset budget limits');
+  }
+
+  async getSystemLogs(): Promise<SystemLogEntry[]> {
+    const res = await fetch('/api/system/logs');
+    if (!res.ok) throw new Error('Failed to fetch active system logs');
+    return res.json();
   }
 
   // Cost calculator fallback for frontend UI elements

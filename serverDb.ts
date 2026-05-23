@@ -11,6 +11,7 @@ export interface DbMessage {
   inputTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  cachedTokens?: number;
 }
 
 export interface DbSkill {
@@ -30,6 +31,7 @@ export interface DbCostLog {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
+  cachedTokens?: number;
 }
 
 export interface DbTask {
@@ -41,11 +43,19 @@ export interface DbTask {
   progress?: number;
 }
 
+export interface SystemLogEntry {
+  timestamp: number;
+  category: 'SYS' | 'HERMES' | 'DB' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC';
+  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
+  message: string;
+}
+
 interface DatabaseSchema {
   messages: DbMessage[];
   skills: DbSkill[];
   costLogs: DbCostLog[];
   tasks: DbTask[];
+  cognitiveMemories: string[];
 }
 
 const DB_FILE = path.join(process.cwd(), 'database.json');
@@ -86,14 +96,64 @@ const INITIAL_SKILLS: DbSkill[] = [
 ];
 
 class ServerPersistenceEngine {
-  private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [] };
+  private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
+  private systemLogs: SystemLogEntry[] = [
+    { timestamp: Date.now() - 5000, category: 'SYS', level: 'INFO', message: 'JARVIS online.' },
+    { timestamp: Date.now() - 4000, category: 'SYS', level: 'SUCCESS', message: 'System diagnostics initialized.' },
+    { timestamp: Date.now() - 3000, category: 'SYS', level: 'INFO', message: 'Initializing core protocols...' },
+    { timestamp: Date.now() - 2000, category: 'DB', level: 'SUCCESS', message: 'state.db mapped via FTS5 indexers.' },
+    { timestamp: Date.now() - 1000, category: 'NET', level: 'INFO', message: 'VoIP satellite bridge listening.' }
+  ];
 
   constructor() {
     this.initDb();
   }
 
+  addSystemLog(category: SystemLogEntry['category'], level: SystemLogEntry['level'], message: string) {
+    const timestamp = Date.now();
+    this.systemLogs.push({ timestamp, category, level, message });
+    console.log(`[${new Date(timestamp).toISOString()}] [${category}/${level}] ${message}`);
+    if (this.systemLogs.length > 50) {
+      this.systemLogs.shift();
+    }
+  }
+
+  getSystemLogs(): SystemLogEntry[] {
+    return this.systemLogs;
+  }
+
   private initDb() {
     try {
+      const initialCostLogs: DbCostLog[] = [
+        {
+          id: 'tx-init-01',
+          timestamp: Date.now() - 3600000 * 2,
+          model: 'anthropic/claude-3-5-haiku-latest',
+          taskType: 'fts_query',
+          costUsd: 0.00086,
+          inputTokens: 1200,
+          outputTokens: 120,
+          cachedTokens: 960
+        },
+        {
+          id: 'tx-init-02',
+          timestamp: Date.now() - 3600000 * 1,
+          model: 'anthropic/claude-3-5-sonnet-latest',
+          taskType: 'prompt_evolution',
+          costUsd: 0.01245,
+          inputTokens: 8400,
+          outputTokens: 480,
+          cachedTokens: 7200
+        }
+      ];
+
+      const INITIAL_COGNITIVE_MEMORIES = [
+        "User prefer voice speed matrix set to British Baritone cadence.",
+        "Local host operates powershell Start-Process hooks bypassing safe confirmation.",
+        "Stark Industries home assistant terminal core version initialized perfectly.",
+        "OpenRouter bypass keys stored locally for cognitive inference routines."
+      ];
+
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf8');
         this.cache = JSON.parse(raw);
@@ -106,18 +166,28 @@ class ServerPersistenceEngine {
           this.cache.tasks = [];
           this.saveDb();
         }
+        if (!this.cache.costLogs || this.cache.costLogs.length === 0) {
+          this.cache.costLogs = initialCostLogs;
+          this.saveDb();
+        }
+        if (!this.cache.cognitiveMemories || this.cache.cognitiveMemories.length === 0) {
+          this.cache.cognitiveMemories = INITIAL_COGNITIVE_MEMORIES;
+          this.saveDb();
+        }
       } else {
         this.cache = {
           messages: [],
           skills: INITIAL_SKILLS,
-          costLogs: [],
-          tasks: []
+          costLogs: initialCostLogs,
+          tasks: [],
+          cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
         };
         this.saveDb();
       }
-    } catch (e) {
+      this.addSystemLog('SYS', 'SUCCESS', 'Persistent server DB initialized.');
+    } catch (e: any) {
       console.error('Failed to initialize local server database file', e);
-      this.cache = { messages: [], skills: INITIAL_SKILLS, costLogs: [], tasks: [] };
+      this.cache = { messages: [], skills: INITIAL_SKILLS, costLogs: [], tasks: [], cognitiveMemories: [] };
     }
   }
 
@@ -177,8 +247,10 @@ class ServerPersistenceEngine {
       m.costUsd = 0;
       m.inputTokens = 0;
       m.outputTokens = 0;
+      m.cachedTokens = 0;
     });
     this.saveDb();
+    this.addSystemLog('SEC', 'SUCCESS', 'Budget consumption ledger reset completed.');
   }
 
   // --- Tasks API ---
@@ -286,27 +358,66 @@ class ServerPersistenceEngine {
       .map(({ type, title, excerpt, confidence }) => ({ type, title, excerpt, confidence }));
   }
 
-  // --- Dynamic Pricing Calculator ---
-  calculateAPICost(model: string, inputTokens: number, outputTokens: number): number {
+  // --- Dynamic Pricing Calculator with Caching Discounts ---
+  calculateAPICost(model: string, inputTokens: number, outputTokens: number, cachedTokens: number = 0): number {
     const modelLower = model.toLowerCase();
+    const nonCachedTokens = Math.max(0, inputTokens - cachedTokens);
     
-    if (modelLower.includes('gemini-1.5-pro')) {
-      return (inputTokens * 0.00000125) + (outputTokens * 0.000005);
+    let inputPrice = 0.00000005; // extremely cheap default/free
+    let cachedPrice = 0.00000001;
+    let outputPrice = 0.00000015;
+    
+    if (modelLower.includes('gemini-1.5-pro') || modelLower.includes('gemini-2.5-pro')) {
+      inputPrice = 0.00000125;
+      cachedPrice = 0.0000003125; // 75% off
+      outputPrice = 0.000005;
+    } else if (modelLower.includes('gemini-1.5-flash') || modelLower.includes('gemini-2.5-flash')) {
+      inputPrice = 0.000000075;
+      cachedPrice = 0.00000001875;
+      outputPrice = 0.0000003;
+    } else if (modelLower.includes('gpt-4o-mini')) {
+      inputPrice = 0.00000015;
+      cachedPrice = 0.000000075;
+      outputPrice = 0.0000006;
+    } else if (modelLower.includes('sonnet')) {
+      inputPrice = 0.000003;
+      cachedPrice = 0.0000003; // Anthropic prompt cache read is 10% of base input cost
+      outputPrice = 0.000015;
+    } else if (modelLower.includes('haiku')) {
+      inputPrice = 0.0000008;
+      cachedPrice = 0.00000008; // 90% off
+      outputPrice = 0.000004;
+    } else if (modelLower.includes('llama-3.3-70b')) {
+      inputPrice = 0.0000007;
+      cachedPrice = 0.00000007;
+      outputPrice = 0.0000009;
     }
-    if (modelLower.includes('gemini-1.5-flash')) {
-      return (inputTokens * 0.000000075) + (outputTokens * 0.0000003);
-    }
-    if (modelLower.includes('gpt-4o-mini')) {
-      return (inputTokens * 0.00000015) + (outputTokens * 0.0000006);
-    }
-    if (modelLower.includes('sonnet')) {
-      return (inputTokens * 0.000003) + (outputTokens * 0.000015);
-    }
-    if (modelLower.includes('haiku')) {
-      return (inputTokens * 0.0000008) + (outputTokens * 0.000004);
-    }
+    
+    const cost = (nonCachedTokens * inputPrice) + (cachedTokens * cachedPrice) + (outputTokens * outputPrice);
+    return Number(cost.toFixed(8));
+  }
 
-    return 0.00;
+  // --- Cognitive Memory Bank API ---
+  getCognitiveMemories(): string[] {
+    return this.cache.cognitiveMemories || [];
+  }
+
+  addCognitiveMemory(memory: string) {
+    if (!this.cache.cognitiveMemories) {
+      this.cache.cognitiveMemories = [];
+    }
+    this.cache.cognitiveMemories.push(memory);
+    this.saveDb();
+    this.addSystemLog('DB', 'SUCCESS', `Stored new cognitive fragment in memory bank: "${memory.substring(0, 32)}..."`);
+  }
+
+  deleteCognitiveMemory(index: number) {
+    if (this.cache.cognitiveMemories && this.cache.cognitiveMemories[index] !== undefined) {
+      const purged = this.cache.cognitiveMemories[index];
+      this.cache.cognitiveMemories.splice(index, 1);
+      this.saveDb();
+      this.addSystemLog('DB', 'WARN', `Purged cognitive fragment from memory bank: "${purged.substring(0, 32)}..."`);
+    }
   }
 }
 

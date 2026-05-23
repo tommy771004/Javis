@@ -706,6 +706,7 @@ export default function App() {
     }
 
     try {
+      const activeCli = localStorage.getItem('jarvis_active_cli') || 'openrouter';
       // Dispatch request to Express server
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -713,7 +714,8 @@ export default function App() {
         body: JSON.stringify({ 
           message: text,
           model: requestedModel === "auto" ? undefined : requestedModel,
-          sessionId: "default-session"
+          sessionId: "default-session",
+          activeCli: activeCli
         })
       });
 
@@ -834,10 +836,11 @@ export default function App() {
         const isShellCmd = /^(powershell|cmd|start\s)/i.test(cmd.trim());
         const endpoint = isShellCmd ? '/api/system/shell' : '/api/workspace/run';
 
+        const activeCli = localStorage.getItem('jarvis_active_cli') || 'openrouter';
         const executeRes = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd, shell: 'powershell' })
+          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli })
         });
         
         const executeData = await executeRes.json();

@@ -33,6 +33,7 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
     nodeVersion?: string;
     costLogsCount?: number;
     messagesCount?: number;
+    systemLogs?: string[];
   } | null>(null);
   const [tasks, setTasks] = React.useState<any[]>([]);
   const [gateway, setGateway] = React.useState<{ budget: number; spent: number; cacheHits: number } | null>(null);
@@ -56,7 +57,12 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
         ]);
 
         if (!active) return;
-        if (statsRes) setStats(statsRes);
+        if (statsRes) {
+          setStats(statsRes);
+          if (statsRes.systemLogs && statsRes.systemLogs.length > 0) {
+            setLogs(statsRes.systemLogs);
+          }
+        }
         if (tasksRes) setTasks(tasksRes);
         if (gatewayRes) setGateway(gatewayRes);
       } catch (err) {
@@ -65,59 +71,12 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
     }
 
     fetchAllData();
-    const intervalId = setInterval(fetchAllData, 3000);
+    const intervalId = setInterval(fetchAllData, 2000); // Poll every 2s for reactive logs flow
     return () => {
       active = false;
       clearInterval(intervalId);
     };
   }, []);
-
-  // Context-aware execution log stream
-  React.useEffect(() => {
-    const generatorInterval = setInterval(() => {
-      setLogs(prev => {
-        let log = '';
-        const rand = Math.random();
-        if (cognitiveState === 'thinking') {
-          if (rand < 0.25) log = `NEURAL/THINK:: Context mapped (${(8.4 + Math.random()*2).toFixed(1)}k tokens)`;
-          else if (rand < 0.5) log = `LLM/PROMPT:: Analysing attention vectors... OK`;
-          else if (rand < 0.75) log = `NEURAL/THINK:: Attention heads distributed`;
-          else log = `API/GATEWAY:: Model streaming active`;
-        } else if (cognitiveState === 'searching') {
-          if (rand < 0.25) log = `FTS5/SCAN:: Querying FTS5 index...`;
-          else if (rand < 0.5) log = `DB/QUERY:: Match index found candidates`;
-          else if (rand < 0.75) log = `MEM/RECALL:: Retrieved relevant history`;
-          else log = `FTS5/OK:: Scan parsing completed in ${(0.3 + Math.random()*0.5).toFixed(2)}ms`;
-        } else if (cognitiveState === 'speaking') {
-          if (rand < 0.25) log = `SPEECH/VOICE:: Decoding active audio frames...`;
-          else if (rand < 0.5) log = `NET/VAD:: Dynamic level: ${voiceAmplitude.toFixed(1)} dB`;
-          else if (rand < 0.75) log = `VOIP/BRIDGE:: Sent visualizer PCM chunk stream`;
-          else log = `SPEECH/TTS:: Stream playback status fully stable`;
-        } else {
-          // Idle state
-          if (rand < 0.2) log = `SYS/HEARTBEAT:: Core service tick OK`;
-          else if (rand < 0.4) log = `MEM/REPLAY:: Index cache status verified`;
-          else if (rand < 0.6 && tasks.length > 0) {
-            const pending = tasks.filter(t => t.status === 'Pending');
-            if (pending.length > 0) {
-              const randomTask = pending[Math.floor(Math.random() * pending.length)];
-              log = `SYS/TASK:: Executing: "${randomTask.description.substring(0, 16)}..."`;
-            } else {
-              log = `SYS/QUEUE:: All client tasks idle`;
-            }
-          }
-          else if (rand < 0.8) log = `SYS/SEC:: Defense protocols validated.`;
-          else log = `NET/VOIP:: Channel waiting in standby state`;
-        }
-        
-        const next = [...prev, log];
-        if (next.length > 4) next.shift(); // Keep last 4 log lines to fit and scroll perfectly inside the panel
-        return next;
-      });
-    }, 2400);
-
-    return () => clearInterval(generatorInterval);
-  }, [cognitiveState, voiceAmplitude, tasks]);
 
   // Map cognitive state to theme configs
   const getColorClasses = () => {
@@ -418,11 +377,11 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>ACCUM COST:</span>
-            <span style={{ color: hudColor }} className="font-bold">${gateway ? gateway.spent.toFixed(4) : '0.0410'} USD</span>
+            <span style={{ color: hudColor }} className="font-bold">${gateway ? gateway.spent.toFixed(5) : '0.01331'} USD</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>CACHE HITS:</span>
-            <span style={{ color: hudColor }} className="font-bold">{gateway ? gateway.cacheHits : '84'} HITS</span>
+            <span style={{ color: hudColor }} className="font-bold">{gateway ? `${gateway.cacheHits}%` : '84%'} CACHED</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>AUTH METRIC:</span>
