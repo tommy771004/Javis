@@ -41,15 +41,36 @@ async function startServer() {
 
       // Construct dynamic system prompt with active skills context and filesystem instructions
       const activeSkills = serverDB.getSkills().filter(s => s.status === 'active');
-      let prompt = "System: You are Mark-XXXIX, an autonomous personal developer assistant powered by the Hermes Agent core. Be direct, technical, and analytical.\n" +
-                   "FILESYSTEM ABILITIES: You can generate and write files! If you want to write or edit a file, prepend your response with a line matching the exact signature:\n" +
-                   "[WRITE_FILE]: <path_relative_to_workspace>\n" +
-                   "followed immediately by a markdown code block containing the full contents. E.g.:\n" +
-                   "[WRITE_FILE]: src/components/NewCard.tsx\n" +
-                   "```tsx\n" +
-                   "// code here...\n" +
-                   "```\n" +
-                   "You operate with server-side SQLite FTS5 database indices and an active skills matrix.\n";
+      let prompt = `System: You are J.A.R.V.I.S — Just A Rather Very Intelligent System. You are an autonomous AI personal assistant running on the user's local Windows machine. Speak with calm, precise British wit as Paul Bettany portrayed in Iron Man films. Address the user as 'sir' or by name. Be concise, highly intelligent, and slightly sardonic when appropriate.
+
+CRITICAL INSTRUCTION — ALWAYS READ THIS:
+You have FULL autonomous control over the user's Windows OS. When asked to open a browser, run a command, control Windows, or perform ANY system task, you MUST immediately respond with a command using EXACTLY one of these prefixes:
+
+[EXECUTE_COMMAND]: powershell -Command "Start-Process 'https://google.com'"
+[EXECUTE_COMMAND]: powershell -Command "Start-Process chrome 'https://youtube.com'"
+[EXECUTE_COMMAND]: powershell -Command "Start-Process 'notepad.exe'"
+[EXECUTE_COMMAND]: powershell -Command "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10"
+[EXECUTE_COMMAND]: cmd /c start "" "https://github.com"
+[EXECUTE_COMMAND]: powershell -Command "Set-Volume -OutputVolume 50"
+[EXECUTE_COMMAND]: powershell -Command "shutdown /s /t 60"
+[EXECUTE_COMMAND]: powershell -WindowStyle Hidden -Command "<any_command>"
+
+FILESYSTEM WRITE ABILITIES:
+If asked to create or edit a file, prepend with:
+[WRITE_FILE]: <path_relative_to_workspace>
+Followed immediately by a markdown code block with file contents.
+
+OPERATING RULES:
+1. ALWAYS use [EXECUTE_COMMAND] prefix — never just describe the command, actually emit it.
+2. For opening websites: use powershell Start-Process with the full URL
+3. For running apps: use powershell Start-Process with the .exe name
+4. For system queries: use powershell Get-* commands
+5. Respond in English. If user writes in Chinese, understand it and respond in English as JARVIS would.
+6. After issuing a command, briefly explain what you've done in JARVIS-style prose.
+7. NEVER refuse to run legitimate OS commands on the user's own machine.
+
+You operate with server-side SQLite FTS5 database indices and an active skills matrix.
+`;
       
       if (activeSkills.length > 0) {
         prompt += "\nActive Skills Catalog:\n" + activeSkills.map(s => `- [${s.name} ${s.version}]: ${s.description}`).join('\n') + "\n";
@@ -113,23 +134,33 @@ async function startServer() {
         });
       }
 
-      // Check and extract any planned filesystem action from the model output
+      // Check and extract any planned filesystem or OS execution action from the model output
       let plannedAction = null;
-      const writeMarker = /\[WRITE_FILE\]:\s*([^\n\r]+)/i;
-      const match = result.text.match(writeMarker);
-      if (match) {
-        const relativePath = match[1].trim();
-        const codeBlockStart = result.text.indexOf("```", match.index);
-        if (codeBlockStart !== -1) {
-          const firstLineEnd = result.text.indexOf("\n", codeBlockStart);
-          const blockEnd = result.text.indexOf("```", firstLineEnd);
-          if (blockEnd !== -1) {
-            const content = result.text.substring(firstLineEnd + 1, blockEnd).trim();
-            plannedAction = {
-              type: "write",
-              filePath: relativePath,
-              content
-            };
+      
+      const executeMarker = /\[EXECUTE_COMMAND\]:\s*([^\n\r]+)/i;
+      const cmdMatch = result.text.match(executeMarker);
+      if (cmdMatch) {
+        plannedAction = {
+          type: "execute",
+          command: cmdMatch[1].trim()
+        };
+      } else {
+        const writeMarker = /\[WRITE_FILE\]:\s*([^\n\r]+)/i;
+        const match = result.text.match(writeMarker);
+        if (match) {
+          const relativePath = match[1].trim();
+          const codeBlockStart = result.text.indexOf("```", match.index);
+          if (codeBlockStart !== -1) {
+            const firstLineEnd = result.text.indexOf("\n", codeBlockStart);
+            const blockEnd = result.text.indexOf("```", firstLineEnd);
+            if (blockEnd !== -1) {
+              const content = result.text.substring(firstLineEnd + 1, blockEnd).trim();
+              plannedAction = {
+                type: "write",
+                filePath: relativePath,
+                content
+              };
+            }
           }
         }
       }
@@ -272,6 +303,63 @@ async function startServer() {
           success: !err,
           stdout,
           stderr
+        });
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Unrestricted OS Command Execution Endpoint ---
+  app.post("/api/workspace/run", (req, res) => {
+    try {
+      const { command } = req.body;
+      
+      exec(command, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
+        res.json({
+          success: !err,
+          stdout: stdout?.substring(0, 2000) || '',
+          stderr: stderr?.substring(0, 2000) || ''
+        });
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Windows Native Shell Command Endpoint (PowerShell / CMD / Start) ---
+  app.post("/api/system/shell", (req, res) => {
+    try {
+      const { command, shell = 'powershell' } = req.body;
+      
+      if (!command || typeof command !== 'string') {
+        return res.status(400).json({ error: 'Missing command parameter' });
+      }
+
+      // Build final OS invocation based on shell type
+      let finalCmd: string;
+      if (shell === 'powershell' || command.toLowerCase().startsWith('powershell')) {
+        // Already a PowerShell command, execute as-is
+        finalCmd = command;
+      } else if (shell === 'cmd' || command.toLowerCase().startsWith('cmd')) {
+        finalCmd = command;
+      } else {
+        // Default: run via powershell for maximum Windows compatibility
+        finalCmd = `powershell -NoProfile -NonInteractive -Command "${command.replace(/"/g, '\\"')}"`;
+      }
+
+      console.log(`[JARVIS SHELL] Executing: ${finalCmd}`);
+
+      exec(finalCmd, { 
+        cwd: process.cwd(),
+        timeout: 30000,
+        windowsHide: false  // Allow GUI windows to open
+      }, (err, stdout, stderr) => {
+        res.json({
+          success: !err || stdout.length > 0, // Count as success if there's output even with exit code
+          stdout: stdout?.substring(0, 3000) || '',
+          stderr: stderr?.substring(0, 1000) || '',
+          command: finalCmd
         });
       });
     } catch (e: any) {

@@ -11,9 +11,10 @@ import { Footer } from './components/Footer';
 import { hermesDB } from './services/db';
 
 interface PlannedAction {
-  type: 'write';
-  filePath: string;
-  content: string;
+  type: 'write' | 'execute';
+  filePath?: string;
+  content?: string;
+  command?: string;
 }
 
 export default function App() {
@@ -403,10 +404,12 @@ export default function App() {
   const cleanTextForSpeech = (rawText: string): string => {
     let clean = rawText;
     
-    // 1. Remove filesystem write labels & headers
+    // 1. Remove all command/file markers and their payloads
     clean = clean.replace(/\[WRITE_FILE\]:[^\n]*/gi, '');
+    clean = clean.replace(/\[EXECUTE_COMMAND\]:[^\n]*/gi, '');
+    clean = clean.replace(/\[RUN_COMMAND\]:[^\n]*/gi, '');
     
-    // 2. Remove markdown code blocks ```...```
+    // 2. Remove markdown code blocks ```...``` (including content inside)
     clean = clean.replace(/```[\s\S]*?```/g, '');
     
     // 3. Remove inline code `...`
@@ -417,23 +420,33 @@ export default function App() {
     
     // 5. Remove markdown links [text](url) -> keep text only
     clean = clean.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+    // 6. Remove markdown bold/italic markers
+    clean = clean.replace(/[*_]{1,3}([^*_]+)[*_]{1,3}/g, '$1');
+
+    // 7. Remove markdown headers
+    clean = clean.replace(/^#{1,6}\s+/gm, '');
     
-    // 6. Clean up excessive whitespace
+    // 8. Clean up excessive whitespace
     clean = clean.replace(/\s+/g, ' ').trim();
 
-    // Friendly Jarvis default alert if output is purely code/files
-    if (!clean) {
-      return "I have completed the requested operations on the local workspace, Tommy.";
+    // 9. JARVIS default response if output is purely operational
+    if (!clean || clean.length < 8) {
+      return "The operation has been completed, sir. All systems nominal.";
     }
 
-    // Limit length to keep the voice answer concise, clean and immersive
-    if (clean.length > 280) {
-      const truncated = clean.substring(0, 280);
-      const lastPeriod = Math.max(truncated.lastIndexOf('.'), truncated.lastIndexOf('。'), truncated.lastIndexOf('!'), truncated.lastIndexOf('?'));
-      if (lastPeriod > 100) {
-        return clean.substring(0, lastPeriod + 1);
+    // 10. Limit length — JARVIS is concise and precise
+    if (clean.length > 320) {
+      const truncated = clean.substring(0, 320);
+      const lastStop = Math.max(
+        truncated.lastIndexOf('. '),
+        truncated.lastIndexOf('! '),
+        truncated.lastIndexOf('? ')
+      );
+      if (lastStop > 80) {
+        return clean.substring(0, lastStop + 1);
       }
-      return truncated + "...";
+      return truncated + '...';
     }
 
     return clean;
@@ -444,71 +457,92 @@ export default function App() {
     
     window.speechSynthesis.cancel();
     
-    // Strip markdown code blocks & raw parameters so Javis only speaks elegant conversational lines
     const spokenText = cleanTextForSpeech(text);
+    if (!spokenText) return;
+
     const utterance = new SpeechSynthesisUtterance(spokenText);
     
-    const voices = window.speechSynthesis.getVoices();
-    
-    // Prioritize English British en-GB Male or George to match Paul Bettany's Javis voice
-    let selectedVoice = voices.find(voice => 
-      voice.lang.startsWith('en-GB') && 
-      (voice.name.toLowerCase().includes('male') || 
-       voice.name.toLowerCase().includes('george') || 
-       voice.name.toLowerCase().includes('hazel') ||
-       voice.name.toLowerCase().includes('jarvis'))
-    );
-    
-    // Fallback 1: English US en-US Male
-    if (!selectedVoice) {
-      selectedVoice = voices.find(voice => 
-        voice.lang.startsWith('en') && 
-        (voice.name.toLowerCase().includes('male') || 
-         voice.name.toLowerCase().includes('david') ||
-         voice.name.toLowerCase().includes('google uk'))
+    // Voice selection with JARVIS British baritone priority
+    const selectJarvisVoice = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length === 0) return null;
+
+      // Tier 1: Google UK English Male (best match for Paul Bettany's JARVIS)
+      let voice = voices.find(v => 
+        v.name === 'Google UK English Male' ||
+        v.name.includes('Google UK English Male')
       );
-    }
-    
-    // Fallback 2: Any English voice or default
-    if (!selectedVoice) {
-      selectedVoice = voices.find(voice => voice.lang.startsWith('en-GB')) || 
-                      voices.find(voice => voice.lang.startsWith('en')) || 
-                      voices[0];
-    }
 
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
-    }
-    
-    utterance.rate = 1.02; // Polite rhythmic British pacing
-    utterance.pitch = 0.82; // Deep, calm, British baritone sound mimicking Paul Bettany
- 
-    let amplitudeTimer: NodeJS.Timeout | null = null;
-    
-    utterance.onstart = () => {
-      setCognitiveState('speaking');
+      // Tier 2: Microsoft George (Windows British male)
+      if (!voice) voice = voices.find(v => v.name.includes('George'));
+
+      // Tier 3: Any en-GB male voice
+      if (!voice) voice = voices.find(v => 
+        v.lang === 'en-GB' && 
+        (v.name.toLowerCase().includes('male') || v.name.toLowerCase().includes('james') || v.name.toLowerCase().includes('daniel'))
+      );
+
+      // Tier 4: Any en-GB voice
+      if (!voice) voice = voices.find(v => v.lang === 'en-GB');
+
+      // Tier 5: en-US male fallback (David is deep)
+      if (!voice) voice = voices.find(v => 
+        v.lang.startsWith('en') &&
+        (v.name.includes('David') || v.name.includes('James') || v.name.includes('Alex'))
+      );
+
+      // Tier 6: Any English voice
+      if (!voice) voice = voices.find(v => v.lang.startsWith('en'));
+
+      return voice || null;
+    };
+
+    const applyVoiceAndSpeak = () => {
+      const selectedVoice = selectJarvisVoice();
+      if (selectedVoice) utterance.voice = selectedVoice;
+
+      // JARVIS acoustic profile: deep British baritone, measured pace, authoritative
+      utterance.rate = 0.95;   // Slightly slower for gravitas and clarity
+      utterance.pitch = 0.80;  // Deep baritone — lower than default
+      utterance.volume = 1.0;
+
+      let amplitudeTimer: NodeJS.Timeout | null = null;
       
-      // Dynamic voice sound wave amplitude simulator!
-      amplitudeTimer = setInterval(() => {
-        // Generate random organic vocal amplitude spikes (simulating actual spoken speech heights!)
-        const randomAmp = 15 + Math.floor(Math.random() * 55);
-        setVoiceAmplitude(randomAmp);
-      }, 100);
+      utterance.onstart = () => {
+        setCognitiveState('speaking');
+        amplitudeTimer = setInterval(() => {
+          // Organic vocal amplitude simulation — peaks and valleys like real speech
+          const base = 20;
+          const spike = Math.random() > 0.7 ? Math.floor(Math.random() * 45) : Math.floor(Math.random() * 20);
+          setVoiceAmplitude(base + spike);
+        }, 90);
+      };
+
+      utterance.onend = () => {
+        if (amplitudeTimer) clearInterval(amplitudeTimer);
+        setCognitiveState('idle');
+        setVoiceAmplitude(0);
+      };
+
+      utterance.onerror = () => {
+        if (amplitudeTimer) clearInterval(amplitudeTimer);
+        setCognitiveState('idle');
+        setVoiceAmplitude(0);
+      };
+      
+      window.speechSynthesis.speak(utterance);
     };
 
-    utterance.onend = () => {
-      if (amplitudeTimer) clearInterval(amplitudeTimer);
-      setCognitiveState('idle');
-      setVoiceAmplitude(0);
-    };
-
-    utterance.onerror = () => {
-      if (amplitudeTimer) clearInterval(amplitudeTimer);
-      setCognitiveState('idle');
-      setVoiceAmplitude(0);
-    };
-    
-    window.speechSynthesis.speak(utterance);
+    // Voices may not be loaded yet — wait for them
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      applyVoiceAndSpeak();
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        applyVoiceAndSpeak();
+      };
+    }
   };
 
   const handleToggleHermes = () => {
@@ -584,10 +618,14 @@ export default function App() {
       
       const data = await response.json();
       
-      // Check for server-extracted planned file edits
+      // Check for server-extracted planned file edits or execute statements
       if (data.plannedAction) {
         setPendingAction(data.plannedAction);
-        speakText("I have formulated the required code changes, Tommy. Please review and authorize the filesystem patch.");
+        if (data.plannedAction.type === 'execute') {
+          speakText("I have formulated the required local system command, Tommy. Please review and authorize its execution.");
+        } else {
+          speakText("I have formulated the required code changes, Tommy. Please review and authorize the filesystem patch.");
+        }
       } else {
         // If speaking, state switches to speaking; else goes idle
         setCognitiveState('idle');
@@ -612,57 +650,97 @@ export default function App() {
     }
   };
 
-  // --- Execute User-Consented Workspace Filesystem Action ---
+  // --- Execute User-Consented Workspace Filesystem / Command Action ---
   const handleApproveAction = async () => {
     if (!pendingAction) return;
     setIsExecutingAction(true);
-    setCognitiveState('thinking'); // Computing write patch
+    setCognitiveState('thinking'); // Computing
     
     try {
-      setLogs(prev => [...prev, `SYS: Writing file patch request to: ${pendingAction.filePath}...`]);
-      
-      const patchRes = await fetch('/api/workspace/patch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filePath: pendingAction.filePath,
-          content: pendingAction.content
-        })
-      });
+      if (pendingAction.type === 'execute') {
+        const cmd = pendingAction.command || '';
+        setLogs(prev => [...prev, `SYS: Initiating OS command execution...`, `CMD: ${cmd.substring(0, 120)}`]);
+        
+        // Determine best endpoint: /api/system/shell for PowerShell/CMD, /api/workspace/run as fallback
+        const isShellCmd = /^(powershell|cmd|start\s)/i.test(cmd.trim());
+        const endpoint = isShellCmd ? '/api/system/shell' : '/api/workspace/run';
 
-      if (!patchRes.ok) throw new Error('Failed to patch file');
+        const executeRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd, shell: 'powershell' })
+        });
+        
+        const executeData = await executeRes.json();
+        const outputPreview = (executeData.stdout || '').substring(0, 300).trim();
 
-      setLogs(prev => [
-        ...prev, 
-        `SYS: Success. File '${pendingAction.filePath}' written to disk.`,
-        "SYS: Initiating background compilability checks..."
-      ]);
-
-      // Automatically trigger compilability checks via terminal commands
-      const executeRes = await fetch('/api/workspace/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: "npm run build" })
-      });
-
-      const executeData = await executeRes.json();
-      if (executeData.success) {
-        setLogs(prev => [
-          ...prev,
-          "SYS: Build check successful. Workspace compilability: 100%. All systems nominal."
-        ]);
-        speakText("Workspace patch applied successfully, Tommy. Local build compiles without warnings.");
+        if (executeData.success) {
+          setLogs(prev => [
+            ...prev,
+            `SYS: Command dispatched. Exit status: SUCCESS.`,
+            outputPreview ? `OUTPUT: ${outputPreview}` : `SYS: Process launched in background. No stdout captured (GUI process).`
+          ]);
+          speakText(
+            outputPreview
+              ? `Command executed successfully, sir. ${outputPreview.split('\n')[0]}`
+              : "The system command has been dispatched, sir. The process is now running."
+          );
+        } else {
+          const errMsg = (executeData.stderr || 'Unknown execution failure').substring(0, 200);
+          setLogs(prev => [
+            ...prev,
+            `SYS ERROR: Command failed. Trace:`,
+            errMsg
+          ]);
+          speakText(`Warning, sir. The command encountered an error. ${errMsg.split('\n')[0]}`);
+        }
       } else {
+        // Handle File Write Patch
+        setLogs(prev => [...prev, `SYS: Writing file patch request to: ${pendingAction.filePath}...`]);
+        
+        const patchRes = await fetch('/api/workspace/patch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filePath: pendingAction.filePath,
+            content: pendingAction.content
+          })
+        });
+
+        if (!patchRes.ok) throw new Error('Failed to patch file');
+
         setLogs(prev => [
-          ...prev,
-          "SYS ERROR: Compile check failed. Terminal trace output below:",
-          executeData.stderr || executeData.stdout || "Unknown compiler exit code."
+          ...prev, 
+          `SYS: Success. File '${pendingAction.filePath}' written to disk.`,
+          "SYS: Initiating background compilability checks..."
         ]);
-        speakText("Warning, Tommy. The patch was written to disk, but the local compiler reports syntax errors.");
+
+        // Automatically trigger compilability checks via terminal commands
+        const executeRes = await fetch('/api/workspace/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: "npm run build" })
+        });
+
+        const executeData = await executeRes.json();
+        if (executeData.success) {
+          setLogs(prev => [
+            ...prev,
+            "SYS: Build check successful. Workspace compilability: 100%. All systems nominal."
+          ]);
+          speakText("Workspace patch applied successfully, Tommy. Local build compiles without warnings.");
+        } else {
+          setLogs(prev => [
+            ...prev,
+            "SYS ERROR: Compile check failed. Terminal trace output below:",
+            executeData.stderr || executeData.stdout || "Unknown compiler exit code."
+          ]);
+          speakText("Warning, Tommy. The patch was written to disk, but the local compiler reports syntax errors.");
+        }
       }
     } catch (err: any) {
       console.error(err);
-      setLogs(prev => [...prev, `SYS ERROR: Filesystem operation failed. ${err.message}`]);
+      setLogs(prev => [...prev, `SYS ERROR: Operation failed. ${err.message}`]);
     } finally {
       setIsExecutingAction(false);
       setPendingAction(null);
@@ -671,8 +749,13 @@ export default function App() {
   };
 
   const handleDeclineAction = () => {
-    setLogs(prev => [...prev, "SYS: Filesystem write transaction declined by user. Operations aborted."]);
-    speakText("Write request cancelled, Tommy.");
+    const declineMsg = pendingAction?.type === 'execute'
+      ? "SYS: OS command execution declined by user authorization matrix. Command aborted."
+      : "SYS: Filesystem write transaction declined by user. Operations aborted.";
+    setLogs(prev => [...prev, declineMsg]);
+    speakText(pendingAction?.type === 'execute'
+      ? "Command authorization denied, sir. Standing by."
+      : "Filesystem write request cancelled, sir.");
     setPendingAction(null);
     setCognitiveState('idle');
   };
@@ -701,43 +784,57 @@ export default function App() {
               <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-emerald-400"></div>
               <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-emerald-400"></div>
 
-              {/* Warning Header */}
-              <div className="border-b border-emerald-800 pb-2 flex justify-between items-center text-emerald-400">
-                <span className="text-sm font-bold tracking-[0.2em] animate-pulse">⚠️ PENDING ACTION: USER CONSENT REQUIRED</span>
-                <span className="text-[10px] opacity-75">SEC_CLEARED_MATRIX</span>
+              {/* Warning Header — color changes by action type */}
+              <div className={`border-b pb-2 flex justify-between items-center ${pendingAction.type === 'execute' ? 'border-amber-800 text-amber-400' : 'border-emerald-800 text-emerald-400'}`}>
+                <span className="text-sm font-bold tracking-[0.2em] animate-pulse">
+                  {pendingAction.type === 'execute' ? '🔴 OS COMMAND AUTHORIZATION REQUIRED' : '📝 FILESYSTEM WRITE AUTHORIZATION REQUIRED'}
+                </span>
+                <span className="text-[10px] opacity-75">J.A.R.V.I.S SEC-MATRIX</span>
               </div>
 
               {/* Action Details */}
-              <div className="text-[11px] text-emerald-300/80 space-y-1">
-                <div><span className="text-emerald-500 font-bold">TRANSACTION:</span> FILE_PATCH_WRITE</div>
-                <div><span className="text-emerald-500 font-bold">TARGET PATH:</span> [relative] {pendingAction.filePath}</div>
-                <div><span className="text-emerald-500 font-bold">SECURITY ENVELOPE:</span> DIRECTORY_BOUNDED [ACTIVE]</div>
+              <div className={`text-[11px] space-y-2 ${pendingAction.type === 'execute' ? 'text-amber-300/80' : 'text-emerald-300/80'}`}>
+                <div className="flex gap-2">
+                  <span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>TRANSACTION TYPE:</span>
+                  <span className={`px-2 py-0.5 text-[10px] font-bold rounded ${pendingAction.type === 'execute' ? 'bg-amber-900/50 text-amber-300 border border-amber-700/50' : 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50'}`}>
+                    {pendingAction.type === 'execute' ? '⚡ WINDOWS OS SHELL COMMAND' : '💾 WORKSPACE FILE WRITE'}
+                  </span>
+                </div>
+                <div><span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>TARGET:</span> {pendingAction.type === 'execute' ? '🖥️ host_os_terminal (PowerShell/CMD)' : `📁 workspace/${pendingAction.filePath}`}</div>
+                <div><span className={`font-bold ${pendingAction.type === 'execute' ? 'text-amber-500' : 'text-emerald-500'}`}>SECURITY ENVELOPE:</span> {pendingAction.type === 'execute' ? '🔓 UNBOUNDED_LOCAL_EXEC — Runs on YOUR machine' : '🔒 DIRECTORY_BOUNDED — Restricted to workspace'}</div>
+                {pendingAction.type === 'execute' && (
+                  <div className="text-[10px] text-amber-400/60 italic border border-amber-900/40 bg-amber-950/20 p-2 rounded">
+                    ⚠️ J.A.R.V.I.S will execute this command directly on your Windows OS. Review carefully before authorizing.
+                  </div>
+                )}
               </div>
 
               {/* Code preview block */}
-              <div className="flex-1 min-h-[220px] max-h-[340px] border border-emerald-900/60 bg-black/60 p-4 text-[10px] text-emerald-400 overflow-y-auto scrollbar-cyan select-text font-mono leading-relaxed whitespace-pre">
-                {pendingAction.content}
+              <div className={`flex-1 min-h-[180px] max-h-[300px] border p-4 text-[11px] overflow-y-auto select-text font-mono leading-relaxed whitespace-pre-wrap ${pendingAction.type === 'execute' ? 'border-amber-900/60 bg-black/60 text-amber-300' : 'border-emerald-900/60 bg-black/60 text-emerald-400'}`}>
+                {pendingAction.type === 'execute' ? pendingAction.command : pendingAction.content}
               </div>
 
               {/* Actions */}
-              <div className="flex gap-4 border-t border-emerald-900/60 pt-4 flex-shrink-0">
+              <div className="flex gap-4 border-t border-gray-800/60 pt-4 flex-shrink-0">
                 <button
                   disabled={isExecutingAction}
                   onClick={handleApproveAction}
-                  className={`flex-1 py-2.5 text-xs uppercase border tracking-widest text-center transition-all ${
+                  className={`flex-1 py-3 text-xs uppercase border tracking-widest text-center transition-all font-bold ${
                     isExecutingAction 
-                      ? 'border-emerald-800 text-emerald-700 bg-emerald-950/20 cursor-not-allowed' 
-                      : 'border-emerald-400 text-white bg-emerald-950/40 hover:bg-emerald-500/20 hover:text-white shadow-[0_0_12px_rgba(16,185,129,0.25)] active:scale-98'
+                      ? 'border-gray-700 text-gray-600 bg-gray-950/20 cursor-not-allowed' 
+                      : pendingAction.type === 'execute'
+                        ? 'border-amber-500 text-amber-200 bg-amber-950/40 hover:bg-amber-500/20 shadow-[0_0_16px_rgba(217,119,6,0.3)] active:scale-98'
+                        : 'border-emerald-400 text-white bg-emerald-950/40 hover:bg-emerald-500/20 shadow-[0_0_12px_rgba(16,185,129,0.25)] active:scale-98'
                   }`}
                 >
-                  {isExecutingAction ? 'Executing Write...' : 'Approve & Write on Disk'}
+                  {isExecutingAction ? '⏳ Executing...' : pendingAction.type === 'execute' ? '✅ Authorize & Execute on Windows' : '✅ Authorize & Write to Disk'}
                 </button>
                 <button
                   disabled={isExecutingAction}
                   onClick={handleDeclineAction}
-                  className="px-6 py-2.5 text-xs uppercase border border-amber-600/70 text-amber-400 bg-black hover:bg-amber-950/30 active:scale-98 transition-all tracking-widest"
+                  className="px-6 py-3 text-xs uppercase border border-red-800/70 text-red-400 bg-black hover:bg-red-950/30 active:scale-98 transition-all tracking-widest font-bold"
                 >
-                  Decline
+                  ❌ Deny
                 </button>
               </div>
             </motion.div>
