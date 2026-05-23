@@ -11,7 +11,7 @@ async function startServer() {
 
   app.post("/api/chat", async (req, res) => {
     try {
-      const { message, history } = req.body;
+      const { message, history, model } = req.body;
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
 
       if (!apiKey) {
@@ -26,9 +26,13 @@ async function startServer() {
         prompt += `User: ${message}\nMark-XXXIX:`;
       }
 
-      const responseText = await fetchOpenRouterWithFallback(apiKey, prompt);
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model);
 
-      res.json({ text: responseText });
+      res.json({ 
+        text: result.text,
+        model: result.model,
+        usage: result.usage
+      });
     } catch (error: any) {
       console.error(error);
       res.status(500).json({ error: error.message || "Failed to generate response" });

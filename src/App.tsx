@@ -7,6 +7,7 @@ import { ActivityLog } from './components/ActivityLog';
 import { FileUpload } from './components/FileUpload';
 import { CommandInput } from './components/CommandInput';
 import { Footer } from './components/Footer';
+import { hermesDB } from './services/db';
 
 export default function App() {
   const [logs, setLogs] = useState<string[]>([
@@ -19,7 +20,32 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [isHermesActive, setIsHermesActive] = useState(false);
 
-  // Initialize voices
+  // Initialize DB and load historical messages from IndexedDB on start
+  useEffect(() => {
+    const initializeDatabase = async () => {
+      try {
+        await hermesDB.init();
+        const savedMsgs = await hermesDB.getSessionMessages("default-session");
+        
+        if (savedMsgs.length > 0) {
+          const logStrings = savedMsgs.map(msg => {
+            const role = msg.role === 'user' ? 'USER' : msg.role === 'system' ? 'SYS' : isHermesActive ? 'HERMES' : 'JARVIS';
+            return `${role}: ${msg.content}`;
+          });
+          setLogs([
+            "SYS: Historical database logs restored.",
+            ...logStrings
+          ]);
+        }
+      } catch (err) {
+        console.error("Failed to load historical logs from IndexedDB", err);
+      }
+    };
+    
+    initializeDatabase();
+  }, [isHermesActive]);
+
+  // Initialize speech voices
   useEffect(() => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.getVoices();
@@ -47,7 +73,7 @@ export default function App() {
     }
     
     utterance.rate = 1.0; 
-    utterance.pitch = isHermesActive ? 0.95 : 0.8; // Change pitch slightly for Hermes
+    utterance.pitch = isHermesActive ? 0.95 : 0.8; 
     
     window.speechSynthesis.speak(utterance);
   };
@@ -77,55 +103,150 @@ export default function App() {
   };
 
   const handleCommand = async (text: string) => {
-    setLogs(prev => [...prev, `USER: ${text}`]);
-    setIsThinking(true);
+    // 1. Enforce Cost-Aware Budget Caps prior to API calls
+    let totalSpent = 0;
+    try {
+      const dbCostLogs = await hermesDB.getCostLogs();
+      totalSpent = dbCostLogs.reduce((sum, item) => sum + item.costUsd, 0);
+    } catch (e) {
+      console.error(e);
+    }
 
-    if (isHermesActive) {
-      // High-fidelity Hermes simulation with cost-aware feedback and keyword processing
-      setTimeout(() => {
-        setIsThinking(false);
-        const queryLower = text.toLowerCase();
-        let responseText = "";
-
-        if (queryLower.includes('skills') || queryLower.includes('curation')) {
-          responseText = "I evaluated the execution logs. One skill candidate found for this workflow. I successfully codified, tested, and stored 'github-pr-reviewer' (v2.5) to state.db.";
-        } else if (queryLower.includes('cost') || queryLower.includes('budget') || queryLower.includes('router')) {
-          responseText = "Evaluating task signature. Routed to Claude 3.5 Haiku to optimize API budget. Spent is $0.4216 out of a $2.00 session limit. Cache hit ratio remains at 84 percent.";
-        } else if (queryLower.includes('sqlite') || queryLower.includes('fts5') || queryLower.includes('memory')) {
-          responseText = "Queried SQLite state.db using keyword FTS5 virtual indexing. Context successfully recovered in 6 milliseconds. Re-injected relevant memories into active context.";
-        } else if (queryLower.includes('hello') || queryLower.includes('jarvis')) {
-          responseText = "Hello, Tommy. Hermes Core is active. I am actively analyzing our development workspace, cataloging skills, and optimizing token spend. State database is stable.";
-        } else {
-          responseText = `Request received. Task evaluated. Cost-aware pipeline routed to Haiku. Dynamic prompt cache hit confirmed. Current token cost: $0.0016. Execution success: 100 percent.`;
-        }
-
-        setLogs(prev => [...prev, `HERMES: ${responseText}`]);
-        speakText(responseText);
-      }, 1000);
+    const BUDGET_LIMIT = 2.00; // $2 limit cap
+    if (totalSpent >= BUDGET_LIMIT) {
+      const budgetErrMsg = `SYS ERROR: API Budget Limit Exceeded ($${totalSpent.toFixed(6)} / $${BUDGET_LIMIT.toFixed(2)}). Core pipeline locked. Please reset database config.`;
+      setLogs(prev => [...prev, budgetErrMsg]);
+      speakText("Warning, Tommy. System API budget limit has been exceeded. Communications are locked.");
       return;
     }
 
+    // 2. Add user message to UI and IndexedDB
+    setLogs(prev => [...prev, `USER: ${text}`]);
+    setIsThinking(true);
+
+    const userMsgId = Math.random().toString(36).substring(7);
+    const timestamp = Date.now();
+
     try {
+      await hermesDB.addMessage({
+        id: userMsgId,
+        sessionId: "default-session",
+        role: "user",
+        content: text,
+        timestamp
+      });
+    } catch (e) {
+      console.error("Failed to persist user message in IndexedDB", e);
+    }
+
+    // 3. Dynamic Cost-Aware Routing Matrices (Sonnet vs Haiku/Free tier fallbacks)
+    let requestedModel = "auto";
+    let taskType = "general";
+    
+    if (isHermesActive) {
+      const queryLower = text.toLowerCase();
+      // Complex prompt AST scans, AST refactor updates or skill curations require Sonnet
+      const requiresSonnet = text.length > 8000 || 
+                            queryLower.includes("ast") || 
+                            queryLower.includes("refactor") || 
+                            queryLower.includes("curate") ||
+                            queryLower.includes("evolve");
+      if (requiresSonnet) {
+        requestedModel = "claude-3-5-sonnet-latest";
+        taskType = "prompt_evolution";
+      } else {
+        requestedModel = "claude-3-5-haiku-latest";
+        taskType = "fts_query";
+      }
+    }
+
+    try {
+      // 4. Dispatch actual request to backend API
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }) 
+        body: JSON.stringify({ 
+          message: text,
+          model: requestedModel === "auto" ? undefined : requestedModel,
+          history: [] // Stateless model session fallback
+        })
       });
 
-      if (!response.ok) throw new Error('Network error');
+      if (!response.ok) throw new Error('API server returned error');
       
       const data = await response.json();
-      setLogs(prev => [...prev, `JARVIS: ${data.text}`]);
+      
+      // 5. Calculate costs from real API tokens returned
+      const modelUsed = data.model || "meta-llama/llama-3.2-3b-instruct:free";
+      const usage = data.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      const calculatedCost = hermesDB.calculateAPICost(modelUsed, usage.prompt_tokens, usage.completion_tokens);
+
+      // 6. Save assistant message to IndexedDB
+      const assistantMsgId = Math.random().toString(36).substring(7);
+      await hermesDB.addMessage({
+        id: assistantMsgId,
+        sessionId: "default-session",
+        role: "assistant",
+        content: data.text,
+        timestamp: Date.now(),
+        model: modelUsed,
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        costUsd: calculatedCost
+      });
+
+      // Save to transaction cost logs if Hermes active or calculated cost > 0
+      if (calculatedCost > 0 || isHermesActive) {
+        await hermesDB.addCostLog({
+          id: Math.random().toString(36).substring(7),
+          timestamp: Date.now(),
+          model: modelUsed,
+          taskType,
+          costUsd: calculatedCost,
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens
+        });
+      }
+
+      // 7. Dynamic Skill Curation check
+      // If the user asks the agent to create/curate a skill and it is successful, dynamically codify it!
+      const queryLower = text.toLowerCase();
+      if (isHermesActive && (queryLower.includes("curate") || queryLower.includes("create skill") || queryLower.includes("add skill"))) {
+        // Parse name from prompt or generate a default one
+        const words = queryLower.split(' ');
+        const nameIdx = words.findIndex(w => w.includes("skill")) + 1;
+        const skillName = (words[nameIdx] && words[nameIdx].replace(/[^\w-]/g, '')) || `custom-skill-${Math.floor(Math.random() * 100)}`;
+        
+        await hermesDB.addOrUpdateSkill({
+          id: skillName,
+          name: skillName,
+          version: 'v1.0',
+          status: 'active',
+          description: `User-curated skill: ${text.substring(0, 50)}...`,
+          yamlContent: `---\nname: ${skillName}\ndescription: ${text}\nversion: 1.0\n---`
+        });
+
+        const curationSuccessMsg = `[CURATOR] Automatically curated and saved new skill '${skillName}' (v1.0) into the SQLite skills directory.`;
+        setLogs(prev => [...prev, curationSuccessMsg]);
+      }
+
+      const roleLabel = isHermesActive ? 'HERMES' : 'JARVIS';
+      setLogs(prev => [...prev, `${roleLabel}: ${data.text}`]);
       speakText(data.text);
     } catch (e) {
       console.error(e);
-      // Fail back gracefully for JARVIS offline mode so the dashboard works offline!
+      // Fail back gracefully for offline usage
       setTimeout(() => {
         setIsThinking(false);
-        const responseText = "Sir, the chat API is offline, but my local protocols are maintaining systems normal. Select AI Core Active to load the Hermes matrix.";
-        setLogs(prev => [...prev, `JARVIS: ${responseText}`]);
-        speakText(responseText);
-      }, 1000);
+        const fallbackText = isHermesActive
+          ? "Local FTS5 state engine is operational. Local skills repository loaded. To establish API lines, configure OPENROUTER_API_KEY."
+          : "Satellite connection offline, Tommy. Verify your OpenRouter credentials inside your local .env configuration.";
+        
+        setLogs(prev => [...prev, `${isHermesActive ? 'HERMES' : 'JARVIS'}: ${fallbackText}`]);
+        speakText(fallbackText);
+      }, 800);
+    } finally {
+      setIsThinking(false);
     }
   };
 

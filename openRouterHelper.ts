@@ -98,13 +98,20 @@ const compactProviderError = (status: number, rawText: string) => {
   return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
 };
 
-export async function fetchOpenRouterWithFallback(apiKey: string, prompt: string, validator?: (text: string) => string) {
+export async function fetchOpenRouterWithFallback(
+  apiKey: string, 
+  prompt: string, 
+  validator?: (text: string) => string,
+  requestedModel?: string
+) {
   let lastError: Error | null = null;
   let rateLimitedCount = 0;
   let notFoundCount = 0;
   let quotaLimitedCount = 0;
 
-  for (const model of FALLBACK_MODELS) {
+  const modelsToTry = requestedModel ? [requestedModel, ...FALLBACK_MODELS] : FALLBACK_MODELS;
+
+  for (const model of modelsToTry) {
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -163,14 +170,22 @@ export async function fetchOpenRouterWithFallback(apiKey: string, prompt: string
           try {
             const result = validator(text);
             console.log(`Successfully generated and validated content using model: ${model}`);
-            return result;
+            return {
+              text: result,
+              model: data.model || model,
+              usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+            };
           } catch (e: any) {
             // Try to auto-repair if validator validation fails directly on text
             try {
               const repairedObj = parseAndRepairJSON(text);
               const revalidated = validator(JSON.stringify(repairedObj));
               console.log(`Successfully repaired and validated content using model: ${model}`);
-              return revalidated;
+              return {
+                text: revalidated,
+                model: data.model || model,
+                usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+              };
             } catch (repairErr: any) {
               throw new Error(
                 looksLikeStructuredOutput(text)
@@ -181,7 +196,11 @@ export async function fetchOpenRouterWithFallback(apiKey: string, prompt: string
           }
         }
         console.log(`Successfully generated content using model: ${model}`);
-        return text;
+        return {
+          text,
+          model: data.model || model,
+          usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+        };
       } else {
         throw new Error(`Model ${model} returned empty content`);
       }
@@ -193,7 +212,7 @@ export async function fetchOpenRouterWithFallback(apiKey: string, prompt: string
   }
 
   // All models tried: distinguish rate-limit saturation from other failures.
-  const totalTried = FALLBACK_MODELS.length;
+  const totalTried = modelsToTry.length;
   const unavailable = rateLimitedCount + notFoundCount + quotaLimitedCount;
   if (unavailable === totalTried) {
     throw new Error('ALL_MODELS_RATE_LIMITED');
