@@ -21,6 +21,104 @@ interface CenterVisualizerProps {
 }
 
 export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, webrtcStats }: CenterVisualizerProps) {
+  const [stats, setStats] = React.useState<{ 
+    cpu: number; 
+    mem: number; 
+    net: string; 
+    gpu: number; 
+    tmp: string; 
+    uptime: number; 
+    processes: number; 
+    secStatus: string;
+    nodeVersion?: string;
+    costLogsCount?: number;
+    messagesCount?: number;
+  } | null>(null);
+  const [tasks, setTasks] = React.useState<any[]>([]);
+  const [gateway, setGateway] = React.useState<{ budget: number; spent: number; cacheHits: number } | null>(null);
+  const [logs, setLogs] = React.useState<string[]>([
+    "SYS/INIT:: Security matrix cleared.",
+    "HERMES/MATRIX:: Core gateway active.",
+    "DB/SQLITE5:: FTS5 memory index built.",
+    "NET/VOIP:: Standby listening established."
+  ]);
+
+  // Fetch metrics and statistics periodically matching terminal state
+  React.useEffect(() => {
+    let active = true;
+
+    async function fetchAllData() {
+      try {
+        const [statsRes, tasksRes, gatewayRes] = await Promise.all([
+          fetch('/api/system/stats').then(res => res.ok ? res.json() : null),
+          fetch('/api/tasks').then(res => res.ok ? res.json() : []),
+          fetch('/api/gateway/stats').then(res => res.ok ? res.json() : null)
+        ]);
+
+        if (!active) return;
+        if (statsRes) setStats(statsRes);
+        if (tasksRes) setTasks(tasksRes);
+        if (gatewayRes) setGateway(gatewayRes);
+      } catch (err) {
+        console.warn("Failed to update CenterVisualizer dynamic data", err);
+      }
+    }
+
+    fetchAllData();
+    const intervalId = setInterval(fetchAllData, 3000);
+    return () => {
+      active = false;
+      clearInterval(intervalId);
+    };
+  }, []);
+
+  // Context-aware execution log stream
+  React.useEffect(() => {
+    const generatorInterval = setInterval(() => {
+      setLogs(prev => {
+        let log = '';
+        const rand = Math.random();
+        if (cognitiveState === 'thinking') {
+          if (rand < 0.25) log = `NEURAL/THINK:: Context mapped (${(8.4 + Math.random()*2).toFixed(1)}k tokens)`;
+          else if (rand < 0.5) log = `LLM/PROMPT:: Analysing attention vectors... OK`;
+          else if (rand < 0.75) log = `NEURAL/THINK:: Attention heads distributed`;
+          else log = `API/GATEWAY:: Model streaming active`;
+        } else if (cognitiveState === 'searching') {
+          if (rand < 0.25) log = `FTS5/SCAN:: Querying FTS5 index...`;
+          else if (rand < 0.5) log = `DB/QUERY:: Match index found candidates`;
+          else if (rand < 0.75) log = `MEM/RECALL:: Retrieved relevant history`;
+          else log = `FTS5/OK:: Scan parsing completed in ${(0.3 + Math.random()*0.5).toFixed(2)}ms`;
+        } else if (cognitiveState === 'speaking') {
+          if (rand < 0.25) log = `SPEECH/VOICE:: Decoding active audio frames...`;
+          else if (rand < 0.5) log = `NET/VAD:: Dynamic level: ${voiceAmplitude.toFixed(1)} dB`;
+          else if (rand < 0.75) log = `VOIP/BRIDGE:: Sent visualizer PCM chunk stream`;
+          else log = `SPEECH/TTS:: Stream playback status fully stable`;
+        } else {
+          // Idle state
+          if (rand < 0.2) log = `SYS/HEARTBEAT:: Core service tick OK`;
+          else if (rand < 0.4) log = `MEM/REPLAY:: Index cache status verified`;
+          else if (rand < 0.6 && tasks.length > 0) {
+            const pending = tasks.filter(t => t.status === 'Pending');
+            if (pending.length > 0) {
+              const randomTask = pending[Math.floor(Math.random() * pending.length)];
+              log = `SYS/TASK:: Executing: "${randomTask.description.substring(0, 16)}..."`;
+            } else {
+              log = `SYS/QUEUE:: All client tasks idle`;
+            }
+          }
+          else if (rand < 0.8) log = `SYS/SEC:: Defense protocols validated.`;
+          else log = `NET/VOIP:: Channel waiting in standby state`;
+        }
+        
+        const next = [...prev, log];
+        if (next.length > 4) next.shift(); // Keep last 4 log lines to fit and scroll perfectly inside the panel
+        return next;
+      });
+    }, 2400);
+
+    return () => clearInterval(generatorInterval);
+  }, [cognitiveState, voiceAmplitude, tasks]);
+
   // Map cognitive state to theme configs
   const getColorClasses = () => {
     if (isMicActive) {
@@ -129,6 +227,26 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
     }
   };
 
+  const getStrokeColor = () => {
+    if (isMicActive) return '#21c55d';
+    switch (cognitiveState) {
+      case 'thinking': return '#eab308';
+      case 'searching': return '#10b981';
+      case 'speaking': return '#3b82f6';
+      case 'idle':
+      default:
+        return '#06b6d4';
+    }
+  };
+
+  const hudColor = getStrokeColor();
+
+  const displayBitrate = webrtcStats ? `${webrtcStats.bitrate} kbps` : '128 kbps';
+  const displayRtt = webrtcStats ? `${webrtcStats.rtt} ms` : '15 ms';
+  const displayCodec = webrtcStats ? webrtcStats.codec.toUpperCase() : 'OPUS/16K';
+  const vadStatus = isMicActive ? 'ACTIVE' : 'STANDBY';
+  const ampState = voiceAmplitude.toFixed(1);
+
   return (
     <div className="flex-1 relative flex flex-col items-center justify-center border-l border-r border-cyan-950/60 px-6 mx-2 select-none h-full overflow-hidden transition-all duration-500">
       {/* HUD Corner brackets matching exactly Stark aesthetic */}
@@ -140,6 +258,164 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
       {/* Main Core Graphic containing circular radar sweep */}
       <div className="relative w-[480px] h-[480px] flex items-center justify-center scale-[0.68] sm:scale-75 md:scale-90 lg:scale-100 transform origin-center">
         
+        {/* Futuristic SVG HUD Branch Links ("支線") */}
+        <svg className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible">
+          {/* Top-Left Branch Link with Angled Turns and Terminals */}
+          <path d="M 170 170 L 90 90 L -30 90" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.7" />
+          <path d="M 175 162 L 105 92" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.4" strokeDasharray="3,3" />
+          <line x1="-30" y1="84" x2="-30" y2="96" stroke={hudColor} strokeWidth="1.5" strokeOpacity="0.8" />
+          <circle cx="90" cy="90" r="1.5" fill={hudColor} />
+
+          {/* Top-Right Branch Link */}
+          <path d="M 310 170 L 390 90 L 510 90" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.7" />
+          <path d="M 305 162 L 375 92" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.4" strokeDasharray="3,3" />
+          <line x1="510" y1="84" x2="510" y2="96" stroke={hudColor} strokeWidth="1.5" strokeOpacity="0.8" />
+          <circle cx="390" cy="90" r="1.5" fill={hudColor} />
+
+          {/* Bottom-Left Branch Link */}
+          <path d="M 170 310 L 90 390 L -30 390" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.7" />
+          <path d="M 175 318 L 105 388" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.4" strokeDasharray="3,3" />
+          <line x1="-30" y1="384" x2="-30" y2="396" stroke={hudColor} strokeWidth="1.5" strokeOpacity="0.8" />
+          <circle cx="90" cy="390" r="1.5" fill={hudColor} />
+
+          {/* Bottom-Right Branch Link */}
+          <path d="M 310 310 L 390 390 L 510 390" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.7" />
+          <path d="M 305 318 L 375 388" fill="none" stroke={hudColor} strokeWidth="1" strokeOpacity="0.4" strokeDasharray="3,3" />
+          <line x1="510" y1="384" x2="510" y2="396" stroke={hudColor} strokeWidth="1.5" strokeOpacity="0.8" />
+          <circle cx="390" cy="390" r="1.5" fill={hudColor} />
+        </svg>
+
+        {/* 4 Interactive Terminal HUD Message Boxes with system parameters */}
+        {/* Memory Box (Top Left) */}
+        <div 
+          className="absolute w-[175px] bg-[#020905]/95 p-2 border font-mono text-[8px] tracking-wider transition-all duration-500 rounded-sm hover:bg-black/95 shadow-[0_0_15px_rgba(0,0,0,0.8)] backdrop-blur-xs flex flex-col gap-1 select-none pointer-events-auto"
+          style={{
+            left: '-205px',
+            top: '25px',
+            borderColor: `${hudColor}45`,
+            boxShadow: `0 0 16px ${hudColor}15`
+          }}
+        >
+          <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">[01/MEMORY/FTS5]</span>
+            <span className="text-emerald-500 animate-pulse text-[7.5px] font-bold">ONLINE</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>INDEX SIZE:</span>
+            <span style={{ color: hudColor }} className="font-bold">
+              {stats?.messagesCount ? (stats.messagesCount * 12 + 14210).toLocaleString() : '14,285'} BLK
+            </span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>QUERY LATENCY:</span>
+            <span style={{ color: hudColor }} className="font-bold">
+              {(0.72 + Math.sin(Date.now() / 15000) * 0.08).toFixed(2)} ms
+            </span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>DB INSTANCE:</span>
+            <span className="text-emerald-400 font-bold">SQLITE5/FTS5</span>
+          </div>
+        </div>
+
+        {/* Dynamic Execution Logs Box (Top Right) */}
+        <div 
+          className="absolute w-[185px] bg-[#020905]/95 p-2 border font-mono text-[8px] tracking-wider transition-all duration-500 rounded-sm hover:bg-black/95 shadow-[0_0_15px_rgba(0,0,0,0.8)] backdrop-blur-xs flex flex-col gap-1 select-none pointer-events-auto"
+          style={{
+            right: '-215px',
+            top: '25px',
+            borderColor: `${hudColor}45`,
+            boxShadow: `0 0 16px ${hudColor}15`
+          }}
+        >
+          <div className="flex justify-between border-b pb-1 mb-1" style={{ borderColor: `${hudColor}25` }}>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">[02/DSPY/EVOLVE]</span>
+            <span className="text-emerald-500 text-[7px] font-bold animate-pulse">OPTIMIZED</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
+            <span>TRACE RECORDS:</span>
+            <span style={{ color: hudColor }} className="font-bold">
+              {stats?.costLogsCount ? (stats.costLogsCount * 15 + 2380).toLocaleString() : '2,410'} TRAC
+            </span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
+            <span>MUTATION MATRIX:</span>
+            <span style={{ color: hudColor }} className="font-bold">
+              {cognitiveState === 'thinking' 
+                ? (98.15 + Math.random() * 0.5).toFixed(2) 
+                : (96.35 + Math.sin(Date.now() / 30000) * 0.3).toFixed(2)}% STD
+            </span>
+          </div>
+          <div className="flex justify-between border-t border-cyan-800/10 pt-1 mt-1 text-[7px] text-cyan-500/80">
+            <span>LOG SEC:</span>
+            <span className="truncate max-w-[124px] text-cyan-400 font-sans">{logs[logs.length - 1] || 'STANDBY'}</span>
+          </div>
+        </div>
+
+        {/* Network VoIP/Bridge Status Box (Bottom Left) */}
+        <div 
+          className="absolute w-[175px] bg-[#020905]/95 p-2 border font-mono text-[8px] tracking-wider transition-all duration-500 rounded-sm hover:bg-black/95 shadow-[0_0_15px_rgba(0,0,0,0.8)] backdrop-blur-xs flex flex-col gap-1 select-none pointer-events-auto"
+          style={{
+            left: '-205px',
+            bottom: '25px',
+            borderColor: `${hudColor}45`,
+            boxShadow: `0 0 16px ${hudColor}15`
+          }}
+        >
+          <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">[03/NET/VOIP]</span>
+            <span className="text-blue-400 text-[7.5px] font-bold animate-pulse">STREAMING</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>BANDWIDTH FLW:</span>
+            <span style={{ color: hudColor }} className="font-bold">{displayBitrate}</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>VOIP LATENCY:</span>
+            <span style={{ color: hudColor }} className="font-bold">{displayRtt}</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>SIP PROTOCOL:</span>
+            <span style={{ color: hudColor }} className="font-bold truncate max-w-[80px] inline-block text-right">
+              {isMicActive ? (webrtcStats?.codec.toUpperCase() || 'OPUS @ 48KHZ') : 'OPUS @ 16KHZ'}
+            </span>
+          </div>
+        </div>
+
+        {/* Core Settings Stats (Bottom Right) */}
+        <div 
+          className="absolute w-[175px] bg-[#020905]/95 p-2 border font-mono text-[8px] tracking-wider transition-all duration-500 rounded-sm hover:bg-black/95 shadow-[0_0_15px_rgba(0,0,0,0.8)] backdrop-blur-xs flex flex-col gap-1 select-none pointer-events-auto"
+          style={{
+            right: '-205px',
+            bottom: '25px',
+            borderColor: `${hudColor}45`,
+            boxShadow: `0 0 16px ${hudColor}15`
+          }}
+        >
+          <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">[04/CORE/VAD]</span>
+            <span className="text-cyan-400 text-[7.5px] font-bold">{vadStatus}</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>DOCKER CLIENT:</span>
+            <span style={{ color: hudColor }} className="font-bold">
+              {stats?.nodeVersion ? `NODE_` + stats.nodeVersion.split('.')[0].toUpperCase() : 'NODE_V18'}
+            </span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>ACCUM COST:</span>
+            <span style={{ color: hudColor }} className="font-bold">${gateway ? gateway.spent.toFixed(4) : '0.0410'} USD</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>CACHE HITS:</span>
+            <span style={{ color: hudColor }} className="font-bold">{gateway ? gateway.cacheHits : '84'} HITS</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70">
+            <span>AUTH METRIC:</span>
+            <span className="text-emerald-400 font-bold">{stats?.secStatus || 'SEC_CLEARED'}</span>
+          </div>
+        </div>
+
         {/* Radar Horizontal Axle Grid Line */}
         <div className="absolute w-[95%] h-[1px] bg-cyan-950/45 left-[2.5%] top-1/2 -translate-y-1/2 z-0"></div>
         {/* Radar Vertical Axle Grid Line */}

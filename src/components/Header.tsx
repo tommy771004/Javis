@@ -14,11 +14,27 @@ export function Header({
 }) {
   const [time, setTime] = useState(new Date());
   const { t } = useI18n();
+  const [operatorName, setOperatorName] = useState('');
 
   useEffect(() => {
     const timer = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const updateIdentity = () => {
+      const saved = localStorage.getItem('jarvis_operator_name');
+      if (saved) {
+        setOperatorName(saved);
+      } else {
+        setOperatorName(t.tStark);
+      }
+    };
+    
+    updateIdentity();
+    window.addEventListener('identity-updated', updateIdentity);
+    return () => window.removeEventListener('identity-updated', updateIdentity);
+  }, [t.tStark]);
 
   return (
     <header className="flex justify-between items-center w-full text-cyan-500 font-mono p-4 pb-2 border-b border-cyan-950 select-none bg-black/40 backdrop-blur-sm">
@@ -75,7 +91,7 @@ export function Header({
         
         {/* Glowing identity pod */}
         <div className="flex items-center gap-2 border border-cyan-800/40 bg-cyan-950/20 px-3.5 py-1.5 rounded-full text-cyan-300 font-bold tracking-[0.15em] text-[9px] select-none hover:border-cyan-500/60 hover:text-white transition-all cursor-pointer shadow-[inset_0_0_10px_rgba(0,255,255,0.05)]">
-          <span>{t.tStark}</span>
+          <span>{operatorName || t.tStark}</span>
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
             <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-400 shadow-[0_0_5px_rgba(34,211,238,0.8)]"></span>

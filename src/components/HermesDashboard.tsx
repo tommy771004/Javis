@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { hermesDB, DbSkill, DbCostLog } from '../services/db';
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
+import { useI18n } from '../services/i18n';
 
 interface HermesDashboardProps {
   cognitiveState: CognitiveState;
@@ -31,6 +32,7 @@ export function HermesDashboard({
   webrtcStats,
   isMicActive = false
 }: HermesDashboardProps) {
+  const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'tasks' | 'gateway' | 'webrtc' | 'docs'>('tasks');
   const [skills, setSkills] = useState<DbSkill[]>([]);
   
@@ -232,10 +234,10 @@ export function HermesDashboard({
       <div className="flex justify-between items-center border-b border-emerald-800/40 pb-2 mb-4 mt-2">
         <div className="flex items-center gap-2">
           <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.8)] animate-pulse"></span>
-          <span className="text-xs text-emerald-400 tracking-[0.2em] font-bold">HERMES INTELLIGENCE MATRIX v4.5</span>
+          <span className="text-xs text-emerald-400 tracking-[0.2em] font-bold">{t.hermesMatrixTitle}</span>
         </div>
-        <div className="text-[10px] text-emerald-500 opacity-80">
-          PROFILE: DEFAULT_DEV_SYS
+        <div className="text-[10px] text-emerald-500 opacity-80 uppercase">
+          {t.hermesProfile}
         </div>
       </div>
 
@@ -251,7 +253,7 @@ export function HermesDashboard({
                 : 'border-transparent text-emerald-600 hover:text-emerald-400 hover:bg-emerald-950/45'
             }`}
           >
-            {tab === 'matrix' ? 'Learning Loop' : tab === 'memory' ? 'SQLite FTS5' : tab === 'tasks' ? 'Task List' : tab === 'gateway' ? 'Cost Gateway' : tab === 'webrtc' ? 'VoIP Bridge' : 'Tech Specs'}
+            {tab === 'matrix' ? t.hermesTabLoop : tab === 'memory' ? t.hermesTabFts : tab === 'tasks' ? t.hermesTabTasks : tab === 'gateway' ? t.hermesTabGateway : tab === 'webrtc' ? t.hermesTabVoip : t.hermesTabDocs}
           </button>
         ))}
       </div>
@@ -273,11 +275,11 @@ export function HermesDashboard({
 
               <div className="border border-emerald-900/40 p-3 bg-emerald-950/10 flex-1 flex flex-col">
                 <div className="flex justify-between items-center mb-3 border-b border-emerald-900/30 pb-2">
-                  <span className="text-emerald-400 font-bold uppercase tracking-wider text-[10px]">Actionable Task Tracker</span>
+                  <span className="text-emerald-400 font-bold uppercase tracking-wider text-[10px]">{t.hermesTaskTrackerTitle}</span>
                   <div className="flex gap-2 items-center text-[9px] font-bold uppercase">
-                    <span className="text-emerald-600">Pending: {tasks.filter(t => t.status === 'Pending').length}</span>
+                    <span className="text-emerald-600">{t.hermesPendingLabel.replace('{count}', String(tasks.filter(t => t.status === 'Pending').length))}</span>
                     <span className="text-emerald-800">|</span>
-                    <span className="text-emerald-600 animate-pulse">Right-click for Context Menu</span>
+                    <span className="text-emerald-600 animate-pulse">{t.hermesRightClickTip}</span>
                   </div>
                 </div>
 
@@ -285,7 +287,7 @@ export function HermesDashboard({
                 <div className="mb-3 relative">
                   <input
                     type="text"
-                    placeholder="Search task descriptions..."
+                    placeholder={t.hermesSearchPlaceholder}
                     value={taskSearchQuery}
                     onChange={(e) => setTaskSearchQuery(e.target.value)}
                     className="w-full bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-widest text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase"
@@ -313,7 +315,7 @@ export function HermesDashboard({
                             task.status === 'Completed' 
                               ? 'border-emerald-900/20 bg-emerald-950/5 opacity-50' 
                               : task.priority === 'High'
-                                ? 'border-red-900/40 bg-red-950/10 hover:border-red-500/50'
+                                ? 'border-red-900/40 bg-red-950/10 hover:border-red-500/50 animate-border-pulse'
                                 : task.priority === 'Medium'
                                   ? 'border-amber-900/40 bg-amber-950/10 hover:border-amber-500/50'
                                   : 'border-emerald-900/40 bg-emerald-950/20 hover:border-emerald-500/50'
@@ -405,7 +407,7 @@ export function HermesDashboard({
                       ))
                     ) : (
                       <div className="text-center py-8 text-emerald-700/70 text-[10px] italic">
-                        {taskSearchQuery ? 'No tasks matched your keyword query.' : 'No active tasks in database.'}
+                        {taskSearchQuery ? t.hermesNoResults : t.hermesNoTasks}
                       </div>
                     );
                   })()}
@@ -435,7 +437,7 @@ export function HermesDashboard({
                     }}
                     className="w-full text-left px-3 py-1.5 text-emerald-300 hover:bg-emerald-500/20 hover:text-white transition-all uppercase font-bold"
                   >
-                    Edit Description
+                    {t.hermesEditDesc}
                   </button>
 
                   <div className="border-t border-emerald-950/60 my-0.5"></div>
@@ -456,7 +458,7 @@ export function HermesDashboard({
                     }}
                     className="w-full text-left px-3 py-1.5 text-red-400 hover:bg-red-500/20 hover:text-white transition-all uppercase font-bold"
                   >
-                    Move to High Priority
+                    {t.hermesMoveHigh}
                   </button>
 
                   <button 
@@ -475,7 +477,7 @@ export function HermesDashboard({
                     }}
                     className="w-full text-left px-3 py-1.5 text-amber-400 hover:bg-amber-500/20 hover:text-white transition-all uppercase font-bold"
                   >
-                    Move to Medium Priority
+                    {t.hermesMoveMedium}
                   </button>
 
                   <button 
@@ -494,7 +496,7 @@ export function HermesDashboard({
                     }}
                     className="w-full text-left px-3 py-1.5 text-emerald-400 hover:bg-emerald-500/20 hover:text-white transition-all uppercase font-bold"
                   >
-                    Move to Low Priority
+                    {t.hermesMoveLow}
                   </button>
 
                   <div className="border-t border-emerald-950/60 my-0.5"></div>
@@ -508,7 +510,7 @@ export function HermesDashboard({
                     }}
                     className="w-full text-left px-3 py-1.5 text-red-500 hover:bg-red-950 hover:text-white transition-all uppercase font-bold"
                   >
-                    Delete Task
+                    {t.hermesDeleteTask}
                   </button>
                 </div>
               )}
@@ -518,9 +520,9 @@ export function HermesDashboard({
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-xs p-4" onClick={() => setEditingTask(null)}>
                   <div className="bg-[#03140a] border border-emerald-500 p-4 max-w-sm w-full font-mono text-[10px] text-emerald-300 shadow-[0_0_32px_rgba(16,185,129,0.4)]" onClick={(e) => e.stopPropagation()}>
                     <div className="text-emerald-400 font-bold uppercase tracking-widest border-b border-emerald-900/60 pb-2 mb-3">
-                      Edit Task Details
+                      {t.hermesEditDetails}
                     </div>
-                    <div className="text-[8px] text-emerald-600 uppercase tracking-widest mb-1.5 font-bold">Task Objective Description:</div>
+                    <div className="text-[8px] text-emerald-600 uppercase tracking-widest mb-1.5 font-bold">{t.hermesObjective}</div>
                     <textarea
                       value={editingTask.description}
                       onChange={(e) => setEditingTask({ ...editingTask, description: e.target.value })}
@@ -531,7 +533,7 @@ export function HermesDashboard({
                         onClick={() => setEditingTask(null)}
                         className="px-3 py-1.5 border border-emerald-800 text-[9px] hover:bg-emerald-950 hover:text-emerald-400 text-emerald-600 transition-all uppercase font-bold rounded-xs"
                       >
-                        Cancel
+                        {t.hermesCancel}
                       </button>
                       <button
                         onClick={async () => {
@@ -547,7 +549,7 @@ export function HermesDashboard({
                         }}
                         className="px-3 py-1.5 border border-emerald-500 bg-emerald-500/20 text-[9px] hover:bg-emerald-500/35 text-white shadow-[0_0_8px_rgba(16,185,129,0.2)] transition-all uppercase font-bold rounded-xs"
                       >
-                        Commit Changes
+                        {t.hermesCommit}
                       </button>
                     </div>
                   </div>
@@ -559,18 +561,18 @@ export function HermesDashboard({
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xs p-4" onClick={() => setDeletingTaskId(null)}>
                   <div className="bg-[#0c0202] border border-red-500 p-4 max-w-sm w-full font-mono text-[10px] text-red-400 shadow-[0_0_32px_rgba(239,68,68,0.5)]" onClick={(e) => e.stopPropagation()}>
                     <div className="text-red-500 font-bold uppercase tracking-widest border-b border-red-950 pb-2 mb-3 flex items-center gap-2">
-                      <span className="w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
-                      Confirm Task Obliteration
+                      <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-ping"></span>
+                      {t.hermesConfirmObliteration}
                     </div>
                     <p className="text-red-300/80 leading-relaxed mb-4 uppercase text-[9px] tracking-wider">
-                      警告 (WARNING): ARE YOU ABSOLUTELY RESOLVED ON ERASING TASK {deletingTaskId.substring(0, 8)} FROM COGNITIVE REPOSITORY?
+                      {t.hermesWarningCancel} (ID: {deletingTaskId.substring(0, 8)})
                     </p>
                     <div className="flex gap-2 justify-end">
                       <button
                         onClick={() => setDeletingTaskId(null)}
                         className="px-3 py-1.5 border border-emerald-900 text-[9px] hover:bg-emerald-950 text-emerald-600 transition-all uppercase font-bold rounded-xs"
                       >
-                        Abort Deletion
+                        {t.hermesAbort}
                       </button>
                       <button
                         onClick={async () => {
@@ -584,7 +586,7 @@ export function HermesDashboard({
                         }}
                         className="px-3 py-1.5 border border-red-500 bg-red-500/20 text-[9px] hover:bg-red-500/35 text-white transition-all uppercase font-bold rounded-xs"
                       >
-                        Obliterate Task
+                        {t.hermesObliterate}
                       </button>
                     </div>
                   </div>

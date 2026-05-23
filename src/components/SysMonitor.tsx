@@ -26,6 +26,22 @@ export function SysMonitor({
 
     const [heartRate, setHeartRate] = useState(72);
     const [bodyTemp, setBodyTemp] = useState(98.6);
+    const [satelliteName, setSatelliteName] = useState('STARK-SAT-4');
+
+    useEffect(() => {
+        const updateSatellite = () => {
+            const saved = localStorage.getItem('jarvis_satellite_name');
+            if (saved) {
+                setSatelliteName(saved);
+            } else {
+                setSatelliteName(t.lblStarkSat4);
+            }
+        };
+
+        updateSatellite();
+        window.addEventListener('identity-updated', updateSatellite);
+        return () => window.removeEventListener('identity-updated', updateSatellite);
+    }, [t.lblStarkSat4]);
 
     const fetchSystemStats = async () => {
         try {
@@ -248,7 +264,7 @@ export function SysMonitor({
                         <span className="w-1.5 h-1.5 bg-cyan-400 mr-2 shadow-[0_0_6px_rgba(34,211,238,0.8)]"></span>
                         {t.lblSystemUplink}
                     </div>
-                    <span className="text-[8px] text-cyan-600 font-bold">{t.lblStarkSat4}</span>
+                    <span className="text-[8px] text-cyan-600 font-bold">{satelliteName.toUpperCase()}</span>
                 </div>
 
                 {/* Rotating Cryptographic Radar Graphic matching the user design */}
@@ -277,7 +293,7 @@ export function SysMonitor({
 
                 {/* Satellite Connection description */}
                 <div className="text-center font-mono text-[9px] tracking-widest mt-1 uppercase text-cyan-400/80">
-                    <span className="text-cyan-500 font-bold">{t.lblSignalSecure}:</span> {t.lblStarkSat4} (5.5 GB/s)
+                    <span className="text-cyan-500 font-bold">{t.lblSignalSecure}:</span> {satelliteName} ({stats.net || '5.5 GB/s'})
                 </div>
             </div>
 

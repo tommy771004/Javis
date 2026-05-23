@@ -141,7 +141,11 @@ export default function App() {
     try {
       const stored = localStorage.getItem('jarvis_security_settings');
       if (stored) {
-        setSecuritySettings(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        setSecuritySettings(parsed);
+        if (parsed.shellMode === 'auto' && parsed.writeMode === 'auto' && parsed.taskMode === 'auto') {
+          setIsHermesActive(true);
+        }
       }
     } catch (e) {
       console.error("Failed to load security settings from localStorage", e);
@@ -640,6 +644,16 @@ export default function App() {
   const handleToggleHermes = () => {
     setIsHermesActive(prev => {
       const next = !prev;
+      
+      const updatedSettings = {
+        shellMode: next ? 'auto' : 'manual',
+        writeMode: next ? 'auto' : 'manual',
+        taskMode: next ? 'auto' : 'manual',
+        voiceProfile: securitySettings.voiceProfile
+      };
+      setSecuritySettings(updatedSettings as SecuritySettings);
+      localStorage.setItem('jarvis_security_settings', JSON.stringify(updatedSettings));
+
       if (next) {
         const startupMsg = "Switching AI Core to HERMES AGENT intelligence matrix. Closed learning loop active. SQLite state.db mapped via FTS5 indexers. Dynamic cost-aware gateway online.";
         setLogs(prevLogs => [
@@ -659,6 +673,15 @@ export default function App() {
       }
       return next;
     });
+  };
+
+  const handleSettingsChange = (newSettings: SecuritySettings) => {
+    setSecuritySettings(newSettings);
+    if (newSettings.shellMode === 'auto' && newSettings.writeMode === 'auto' && newSettings.taskMode === 'auto') {
+      setIsHermesActive(true);
+    } else {
+      setIsHermesActive(false);
+    }
   };
 
   const handleCommand = async (text: string) => {
@@ -1066,7 +1089,7 @@ export default function App() {
       <SettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)} 
-        onSettingsChange={setSecuritySettings} 
+        onSettingsChange={handleSettingsChange} 
       />
 
       <main className="flex-1 flex flex-col lg:flex-row w-full mx-auto mt-4 lg:mt-6 overflow-visible lg:overflow-hidden gap-8 lg:gap-0">

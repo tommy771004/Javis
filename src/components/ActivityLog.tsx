@@ -9,6 +9,48 @@ export function ActivityLog({ logs }: { logs: string[] }) {
     const [overloaded, setOverloaded] = useState(false);
     const [corePower, setCorePower] = useState(98);
     const [structural, setStructural] = useState(100);
+    const [armorModel, setArmorModel] = useState('Mark LXXXV');
+
+    useEffect(() => {
+        const updateArmor = () => {
+            const saved = localStorage.getItem('jarvis_armor_model');
+            if (saved) {
+                setArmorModel(saved);
+            } else {
+                setArmorModel('Mark LXXXV');
+            }
+        };
+
+        updateArmor();
+        window.addEventListener('identity-updated', updateArmor);
+        return () => window.removeEventListener('identity-updated', updateArmor);
+    }, []);
+
+    // Sync armor status with server-side system stats periodically
+    useEffect(() => {
+        let active = true;
+        const fetchVitals = async () => {
+            try {
+                const res = await fetch('/api/system/stats');
+                if (res.ok && active) {
+                    const data = await res.json();
+                    if (data.shieldActive !== undefined) setShieldActive(data.shieldActive);
+                    if (data.reactorOverdrive !== undefined) setOverloaded(data.reactorOverdrive);
+                    if (data.corePower !== undefined) setCorePower(data.corePower);
+                    if (data.structural !== undefined) setStructural(data.structural);
+                }
+            } catch (err) {
+                console.warn("Failed to fetch server system vitals", err);
+            }
+        };
+
+        fetchVitals();
+        const interval = setInterval(fetchVitals, 2000);
+        return () => {
+            active = false;
+            interval && clearInterval(interval);
+        };
+    }, []);
 
     useEffect(() => {
         if (logRef.current) {
@@ -25,52 +67,99 @@ export function ActivityLog({ logs }: { logs: string[] }) {
         return d.toLocaleTimeString('en-US', { hour12: false });
     };
 
-    // Button event dispatchers
-    const handleShieldToggle = () => {
-        const next = !shieldActive;
-        setShieldActive(next);
-        const code = next ? "ACTIVE" : "STANDBY";
-        
-        // Dispatch to window so App.tsx adds logs and speaks
-        window.dispatchEvent(new CustomEvent('append-sys-log', {
-            detail: {
-                message: `SYS: DEFENSE PERIMETER SHIELD GAIN MATRIX ${code} (100% INTENSITY).`,
-                speak: next ? "Defensive perimeter initialized, sir." : "Shield deflection matrix on standby, sir."
+    // Button event dispatchers calling backend command endpoints
+    const handleShieldToggle = async () => {
+        try {
+            const res = await fetch("/api/system/control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: 'shield' })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setShieldActive(data.shieldActive);
+                
+                window.dispatchEvent(new CustomEvent('append-sys-log', {
+                    detail: {
+                        message: `SYS: DEFENSE PERIMETER SHIELD GAIN MATRIX ${data.shieldActive ? 'ACTIVE' : 'STANDBY'} (100% INTENSITY).`,
+                        speak: data.speak
+                    }
+                }));
             }
-        }));
+        } catch (err) {
+            console.error("Shield toggle API error", err);
+        }
     };
 
-    const handleOverdrivePower = () => {
-        const next = !overloaded;
-        setOverloaded(next);
-        setCorePower(next ? 125 : 98);
-        
-        window.dispatchEvent(new CustomEvent('append-sys-log', {
-            detail: {
-                message: next ? "SYS: ARC REACTOR CONVERSION MATRIX OVERCHARGED TO 125% FORCE." : "SYS: ARC REACTOR OUTPUT CALIBRATED TO NOMINAL 98%.",
-                speak: next ? "Arc reactor overcharged to one hundred and twenty-five percent. Warning: power thresholds exceeded." : "Reactor levels normalized."
+    const handleOverdrivePower = async () => {
+        try {
+            const res = await fetch("/api/system/control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: 'overdrive' })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setOverloaded(data.reactorOverdrive);
+                setCorePower(data.corePower);
+                
+                window.dispatchEvent(new CustomEvent('append-sys-log', {
+                    detail: {
+                        message: data.reactorOverdrive 
+                          ? "SYS: ARC REACTOR CONVERSION MATRIX OVERCHARGED TO 125% FORCE." 
+                          : "SYS: ARC REACTOR OUTPUT CALIBRATED TO NOMINAL 98%.",
+                        speak: data.speak
+                    }
+                }));
             }
-        }));
+        } catch (err) {
+            console.error("Reactor overdrive API error", err);
+        }
     };
 
-    const handleSatPing = () => {
-        window.dispatchEvent(new CustomEvent('append-sys-log', {
-            detail: {
-                message: "SYS: STARK-7 TRANSCEIVER ORBIT PING SUCCESSFUL. SAT-LINK ESTABLISHED.",
-                speak: "All transceivers synchronized with satellite array, sir."
+    const handleSatPing = async () => {
+        try {
+            const res = await fetch("/api/system/control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: 'satlink' })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                
+                window.dispatchEvent(new CustomEvent('append-sys-log', {
+                    detail: {
+                        message: "SYS: STARK-7 TRANSCEIVER ORBIT PING SUCCESSFUL. SAT-LINK ESTABLISHED.",
+                        speak: data.speak
+                    }
+                }));
             }
-        }));
+        } catch (err) {
+            console.error("Satellite sync API error", err);
+        }
     };
 
-    const handleVitalsRecalibrate = () => {
-        // Recover a bit of structural if any damage is taken
-        setStructural(100);
-        window.dispatchEvent(new CustomEvent('append-sys-log', {
-            detail: {
-                message: "SYS: NEURAL MAPPING RECALIBRATED. ARMOR DIAGNOSTICS CLEAN.",
-                speak: "Vital diagnostics restored to one hundred percent, Tommy."
+    const handleVitalsRecalibrate = async () => {
+        try {
+            const res = await fetch("/api/system/control", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command: 'recalibrate' })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setStructural(data.structural);
+                
+                window.dispatchEvent(new CustomEvent('append-sys-log', {
+                    detail: {
+                        message: "SYS: NEURAL MAPPING RECALIBRATED. ARMOR DIAGNOSTICS CLEAN.",
+                        speak: data.speak
+                    }
+                }));
             }
-        }));
+        } catch (err) {
+            console.error("Vitals recalibrate API error", err);
+        }
     };
 
     return (
@@ -89,7 +178,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                         <span className="w-1.5 h-1.5 bg-cyan-400 mr-2 shadow-[0_0_6px_rgba(34,211,238,0.8)]"></span>
                         {t.lblArmorStatus}
                     </div>
-                    <span className="text-[8px] text-cyan-600 font-bold">MARK LXXXXV</span>
+                    <span className="text-[8px] text-cyan-600 font-bold">{armorModel.toUpperCase()}</span>
                 </div>
 
                 {/* Progress Indicators */}

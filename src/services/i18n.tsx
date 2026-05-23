@@ -124,6 +124,33 @@ export interface Translations {
   lblSignalSecure: string;
   lblHermesCoreActive: string;
   lblActivateCognitive: string;
+  hermesMatrixTitle: string;
+  hermesProfile: string;
+  hermesTabLoop: string;
+  hermesTabFts: string;
+  hermesTabTasks: string;
+  hermesTabGateway: string;
+  hermesTabVoip: string;
+  hermesTabDocs: string;
+  hermesTaskTrackerTitle: string;
+  hermesPendingLabel: string;
+  hermesRightClickTip: string;
+  hermesSearchPlaceholder: string;
+  hermesNoTasks: string;
+  hermesNoResults: string;
+  hermesEditDesc: string;
+  hermesMoveHigh: string;
+  hermesMoveMedium: string;
+  hermesMoveLow: string;
+  hermesDeleteTask: string;
+  hermesEditDetails: string;
+  hermesObjective: string;
+  hermesCancel: string;
+  hermesCommit: string;
+  hermesConfirmObliteration: string;
+  hermesWarningCancel: string;
+  hermesAbort: string;
+  hermesObliterate: string;
   lblSecurityCleared: string;
   lblAuthProtocol: string;
   
@@ -274,6 +301,33 @@ const zhTWTranslations: Translations = {
   lblSignalSecure: "加密安全通道",
   lblHermesCoreActive: "HERMES 核心代理程式：運作中",
   lblActivateCognitive: "啟用全自動認知協定",
+  hermesMatrixTitle: "HERMES 智慧矩陣 v4.5",
+  hermesProfile: "設定檔: 預設開發系統",
+  hermesTabLoop: "學習迴圈 (Learning Loop)",
+  hermesTabFts: "記憶庫檢索 (SQLite FTS5)",
+  hermesTabTasks: "任務清單 (Task List)",
+  hermesTabGateway: "成本網關 (Cost Gateway)",
+  hermesTabVoip: "語音橋接器 (VoIP Bridge)",
+  hermesTabDocs: "技術規格書 (Tech Specs)",
+  hermesTaskTrackerTitle: "可執行任務追蹤器",
+  hermesPendingLabel: "待處理: {count}",
+  hermesRightClickTip: "點擊滑鼠右鍵顯示捷徑選單",
+  hermesSearchPlaceholder: "搜尋任務說明內容...",
+  hermesNoTasks: "Cognitive 核心目前尚無活動中的任務。",
+  hermesNoResults: "無符合您關鍵字元搜尋條件的任務專案。",
+  hermesEditDesc: "編輯任務描述 (Edit Description)",
+  hermesMoveHigh: "變更為高優先權 (Move High Priority)",
+  hermesMoveMedium: "變更為中優先權 (Move Medium Priority)",
+  hermesMoveLow: "變更為低優先權 (Move Low Priority)",
+  hermesDeleteTask: "刪除任務 (Delete Task)",
+  hermesEditDetails: "編輯任務詳細數據",
+  hermesObjective: "任務目標/描述:",
+  hermesCancel: "取消 (Cancel)",
+  hermesCommit: "認證寫入 (Commit Changes)",
+  hermesConfirmObliteration: "確認任務抹除指示",
+  hermesWarningCancel: "警告 (WARNING): 您確定要將此任務從記憶存庫中永久抹除嗎？",
+  hermesAbort: "放棄抹除 (Abort Deletion)",
+  hermesObliterate: "確實抹除 (Obliterate Task)",
   lblSecurityCleared: "安全金鑰防禦矩陣：通過",
   lblAuthProtocol: "防禦授權通訊協定 XXXIX",
   
@@ -424,6 +478,33 @@ const enTranslations: Translations = {
   lblSignalSecure: "SIGNAL SECURE",
   lblHermesCoreActive: "HERMES CORE GATEWAY ACTIVE",
   lblActivateCognitive: "ACTIVATE COGNITIVE PROTOCOLS",
+  hermesMatrixTitle: "HERMES INTELLIGENCE MATRIX v4.5",
+  hermesProfile: "PROFILE: DEFAULT_DEV_SYS",
+  hermesTabLoop: "Learning Loop",
+  hermesTabFts: "SQLite FTS5 Memory",
+  hermesTabTasks: "Task List",
+  hermesTabGateway: "Cost Gateway",
+  hermesTabVoip: "VoIP Bridge",
+  hermesTabDocs: "Tech Specs",
+  hermesTaskTrackerTitle: "Actionable Task Tracker",
+  hermesPendingLabel: "Pending: {count}",
+  hermesRightClickTip: "Right-click for Context Menu",
+  hermesSearchPlaceholder: "Search task descriptions...",
+  hermesNoTasks: "No active tasks in cognitive database repository.",
+  hermesNoResults: "No task records matched your filter query.",
+  hermesEditDesc: "Edit Description",
+  hermesMoveHigh: "Move to High Priority",
+  hermesMoveMedium: "Move to Medium Priority",
+  hermesMoveLow: "Move to Low Priority",
+  hermesDeleteTask: "Delete Task",
+  hermesEditDetails: "Edit Task Details",
+  hermesObjective: "Task Objective Description:",
+  hermesCancel: "Cancel",
+  hermesCommit: "Commit Changes",
+  hermesConfirmObliteration: "Confirm Task Obliteration",
+  hermesWarningCancel: "警告 (WARNING): ARE YOU ABSOLUTELY RESOLVED ON ERASING THIS TASK FROM COGNITIVE REPOSITORY?",
+  hermesAbort: "Abort Deletion",
+  hermesObliterate: "Obliterate Task",
   lblSecurityCleared: "SECURITY CREDENTIALS CLEARED",
   lblAuthProtocol: "AUTHENTICATION PROTOCOL XXXIX",
   
