@@ -394,7 +394,21 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
         >
           <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
             <span style={{ color: hudColor }} className="font-bold tracking-widest">[04/CORE/VAD]</span>
-            <span className="text-cyan-400 text-[7.5px] font-bold">{vadStatus}</span>
+            <span className={isMicActive ? "text-green-400 text-[7.5px] font-bold animate-pulse" : "text-cyan-400 text-[7.5px] font-bold"}>{vadStatus}</span>
+          </div>
+          <div className="flex justify-between text-cyan-400/70 items-center">
+            <span>MIC LEVEL:</span>
+            <span style={{ color: hudColor }} className="font-bold">{ampState} dB</span>
+          </div>
+          <div className="h-1 bg-cyan-950/80 rounded overflow-hidden my-1 border border-cyan-900/30">
+            <div 
+              className="h-full bg-cyan-400 transition-all duration-75"
+              style={{
+                width: `${Math.min(100, voiceAmplitude)}%`,
+                backgroundColor: isMicActive ? '#22c55e' : '#22d3ee',
+                boxShadow: isMicActive ? '0 0 6px #22c55e' : '0 0 6px #22d3ee'
+              }}
+            ></div>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>DOCKER CLIENT:</span>

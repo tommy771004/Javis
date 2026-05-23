@@ -669,6 +669,109 @@ You operate with server-side SQLite FTS5 database indices and an active skills m
     }
   });
 
+  // --- Workspace Filesystem Secure Query & Grounded Synthesis (RAG) Endpoint ---
+  app.post("/api/workspace/query", async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Missing query parameter" });
+      }
+
+      const uploadsDir = path.resolve(process.cwd(), "uploads");
+      if (!fs.existsSync(uploadsDir)) {
+        return res.json({ success: true, results: [], aiAnswer: "No files have been indexed in the workspace yet, sir." });
+      }
+
+      const files = fs.readdirSync(uploadsDir);
+      const results: { fileName: string; chunkIndex: number; content: string; score: number }[] = [];
+      const searchTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+
+      if (searchTerms.length === 0) {
+        return res.json({ success: true, results: [] });
+      }
+
+      for (const file of files) {
+        const filePath = path.join(uploadsDir, file);
+        if (fs.statSync(filePath).isDirectory()) continue;
+
+        const content = fs.readFileSync(filePath, "utf8");
+        // Split content into paragraph divisions or lines chunks
+        const paragraphs = content
+          .split(/\n\s*\n+/)
+          .map(p => p.trim())
+          .filter(p => p.length > 5);
+
+        let chunkIdx = 0;
+        for (const p of paragraphs) {
+          let score = 0;
+          const pLower = p.toLowerCase();
+          for (const term of searchTerms) {
+            if (pLower.includes(term)) {
+              const occurrences = (pLower.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+              score += occurrences * 15 + 10;
+            }
+          }
+
+          if (score > 0) {
+            results.push({
+              fileName: file,
+              chunkIndex: chunkIdx,
+              content: p,
+              score: Math.min(100, Math.round(score))
+            });
+          }
+          chunkIdx++;
+        }
+      }
+
+      // Sort results by similarity matching rank
+      results.sort((a, b) => b.score - a.score);
+      const topResults = results.slice(0, 5);
+
+      let aiAnswer = "";
+      const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
+
+      if (topResults.length > 0 && apiKey) {
+        // Build RAG context block
+        const contextBlocks = topResults
+          .map(r => `[FILE: ${r.fileName} | CHUNK: #${r.chunkIndex}]\n${r.content}`)
+          .join("\n\n---\n\n");
+
+        const ragPrompt = `You are J.A.R.V.I.S., analyzing local workspace documents on behalf of Tony Stark.
+Synthesize a precise, intelligent, and highly coherent answer to the query based SOLELY on the extracted workspace snippets below. 
+If the snippets do not contain the answer, summarize the matches honestly. Speak with calm, British wit.
+
+USER QUERY: ${query}
+
+EXTRACTED WORKSPACE CHUNKS:
+${contextBlocks}
+
+JARVIS Synthesis:`;
+
+        try {
+          const synthesisResp = await fetchOpenRouterWithFallback(apiKey, ragPrompt, undefined, "google/gemini-2.5-flash");
+          aiAnswer = synthesisResp.text || "";
+        } catch (synthesisErr) {
+          console.error("AI RAG Synthesis failed, falling back to local matches", synthesisErr);
+        }
+      }
+
+      res.json({
+        success: true,
+        results: topResults.map(r => ({
+          ...r,
+          content: r.content.length > 500 ? r.content.substring(0, 497) + "..." : r.content
+        })),
+        aiAnswer: aiAnswer || (topResults.length > 0 
+          ? `Indexed ${topResults.length} matching snippets locally, sir. Feel free to connect an API key in secrets for integrated cognitive summaries.` 
+          : "No files matched your precise search parameters, sir.")
+      });
+
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

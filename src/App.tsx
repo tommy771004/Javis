@@ -189,6 +189,46 @@ export default function App() {
       
       setWebrtcLogs(prev => [...prev, "[WebRTC] Microphone stream authorized."]);
 
+      // Direct Web Audio Analyser setup to ensure VAD updates with absolute stability and real mic frequencies
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        audioCtxRef.current = audioCtx;
+        
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyserRef.current = analyser;
+
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        const updateVolume = () => {
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteFrequencyData(dataArray);
+          
+          let sum = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i];
+          }
+          const average = sum / bufferLength;
+          
+          // Map amplitude value with direct VAD sensitivity multiplier
+          const normalizedAmp = Math.min(100, Math.round(average * 2.5));
+          setVoiceAmplitude(normalizedAmp);
+          
+          animationFrameRef.current = requestAnimationFrame(updateVolume);
+        };
+
+        updateVolume();
+        setWebrtcLogs(prev => [...prev, "[VAD] Real-time Audio Analyser online. Live feedback active."]);
+      } catch (audioErr: any) {
+        console.error("Direct micro-VAD setup failed", audioErr);
+        setWebrtcLogs(prev => [...prev, `[VAD Error] Direct analyser initialization failed: ${audioErr.message}`]);
+      }
+
       // 2. Setup RTCPeerConnections with STUN
       const pc1 = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -229,51 +269,9 @@ export default function App() {
       stream.getAudioTracks().forEach(track => pc1.addTrack(track, stream));
       setWebrtcLogs(prev => [...prev, "[WebRTC] Transmitting audio track via pc1."]);
 
-      // 3. Set up Web Audio context on the receiver side
+      // 3. Set up Web Audio receiver feedback
       pc2.ontrack = (event) => {
-        setWebrtcLogs(prev => [...prev, "[WebRTC] Incoming track captured. Mapping Web Audio FFT nodes..."]);
-        
-        try {
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          const audioCtx = new AudioContextClass();
-          audioCtxRef.current = audioCtx;
-          
-          const analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 256;
-          analyserRef.current = analyser;
-
-          const source = audioCtx.createMediaStreamSource(event.streams[0]);
-          source.connect(analyser);
-          
-          // Note: DO NOT connect to audioCtx.destination to avoid self-echoing feedback loop.
-          // We analyze the audio amplitudes silently!
-
-          const bufferLength = analyser.frequencyBinCount;
-          const dataArray = new Uint8Array(bufferLength);
-
-          const updateVolume = () => {
-            if (!analyserRef.current) return;
-            analyserRef.current.getByteFrequencyData(dataArray);
-            
-            let sum = 0;
-            for (let i = 0; i < bufferLength; i++) {
-              sum += dataArray[i];
-            }
-            const average = sum / bufferLength;
-            
-            // Map amplitude value up to 100 with boosted sensitivity
-            const normalizedAmp = Math.min(100, Math.round(average * 2.0));
-            setVoiceAmplitude(normalizedAmp);
-            
-            animationFrameRef.current = requestAnimationFrame(updateVolume);
-          };
-
-          updateVolume();
-          setWebrtcLogs(prev => [...prev, "[WebRTC] Web Audio Analyser online. Live room amplitude output active."]);
-        } catch (audioErr: any) {
-          console.error("AudioContext setup failed", audioErr);
-          setWebrtcLogs(prev => [...prev, `[WebRTC Error] Audio Analyser initialization failed: ${audioErr.message}`]);
-        }
+        setWebrtcLogs(prev => [...prev, "[WebRTC] Incoming track received. Direct mic stream currently handling VAD."]);
       };
 
       // 4. SDP Handshake negotiation
