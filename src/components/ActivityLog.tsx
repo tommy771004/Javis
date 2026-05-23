@@ -10,6 +10,8 @@ export function ActivityLog({ logs }: { logs: string[] }) {
     const [corePower, setCorePower] = useState(98);
     const [structural, setStructural] = useState(100);
     const [armorModel, setArmorModel] = useState('Mark LXXXV');
+    const [activeWavelength, setActiveWavelength] = useState('480 nm');
+    const [activeFlux, setActiveFlux] = useState('1.21 GW');
 
     useEffect(() => {
         const updateArmor = () => {
@@ -21,9 +23,31 @@ export function ActivityLog({ logs }: { logs: string[] }) {
             }
         };
 
+        const updateSkinSpecs = () => {
+            const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
+            if (skin === 'cyan') {
+                setActiveWavelength('480 nm');
+                setActiveFlux('1.21 GW');
+            } else if (skin === 'emerald') {
+                setActiveWavelength('530 nm');
+                setActiveFlux('1.10 GW');
+            } else if (skin === 'amber') {
+                setActiveWavelength('590 nm');
+                setActiveFlux('0.98 GW');
+            } else if (skin === 'red') {
+                setActiveWavelength('650 nm');
+                setActiveFlux('1.65 GW');
+            }
+        };
+
         updateArmor();
+        updateSkinSpecs();
         window.addEventListener('identity-updated', updateArmor);
-        return () => window.removeEventListener('identity-updated', updateArmor);
+        window.addEventListener('skin-updated', updateSkinSpecs);
+        return () => {
+            window.removeEventListener('identity-updated', updateArmor);
+            window.removeEventListener('skin-updated', updateSkinSpecs);
+        };
     }, []);
 
     // Sync armor status with server-side system stats periodically
@@ -208,6 +232,17 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                                 className="h-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.6)] transition-all duration-700" 
                                 style={{ width: `${structural}%` }}
                             />
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 pt-2 text-[9px] text-cyan-500/90 border-t border-cyan-950/30 mt-3 font-mono">
+                        <div>
+                            <span className="text-cyan-600 block text-[7.5px] uppercase tracking-wider">Emission Spectra</span>
+                            <span className="text-cyan-300 font-bold">{activeWavelength}</span>
+                        </div>
+                        <div>
+                            <span className="text-cyan-600 block text-[7.5px] uppercase tracking-wider">Reactor Flux</span>
+                            <span className="text-cyan-300 font-bold">{activeFlux}</span>
                         </div>
                     </div>
                 </div>

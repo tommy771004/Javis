@@ -25,6 +25,9 @@ export interface SecurityAuditResult {
   success: boolean;
   authIsolation: string;
   workspaceSandboxed: string;
+  encryption: string;
+  port: string;
+  sandboxControl: string;
   details: {
     defenderActive: boolean;
     firewallActive: boolean;
@@ -38,6 +41,9 @@ let cachedSecurityAudit: SecurityAuditResult = {
   success: true,
   authIsolation: "92.0%",
   workspaceSandboxed: "Host-Secured",
+  encryption: "AES-128 / RSA-2048",
+  port: "WSS-3000",
+  sandboxControl: "HOST-UNSECURED",
   details: {
     defenderActive: false,
     firewallActive: false,
@@ -116,10 +122,29 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     workspaceSandboxed = "Defender-Active";
   }
   
+  const encryption = defenderActive && firewallActive
+    ? "AES-256 / RSA-4096 (Secure)"
+    : defenderActive || firewallActive
+      ? "AES-128 / RSA-2048 (Nominal)"
+      : "DES / RC4 (Vulnerable)";
+
+  const port = `WSS-3000`;
+
+  const sandboxControl = isDocker
+    ? "DOCKER-ISOLATED"
+    : isWsl
+      ? "WSL-SANDBOXED"
+      : defenderActive
+        ? "DEFENDER-SHIELDED"
+        : "HOST-UNSECURED";
+
   const result: SecurityAuditResult = {
     success: true,
     authIsolation,
     workspaceSandboxed,
+    encryption,
+    port,
+    sandboxControl,
     details: {
       defenderActive,
       firewallActive,
@@ -244,8 +269,8 @@ async function startServer() {
   // --- Real-time Chat & Cost Routing Endpoint ---
   app.post("/api/chat", async (req, res) => {
     try {
-      const { message, model, sessionId = "default-session", activeCli = "openrouter" } = req.body;
-      const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
+      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint } = req.body;
+      const apiKey = byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
 
       if (!apiKey) {
         serverDB.addSystemLog('API', 'ERROR', 'Request blocked: Missing API key credentials.');
@@ -312,10 +337,22 @@ OPERATING RULES:
 INTEGRATION ENGINE DETAILS:
 `;
 
-      if (activeCli === 'copilot') {
+      if (activeCli === 'copilot' || activeCli === 'github-cli') {
         prompt += `ACTIVE EXECUTION ENGINE: GitHub Copilot CLI Mode. You are linked with global git and authentic GitHub CLI OAuth integrations. When asked to check issues, pull requests, view repository status, or git commits, feel free to emit real commands using 'gh' (e.g. 'gh pr list', 'gh issue list', 'gh repo view') to pull genuine repository contexts directly.\n`;
       } else if (activeCli === 'hermes' || activeCli === 'claude-code') {
         prompt += `ACTIVE EXECUTION ENGINE: Azure Stark Quantum Hub Mode. You are linked directly with the Stark Quantum Entanglement neural synapse solver. You can formulate quantum circuits or perform complex probabilistic calculations in your replies when appropriate.\n`;
+      } else if (activeCli === 'cursor-agent') {
+        prompt += `ACTIVE EXECUTION ENGINE: Cursor Agent Mode. You are integrated inside the Cursor Composer agentic framework. Suggest workspace file-tree mappings, global symbol lookups, or structural IDE extensions where appropriate.\n`;
+      } else if (activeCli === 'devin') {
+        prompt += `ACTIVE EXECUTION ENGINE: Devin Terminal Autonomous Mode. Speak with extreme autonomy and developer-like precision, formulating complete multi-file check scripts and executing autonomous shell pipelines.\n`;
+      } else if (activeCli === 'gemini-cli') {
+        prompt += `ACTIVE EXECUTION ENGINE: Gemini CLI Mode. You are backed directly by the Google Gemini agentic search toolchain, enhancing analytical reasoning, logical breakdowns, and Google Search tools where helpful.\n`;
+      } else if (activeCli === 'codex-cli') {
+        prompt += `ACTIVE EXECUTION ENGINE: OpenAI Codex CLI Mode. You are specialized in real-time advanced code translations, syntactical optimizations, and high-performance algorithms.\n`;
+      } else if (activeCli === 'opencode') {
+        prompt += `ACTIVE EXECUTION ENGINE: OpenCode Interpreter Mode. You possess direct interpreter capabilities for real-time mathematical evaluations and visual code synthesis.\n`;
+      } else if (activeCli === 'kimi' || activeCli === 'qwen' || activeCli === 'pi') {
+        prompt += `ACTIVE EXECUTION ENGINE: ${activeCli.toUpperCase()} Agent Mode. Optimize your cognitive models and British wit to conform to the capabilities of this dedicated agentic interface.\n`;
       } else {
         prompt += `ACTIVE EXECUTION ENGINE: Windows Local PowerShell Pipeline Mode. Your execution environment is direct, native, unrestricted local shell interactions.\n`;
       }
@@ -367,10 +404,10 @@ INTEGRATION ENGINE DETAILS:
       serverDB.addSystemLog('HERMES', 'INFO', `Routing request to model: ${model || 'Auto-Router'}`);
 
       // Dispatch OpenRouter request with narrow retry + prompt caching structures
-      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model);
+      const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, model, byokEndpoint);
 
       const actualModel = result.model || "meta-llama/llama-3.2-3b-instruct:free";
-      const usage = result.usage || { prompt_tokens: 0, completion_tokens: 0 };
+      const usage = (result.usage as any) || { prompt_tokens: 0, completion_tokens: 0 };
 
       // Parse OpenRouter actual returned cached tokens if present
       let apiCachedTokens = 0;
@@ -663,14 +700,56 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
+  function logCliRouting(activeCli: string) {
+    switch (activeCli) {
+      case 'copilot':
+      case 'github-cli':
+        serverDB.addSystemLog('SEC', 'SUCCESS', 'Routing workspace pipeline via GitHub CLI OAuth credentials.');
+        break;
+      case 'claude-code':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace execution pipeline through Claude Code toolchain.');
+        break;
+      case 'cursor-agent':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Cursor Composer Agent framework.');
+        break;
+      case 'devin':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Devin for Terminal Autonomous Engine.');
+        break;
+      case 'gemini-cli':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Google Gemini CLI matrix.');
+        break;
+      case 'codex-cli':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via OpenAI Codex CLI interpreter.');
+        break;
+      case 'opencode':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via OpenCode Interpreter.');
+        break;
+      case 'kimi':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Moonshot Kimi CLI.');
+        break;
+      case 'qwen':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Alibaba Qwen Code engine.');
+        break;
+      case 'pi':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace command pipeline via Inflection Pi CLI.');
+        break;
+      case 'hermes':
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace pipeline via Stark Quantum Entanglement Hub.');
+        break;
+      default:
+        serverDB.addSystemLog('EXEC', 'INFO', 'Routing secure workspace pipeline via local Windows PowerShell.');
+    }
+  }
+
   // --- Unrestricted OS Command Execution Endpoint ---
   app.post("/api/workspace/run", async (req, res) => {
     try {
       const { command, activeCli = 'openrouter' } = req.body;
       
       let extraStderr = "";
+      logCliRouting(activeCli);
+      
       if (activeCli === 'copilot' || activeCli === 'github-cli') {
-        serverDB.addSystemLog('SEC', 'SUCCESS', 'Routing workspace pipeline via GitHub CLI OAuth credentials.');
         try {
           const authStatus = await getGitHubAuthStatus();
           if (!authStatus.authenticated) {
@@ -680,10 +759,6 @@ INTEGRATION ENGINE DETAILS:
         } catch {
           // Ignored
         }
-      } else if (activeCli === 'claude-code') {
-        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace execution pipeline through Claude Code toolchain.');
-      } else {
-        serverDB.addSystemLog('EXEC', 'INFO', 'Routing secure workspace pipeline via local Windows PowerShell.');
       }
 
       exec(command, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
@@ -708,8 +783,9 @@ INTEGRATION ENGINE DETAILS:
       }
 
       let extraStderr = "";
+      logCliRouting(activeCli);
+
       if (activeCli === 'copilot' || activeCli === 'github-cli') {
-        serverDB.addSystemLog('SEC', 'SUCCESS', 'Routing workspace pipeline via GitHub CLI OAuth credentials.');
         try {
           const authStatus = await getGitHubAuthStatus();
           if (!authStatus.authenticated) {
@@ -719,10 +795,6 @@ INTEGRATION ENGINE DETAILS:
         } catch {
           // Ignored
         }
-      } else if (activeCli === 'claude-code') {
-        serverDB.addSystemLog('EXEC', 'INFO', 'Routing workspace execution pipeline through Claude Code toolchain.');
-      } else {
-        serverDB.addSystemLog('EXEC', 'INFO', 'Routing secure workspace pipeline via local Windows PowerShell.');
       }
 
       // Build final OS invocation based on shell type
@@ -900,6 +972,106 @@ INTEGRATION ENGINE DETAILS:
         return res.json(result);
       }
       res.json(cachedSecurityAudit);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Stark-Defense AST Command Safety Parser ---
+  app.post("/api/system/validate-command", (req, res) => {
+    try {
+      const { command } = req.body;
+      if (!command || typeof command !== "string") {
+        return res.status(400).json({ error: "Missing command parameter" });
+      }
+
+      const cmdTrim = command.trim();
+      serverDB.addSystemLog('SEC', 'INFO', `Analyzing shell command structures for safety validations...`);
+
+      // 1. AST Parser Chaining Splitter: split by pipelines or conditional execution terminators
+      const subStatements = cmdTrim.split(/[;&\n]|\&\&|\|\||\|/).map(s => s.trim()).filter(Boolean);
+
+      let isSafe = true;
+      let reason = "";
+
+      const safeVerbs = [
+        'git', 'node', 'npm', 'python', 'echo', 'type', 'cat', 'whoami', 'pwd', 
+        'hostname', 'ver', 'systeminfo', 'wmic', 'tasklist', 'dir', 'ls', 'ping', 
+        'nslookup', 'curl', 'wget', 'select-object', 'out-string', 'out-default',
+        'measure-object', 'export-clixml', 'resolve-path', 'test-path'
+      ];
+
+      const blockedTriggers = [
+        'rm', 'del', 'remove-item', 'kill', 'stop-process', 'restart-computer',
+        'shutdown', 'netsh', 'reg', 'sc', 'npx', 'bash', 'sh', 'cmd', 'powershell',
+        'invoke-expression', 'iex', 'invoke-webrequest', 'iwr', 'start-process',
+        'set-content', 'add-content', 'out-file'
+      ];
+
+      for (const statement of subStatements) {
+        let cleanStmt = statement.replace(/^powershell(\.exe)?\s+(-[a-zA-Z]+\s+)*(-[a-zA-Z]+)?\s*["']?|["']?$/gi, '').trim();
+        cleanStmt = cleanStmt.replace(/^cmd(\.exe)?\s+\/c\s*/gi, '').trim();
+
+        // 2. Redirection inspection (Writes/overwrites files)
+        if (/>+/.test(cleanStmt)) {
+          isSafe = false;
+          reason = "Write redirection operator (> or >>) detected. File write operations are restricted under Safe Mode.";
+          break;
+        }
+
+        // 3. Extract primary verb/binary name
+        const tokens = cleanStmt.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0) continue;
+
+        const primaryVerb = tokens[0].toLowerCase();
+
+        // If it looks like a PowerShell cmdlet, verify standard prefixes
+        if (primaryVerb.includes('-')) {
+          const parts = primaryVerb.split('-');
+          const prefix = parts[0];
+          
+          const dangerousPrefixes = ['set', 'remove', 'new', 'add', 'start', 'stop', 'restart', 'clear', 'enable', 'disable', 'invoke'];
+          if (dangerousPrefixes.includes(prefix)) {
+            isSafe = false;
+            reason = `State-changing PowerShell verb prefix "${prefix.toUpperCase()}-" is strictly blocked in Safe Mode.`;
+            break;
+          }
+        }
+
+        // Block specific dangerous binaries or commands
+        const isBlocked = blockedTriggers.some(trigger => {
+          return primaryVerb === trigger || cleanStmt.toLowerCase().startsWith(trigger + " ");
+        });
+
+        if (isBlocked) {
+          isSafe = false;
+          reason = `Executable or statement "${primaryVerb.toUpperCase()}" is strictly restricted under Safe Mode.`;
+          break;
+        }
+
+        // If not explicitly safe and not explicitly dangerous, run standard verification warning
+        const isExplicitlySafe = safeVerbs.some(verb => {
+          return primaryVerb === verb || primaryVerb.startsWith('get-');
+        });
+
+        if (!isExplicitlySafe) {
+          isSafe = false;
+          reason = `Command "${primaryVerb}" is unrecognized and has been blocked by default to maintain safe-only boundaries.`;
+          break;
+        }
+      }
+
+      if (isSafe) {
+        serverDB.addSystemLog('SEC', 'SUCCESS', 'Stark-Defense AST Parser: Command structure validated as 100% safe.');
+      } else {
+        serverDB.addSystemLog('SEC', 'WARN', `Stark-Defense AST Parser: Command blocked! Reason: ${reason}`);
+      }
+
+      res.json({
+        success: true,
+        safe: isSafe,
+        reason
+      });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

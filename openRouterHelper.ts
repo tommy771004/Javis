@@ -102,7 +102,8 @@ export async function fetchOpenRouterWithFallback(
   apiKey: string, 
   prompt: string, 
   validator?: (text: string) => string,
-  requestedModel?: string
+  requestedModel?: string,
+  apiEndpoint?: string
 ) {
   let lastError: Error | null = null;
 
@@ -147,19 +148,75 @@ export async function fetchOpenRouterWithFallback(
     // Narrow Retry Loop with Exponential Backoff
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': 'https://roamjelly.app',
-            'X-Title': 'RoamJelly'
-          },
-          body: JSON.stringify({
+        let fetchUrl = 'https://openrouter.ai/api/v1/chat/completions';
+        let isCustomEndpoint = false;
+        let isOllamaDirectGenerate = false;
+        let isOllamaDirectChat = false;
+
+        if (apiEndpoint && !apiEndpoint.includes('openrouter.ai')) {
+          isCustomEndpoint = true;
+          const trimmedEndpoint = apiEndpoint.trim().replace(/\/$/, '');
+          
+          if (trimmedEndpoint.includes('/api/generate')) {
+            fetchUrl = trimmedEndpoint;
+            isOllamaDirectGenerate = true;
+          } else if (trimmedEndpoint.includes('/api/chat')) {
+            fetchUrl = trimmedEndpoint;
+            isOllamaDirectChat = true;
+          } else if (trimmedEndpoint.includes('/chat/completions') || trimmedEndpoint.includes('/v1/chat/completions')) {
+            fetchUrl = trimmedEndpoint;
+          } else {
+            // Check if endpoint is likely Ollama base port
+            if (trimmedEndpoint.includes('11434') || trimmedEndpoint.includes('ollama')) {
+              fetchUrl = `${trimmedEndpoint}/api/chat`;
+              isOllamaDirectChat = true;
+            } else {
+              fetchUrl = `${trimmedEndpoint}/chat/completions`;
+            }
+          }
+        }
+
+        const headers: { [key: string]: string } = {
+          'Content-Type': 'application/json'
+        };
+
+        if (apiKey) {
+          headers['Authorization'] = `Bearer ${apiKey}`;
+        }
+        
+        if (!isCustomEndpoint) {
+          headers['HTTP-Referer'] = 'https://roamjelly.app';
+          headers['X-Title'] = 'RoamJelly';
+        }
+
+        let bodyPayload: any;
+        if (isOllamaDirectGenerate) {
+          bodyPayload = {
+            model,
+            prompt: prompt,
+            stream: false
+          };
+        } else if (isOllamaDirectChat) {
+          bodyPayload = {
+            model,
+            messages: messagesPayload.map(m => ({
+              role: m.role,
+              content: typeof m.content === 'string' ? m.content : (m.content?.[0]?.text || m.content?.[0] || "")
+            })),
+            stream: false
+          };
+        } else {
+          bodyPayload = {
             model,
             messages: messagesPayload,
             max_tokens: 4000
-          })
+          };
+        }
+
+        const response = await fetch(fetchUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyPayload)
         });
 
         // Fail fast on Auth failures (no retries)
@@ -199,11 +256,34 @@ export async function fetchOpenRouterWithFallback(
             continue;
           }
 
-          throw new Error(`OpenRouter API Error (${model}): ${compactProviderError(response.status, errText)}`);
+          throw new Error(`API Error (${model}) on ${fetchUrl}: ${compactProviderError(response.status, errText)}`);
         }
 
         const data = await response.json();
-        const text = data.choices?.[0]?.message?.content;
+        
+        // Dynamic response payload adapter
+        let text = "";
+        let usage = { prompt_tokens: 0, completion_tokens: 0 };
+
+        if (data.choices?.[0]?.message?.content !== undefined) {
+          text = data.choices[0].message.content;
+          usage = data.usage || { prompt_tokens: 0, completion_tokens: 0 };
+        } else if (data.message?.content !== undefined) {
+          text = data.message.content;
+          usage = {
+            prompt_tokens: data.prompt_eval_count || 0,
+            completion_tokens: data.eval_count || 0
+          };
+        } else if (data.response !== undefined) {
+          text = data.response;
+          usage = {
+            prompt_tokens: data.prompt_eval_count || 0,
+            completion_tokens: data.eval_count || 0
+          };
+        } else {
+          // General fallback
+          text = typeof data === 'string' ? data : JSON.stringify(data);
+        }
 
         if (text) {
           if (validator) {
@@ -213,7 +293,7 @@ export async function fetchOpenRouterWithFallback(
               return {
                 text: result,
                 model: data.model || model,
-                usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+                usage
               };
             } catch (e: any) {
               try {
@@ -223,7 +303,7 @@ export async function fetchOpenRouterWithFallback(
                 return {
                   text: revalidated,
                   model: data.model || model,
-                  usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+                  usage
                 };
               } catch (repairErr: any) {
                 throw new Error(
@@ -238,7 +318,7 @@ export async function fetchOpenRouterWithFallback(
           return {
             text,
             model: data.model || model,
-            usage: data.usage || { prompt_tokens: 0, completion_tokens: 0 }
+            usage
           };
         } else {
           throw new Error(`Model ${model} returned empty content`);

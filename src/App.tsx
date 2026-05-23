@@ -707,15 +707,21 @@ export default function App() {
 
     try {
       const activeCli = localStorage.getItem('jarvis_active_cli') || 'openrouter';
+      const byokKey = localStorage.getItem('jarvis_byok_key') || '';
+      const byokModel = localStorage.getItem('jarvis_byok_model') || '';
+      const byokEndpoint = localStorage.getItem('jarvis_byok_endpoint') || '';
+
       // Dispatch request to Express server
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: text,
-          model: requestedModel === "auto" ? undefined : requestedModel,
+          model: requestedModel === "auto" ? (byokModel || undefined) : requestedModel,
           sessionId: "default-session",
-          activeCli: activeCli
+          activeCli: activeCli,
+          byokKey: byokKey,
+          byokEndpoint: byokEndpoint
         })
       });
 
@@ -746,16 +752,26 @@ export default function App() {
           if (securitySettings.shellMode === 'auto') {
             shouldAutoRun = true;
           } else if (securitySettings.shellMode === 'safe') {
-            // Evaluates command safety
-            const cmdLower = (action.command || '').toLowerCase().trim();
-            const safeKeywords = ['get-', 'dir', 'ls', 'echo', 'git status', 'git diff', 'whoami', 'sys-info', 'systeminfo'];
-            const dangerousKeywords = ['shutdown', 'restart', 'stop-', 'kill', 'rm ', 'del ', 'remove-', 'set-volume', 'write-file', 'write-host'];
-            
-            const startsWithSafe = safeKeywords.some(keyword => cmdLower.startsWith(keyword) || cmdLower.includes(keyword));
-            const hasNoDanger = !dangerousKeywords.some(keyword => cmdLower.includes(keyword));
-            
-            if (startsWithSafe && hasNoDanger) {
-              shouldAutoRun = true;
+            try {
+              const validateRes = await fetch('/api/system/validate-command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: action.command })
+              });
+              if (validateRes.ok) {
+                const validateData = await validateRes.json();
+                if (validateData.safe) {
+                  shouldAutoRun = true;
+                } else {
+                  setLogs(prev => [
+                    ...prev,
+                    `SEC WARN: Safe Mode blocked command. Reason: ${validateData.reason}`
+                  ]);
+                  speakText("Warning, Tommy. The command was blocked by the security safety matrix.");
+                }
+              }
+            } catch (err) {
+              console.warn("AST command safety validation failed, falling back to strict block", err);
             }
           }
         }

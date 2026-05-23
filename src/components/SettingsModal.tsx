@@ -171,6 +171,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   const [synapseLatency, setSynapseLatency] = useState<string>('374 ms');
   const [authIsolation, setAuthIsolation] = useState<string>('100.0%');
   const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('Offline-Bounded');
+  const [encryptionLevel, setEncryptionLevel] = useState<string>('AES-128 / RSA-2048');
+  const [activePort, setActivePort] = useState<string>('WSS-3000');
+  const [sandboxControl, setSandboxControl] = useState<string>('HOST-UNSECURED');
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
 
   useEffect(() => {
@@ -191,6 +194,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
         if (auditRes && auditRes.success) {
           setAuthIsolation(auditRes.authIsolation);
           setWorkspaceSandboxed(auditRes.workspaceSandboxed);
+          if (auditRes.encryption) setEncryptionLevel(auditRes.encryption);
+          if (auditRes.port) setActivePort(auditRes.port);
+          if (auditRes.sandboxControl) setSandboxControl(auditRes.sandboxControl);
         }
 
         if (statsRes && statsRes.pingLatencyMs !== undefined) {
@@ -225,6 +231,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
   const [operatorName, setOperatorName] = useState<string>('');
   const [armorModel, setArmorModel] = useState<string>('');
   const [satelliteName, setSatelliteName] = useState<string>('');
+  const [activeSkin, setActiveSkin] = useState<string>('cyan');
 
   useEffect(() => {
     try {
@@ -236,10 +243,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
       const savedOperatorName = localStorage.getItem('jarvis_operator_name') || (locale === 'zh-TW' ? '東尼 史塔克' : 'T. STARK');
       const savedArmorModel = localStorage.getItem('jarvis_armor_model') || 'Mark LXXXV';
       const savedSatelliteName = localStorage.getItem('jarvis_satellite_name') || (locale === 'zh-TW' ? '史塔克 4 號軌道衛星' : 'STARK-SAT-4');
+      const savedSkin = localStorage.getItem('jarvis_active_skin') || 'cyan';
 
       setOperatorName(savedOperatorName);
       setArmorModel(savedArmorModel);
       setSatelliteName(savedSatelliteName);
+      setActiveSkin(savedSkin);
 
       // Load BYOK persistent preferences
       const key = localStorage.getItem('jarvis_byok_key');
@@ -1176,47 +1185,83 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
 
                 <div className="grid grid-cols-2 gap-3 pb-2">
                   <div 
-                    onClick={() => triggerLog("SYS: CALIBRATING HOLOGRAPHIC CYAN SPECTRA.", "Calibrating hologram emission wavelength, sir.")}
-                    className="p-4 border-2 border-cyan-500/80 bg-cyan-950/5 hover:bg-cyan-950/10 cursor-pointer rounded text-left group transition-all"
+                    onClick={() => {
+                      localStorage.setItem('jarvis_active_skin', 'cyan');
+                      setActiveSkin('cyan');
+                      window.dispatchEvent(new CustomEvent('skin-updated'));
+                      triggerLog("SYS: CALIBRATING HOLOGRAPHIC CYAN SPECTRA.", "Calibrating hologram emission wavelength, sir.");
+                    }}
+                    className={`p-4 cursor-pointer rounded text-left group transition-all ${
+                      activeSkin === 'cyan' 
+                        ? 'border-2 border-cyan-500/80 bg-cyan-950/15 shadow-[0_0_12px_rgba(6,182,212,0.25)]' 
+                        : 'border border-cyan-950 bg-slate-950/50 hover:border-cyan-500/50'
+                    }`}
                   >
                     <div className="flex justify-between items-center mb-1">
-                      <span className="text-xs font-bold text-cyan-300">{t.skinCyanTitle}</span>
+                      <span className={`text-xs font-bold ${activeSkin === 'cyan' ? 'text-cyan-300' : 'text-cyan-600 group-hover:text-cyan-400'}`}>{t.skinCyanTitle}</span>
                       <div className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse"></div>
                     </div>
-                    <span className="text-[9.5px] text-cyan-600">{t.skinCyanDesc}</span>
+                    <span className={`text-[9.5px] ${activeSkin === 'cyan' ? 'text-cyan-400/90' : 'text-cyan-600'}`}>{t.skinCyanDesc}</span>
                   </div>
 
                   <div 
-                    onClick={() => triggerLog("SYS: ADJUSTING FREQUENCY TO EMERALD RAYS.", "Reactor plasma aligned to Emerald, sir.")}
-                    className="p-4 border border-cyan-950 bg-slate-950/50 hover:border-emerald-500 hover:bg-emerald-950/5 hover:shadow-[0_0_12px_rgba(16,185,129,0.15)] cursor-pointer rounded text-left group transition-all"
+                    onClick={() => {
+                      localStorage.setItem('jarvis_active_skin', 'emerald');
+                      setActiveSkin('emerald');
+                      window.dispatchEvent(new CustomEvent('skin-updated'));
+                      triggerLog("SYS: ADJUSTING FREQUENCY TO EMERALD RAYS.", "Reactor plasma aligned to Emerald, sir.");
+                    }}
+                    className={`p-4 cursor-pointer rounded text-left group transition-all ${
+                      activeSkin === 'emerald' 
+                        ? 'border-2 border-emerald-500 bg-emerald-950/15 shadow-[0_0_12px_rgba(16,185,129,0.25)]' 
+                        : 'border border-cyan-950 bg-slate-950/50 hover:border-emerald-500 hover:bg-emerald-950/5 hover:shadow-[0_0_12px_rgba(16,185,129,0.15)]'
+                    }`}
                   >
                     <div className="flex justify-between items-center mb-1">
-                      <span className="text-xs font-bold text-cyan-600 group-hover:text-emerald-400 transition-colors">{t.skinEmeraldTitle}</span>
-                      <div className="w-3 h-3 rounded-full bg-emerald-550 group-hover:bg-emerald-400"></div>
+                      <span className={`text-xs font-bold ${activeSkin === 'emerald' ? 'text-emerald-400 font-extrabold' : 'text-cyan-600 group-hover:text-emerald-400'}`}>{t.skinEmeraldTitle}</span>
+                      <div className="w-3 h-3 rounded-full bg-emerald-500"></div>
                     </div>
-                    <span className="text-[9.5px] text-cyan-700 group-hover:text-cyan-600">{t.skinEmeraldDesc}</span>
+                    <span className={`text-[9.5px] ${activeSkin === 'emerald' ? 'text-emerald-400/90' : 'text-cyan-700 group-hover:text-cyan-600'}`}>{t.skinEmeraldDesc}</span>
                   </div>
 
                   <div 
-                    onClick={() => triggerLog("SYS: SHIFTING SPECTRUM TO BARITONE AMBER.", "Tactical warm amber profiles established.")}
-                    className="p-4 border border-cyan-950 bg-slate-950/50 hover:border-amber-500 hover:bg-amber-950/5 hover:shadow-[0_0_12px_rgba(245,158,11,0.15)] cursor-pointer rounded text-left group transition-all"
+                    onClick={() => {
+                      localStorage.setItem('jarvis_active_skin', 'amber');
+                      setActiveSkin('amber');
+                      window.dispatchEvent(new CustomEvent('skin-updated'));
+                      triggerLog("SYS: SHIFTING SPECTRUM TO BARITONE AMBER.", "Tactical warm amber profiles established.");
+                    }}
+                    className={`p-4 cursor-pointer rounded text-left group transition-all ${
+                      activeSkin === 'amber' 
+                        ? 'border-2 border-amber-500 bg-amber-950/15 shadow-[0_0_12px_rgba(245,158,11,0.25)]' 
+                        : 'border border-cyan-950 bg-slate-950/50 hover:border-amber-500 hover:bg-amber-950/5 hover:shadow-[0_0_12px_rgba(245,158,11,0.15)]'
+                    }`}
                   >
                     <div className="flex justify-between items-center mb-1">
-                      <span className="text-xs font-bold text-cyan-600 group-hover:text-amber-400 transition-colors">{t.skinAmberTitle}</span>
-                      <div className="w-3 h-3 rounded-full bg-amber-550 group-hover:bg-amber-400"></div>
+                      <span className={`text-xs font-bold ${activeSkin === 'amber' ? 'text-amber-400 font-extrabold' : 'text-cyan-600 group-hover:text-amber-400'}`}>{t.skinAmberTitle}</span>
+                      <div className="w-3 h-3 rounded-full bg-amber-500"></div>
                     </div>
-                    <span className="text-[9.5px] text-cyan-700 group-hover:text-cyan-600">{t.skinAmberDesc}</span>
+                    <span className={`text-[9.5px] ${activeSkin === 'amber' ? 'text-amber-400/90' : 'text-cyan-700 group-hover:text-cyan-600'}`}>{t.skinAmberDesc}</span>
                   </div>
 
                   <div 
-                    onClick={() => triggerLog("SYS: WARNING: OVERLOAD THRESHOLD TRIGGERED.", "Combat Mark Eighty-Five mode activated, sir.")}
-                    className="p-4 border border-cyan-950 bg-slate-950/50 hover:border-red-500 hover:bg-red-950/5 hover:shadow-[0_0_12px_rgba(239,68,68,0.15)] cursor-pointer rounded text-left group transition-all"
+                    onClick={() => {
+                      localStorage.setItem('jarvis_active_skin', 'red');
+                      setActiveSkin('red');
+                      window.dispatchEvent(new CustomEvent('skin-updated'));
+                      triggerLog("SYS: WARNING: OVERLOAD THRESHOLD TRIGGERED.", "Combat Mark Eighty-Five mode activated, sir.");
+                    }}
+                    className={`p-4 cursor-pointer rounded text-left group transition-all ${
+                      activeSkin === 'red' 
+                        ? 'border-2 border-red-500 bg-red-950/15 shadow-[0_0_12px_rgba(239,68,68,0.25)]' 
+                        : 'border border-cyan-950 bg-slate-950/50 hover:border-red-500 hover:bg-red-950/5 hover:shadow-[0_0_12px_rgba(239,68,68,0.15)]'
+                    }`}
                   >
                     <div className="flex justify-between items-center mb-1">
-                      <span className="text-xs font-bold text-cyan-600 group-hover:text-red-400 transition-colors">{t.skinRedTitle}</span>
-                      <div className="w-3 h-3 rounded-full bg-red-650 group-hover:bg-red-400 animate-pulse"></div>
+                      <span className={`text-xs font-bold ${activeSkin === 'red' ? 'text-red-400 font-extrabold animate-pulse' : 'text-cyan-600 group-hover:text-red-400'}`}>{t.skinRedTitle}</span>
+                      <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
                     </div>
-                    <span className="text-[9.5px] text-cyan-700 group-hover:text-cyan-600">{t.skinRedDesc}</span>
+                    <span className={`text-[9.5px] ${activeSkin === 'red' ? 'text-red-400/90' : 'text-cyan-700 group-hover:text-cyan-600'}`}>{t.skinRedDesc}</span>
                   </div>
                 </div>
 
@@ -1296,10 +1341,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange }: SettingsMod
                   <div className="space-y-1.5 text-cyan-400 text-[10.5px]">
                     <div><b>SYSTEM BRANDING:</b> J.A.R.V.I.S HOME INTEGRATION MATRIX</div>
                     <div><b>CORE VERSION:</b> Mark LXXXV // v4.8.2-Aistudio</div>
-                    <div><b>PLATFORM INFRASTRUCTURE:</b> Google Cloud Run Sandbox Container</div>
-                    <div><b>INTEGRATION LAYER:</b> OpenRouter BYOK (Claude 3.5 / Gemini core)</div>
-                    <div><b>LOCAL ROUTINTEG:</b> Windows OS PowerShell Tunnel Agent v3.4</div>
-                    <div className="pt-2 text-[9px] text-cyan-600 leading-normal italic">
+                    <div><b>PLATFORM INFRASTRUCTURE:</b> {workspaceSandboxed === 'Offline-Bounded' ? 'Google Cloud Run Sandbox Container' : `${workspaceSandboxed} Environment`}</div>
+                    <div><b>ENCRYPTION LEVEL:</b> {encryptionLevel}</div>
+                    <div><b>ACTIVE PORT:</b> {activePort}</div>
+                    <div><b>SANDBOX CONTROL:</b> {sandboxControl}</div>
+                    <div className="pt-1.5 text-[9px] text-cyan-600 leading-normal italic">
                       "{t.aboutTagline}" - {t.aboutP1}
                     </div>
                   </div>
