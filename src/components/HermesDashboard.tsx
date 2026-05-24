@@ -107,6 +107,7 @@ export function HermesDashboard({
   const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
   const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
   const [mcpTemplates, setMcpTemplates] = useState<McpTemplate[]>([]);
+  const [mcpAutomationCapabilities, setMcpAutomationCapabilities] = useState<any | null>(null);
   
   // MCP Tool Execution States
   const [mcpToolParams, setMcpToolParams] = useState<{[key: string]: string}>({});
@@ -148,13 +149,19 @@ export function HermesDashboard({
       const webhooksRes = await fetch('/api/mcp/webhooks');
       if (webhooksRes.ok) {
         const data = await webhooksRes.json();
-        if (data.success) setMcpWebhooks(data.webhooks || []);
+        if (data.success) {
+          setMcpWebhooks(data.webhooks || []);
+          if (data.automationCapabilities) setMcpAutomationCapabilities(data.automationCapabilities);
+        }
       }
 
       const routinesRes = await fetch('/api/mcp/routines');
       if (routinesRes.ok) {
         const data = await routinesRes.json();
-        if (data.success) setMcpRoutines(data.routines || []);
+        if (data.success) {
+          setMcpRoutines(data.routines || []);
+          if (data.automationCapabilities) setMcpAutomationCapabilities(data.automationCapabilities);
+        }
       }
     } catch (err) {
       console.warn('Failed to load MCP ecosystem state:', err);
@@ -2005,10 +2012,15 @@ export function HermesDashboard({
                       <Radio className="w-3.5 h-3.5 text-emerald-400" />
                       External Webhooks ({mcpWebhooks.length})
                     </div>
+                    {mcpAutomationCapabilities && (
+                      <div className="text-[8px] text-emerald-600/90 border border-emerald-950/60 bg-black/25 px-2 py-1.5 leading-relaxed">
+                        Outbound delivery is available. Cron scheduling and inbound webhook listening are not running in this process.
+                      </div>
+                    )}
 
                     {/* New Webhook Creation */}
                     <div className="border border-emerald-950/70 p-2.5 bg-black/20 rounded-xs space-y-2">
-                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Add Distributed Webhook Node</span>
+                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Add outbound webhook endpoint</span>
                       
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         <input
@@ -2020,7 +2032,7 @@ export function HermesDashboard({
                         />
                         <input
                           type="text"
-                          placeholder="Node URL (https://...)"
+                          placeholder="Endpoint URL (https://...)"
                           value={newWebhookUrl}
                           onChange={(e) => setNewWebhookUrl(e.target.value)}
                           className="w-full bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500"
@@ -2031,7 +2043,7 @@ export function HermesDashboard({
                         onClick={handleAddWebhook}
                         className="w-full py-1 bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[8.5px] rounded-xs uppercase font-bold tracking-wider transition-all flex items-center justify-center gap-1"
                       >
-                        <Plus className="w-3 h-3" /> Bind Node
+                        <Plus className="w-3 h-3" /> Save Endpoint
                       </button>
                     </div>
 
@@ -2068,7 +2080,7 @@ export function HermesDashboard({
                           </div>
                         ))
                       ) : (
-                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No external webhook endpoints configured. Webhook triggers inactive.</div>
+                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No outbound webhook endpoints configured.</div>
                       )}
                     </div>
                   </div>
@@ -2077,21 +2089,21 @@ export function HermesDashboard({
                   <div className="border border-emerald-900/40 p-3 bg-[#021008] space-y-3">
                     <div className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase border-b border-emerald-900/40 pb-1.5 flex items-center gap-1.5">
                       <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                      Prompt Macros ({mcpRoutines.length})
+                      Prompt Routines ({mcpRoutines.length})
                     </div>
 
                     {/* New Routine creation */}
                     <div className="border border-emerald-950/70 p-2.5 bg-black/20 rounded-xs space-y-2">
-                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Compile Prompt Macro Sequence</span>
+                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Create manual prompt routine</span>
                       <input
                         type="text"
-                        placeholder="Macro Identifier (e.g. Audit Logs)"
+                        placeholder="Routine name (e.g. Audit Logs)"
                         value={newRoutineName}
                         onChange={(e) => setNewRoutineName(e.target.value)}
                         className="w-full bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500"
                       />
                       <textarea
-                        placeholder="Define sequence prompt payload..."
+                        placeholder="Write the prompt to dispatch when you run this routine..."
                         value={newRoutinePrompt}
                         onChange={(e) => setNewRoutinePrompt(e.target.value)}
                         className="w-full h-12 bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500 font-mono resize-none text-[8.5px]"
@@ -2100,7 +2112,7 @@ export function HermesDashboard({
                         onClick={handleAddRoutine}
                         className="w-full py-1 bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[8.5px] rounded-xs uppercase font-bold tracking-wider transition-all flex items-center justify-center gap-1"
                       >
-                        <Plus className="w-3 h-3" /> Register Macro
+                        <Plus className="w-3 h-3" /> Save Routine
                       </button>
                     </div>
 
@@ -2133,7 +2145,7 @@ export function HermesDashboard({
                           </div>
                         ))
                       ) : (
-                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No custom macros compiled in cognitive banks.</div>
+                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No manual prompt routines saved.</div>
                       )}
                     </div>
                   </div>

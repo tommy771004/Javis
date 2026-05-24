@@ -16,6 +16,11 @@ let humNode: OscillatorNode | null = null;
 let noiseNode: AudioWorkletNode | ScriptProcessorNode | null = null;
 let carrierGain: GainNode | null = null;
 
+function deterministicNoiseSample(index: number): number {
+  const x = Math.sin((index + 1) * 12.9898) * 43758.5453;
+  return (x - Math.floor(x)) * 2 - 1;
+}
+
 function isMutedLocally(): boolean {
   try {
     return localStorage.getItem('jarvis_is_muted') === 'true';
@@ -173,7 +178,7 @@ export function startCommsChannel() {
     const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
     const output = noiseBuffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
+      output[i] = deterministicNoiseSample(i);
     }
 
     const whiteNoiseSource = ctx.createBufferSource();
@@ -342,7 +347,7 @@ export function modulateSynthVolumeForSpeech() {
     if (humNode) {
       humNode.frequency.cancelScheduledValues(now);
       humNode.frequency.setValueAtTime(55, now);
-      humNode.frequency.linearRampToValueAtTime(70 + Math.random() * 110, now + 0.04); // high pitch formant accentuation
+      humNode.frequency.linearRampToValueAtTime(118, now + 0.04); // deterministic high pitch formant accentuation
       humNode.frequency.exponentialRampToValueAtTime(55, now + 0.25);
     }
   } catch (e) {}

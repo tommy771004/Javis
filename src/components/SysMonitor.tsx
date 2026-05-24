@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Heart, Activity, Wifi, Shield, ShieldCheck, Zap, Power } from 'lucide-react';
+import { Activity, Wifi, Shield, ShieldCheck, Zap, Power } from 'lucide-react';
 import { useI18n } from '../services/i18n';
+import { isSystemStatsEvent, parseSystemStreamMessage, resolveStreamAgeMs } from '../services/systemStreamEvents';
 
 export function SysMonitor({ 
     isHermesActive = false, 
@@ -31,8 +32,6 @@ export function SysMonitor({
         voltage: 'N/A'
     });
 
-    const [heartRate, setHeartRate] = useState(72);
-    const [bodyTemp, setBodyTemp] = useState(98.6);
     const [satelliteName, setSatelliteName] = useState('LOCAL_SQLITE_DB');
 
     useEffect(() => {
@@ -52,28 +51,24 @@ export function SysMonitor({
 
     const [apiLatency, setApiLatency] = useState(0);
 
-    const fetchSystemStats = async () => {
-        try {
-            const start = Date.now();
-            const res = await fetch('/api/system/stats');
-            const end = Date.now();
-            setApiLatency(end - start);
-            if (res.ok) {
-                const data = await res.json();
-                setStats(data);
-            }
-        } catch (e) {
-            console.error("Failed to fetch system stats from API", e);
-        }
-    };
-
     useEffect(() => {
-        // Initial fetch
-        fetchSystemStats();
-        
-        // Dynamic interval query
-        const interval = setInterval(fetchSystemStats, 2000);
-        return () => clearInterval(interval);
+        let active = true;
+        const stream = new EventSource('/api/system/stream');
+        stream.onmessage = (event) => {
+            if (!active) return;
+            const parsed = parseSystemStreamMessage(event.data);
+            if (isSystemStatsEvent(parsed)) {
+                setStats(parsed.stats as any);
+                setApiLatency(resolveStreamAgeMs(parsed.timestamp));
+            }
+        };
+        stream.onerror = () => {
+            console.warn("System stats stream disconnected");
+        };
+        return () => {
+            active = false;
+            stream.close();
+        };
     }, []);
 
 
@@ -106,7 +101,7 @@ export function SysMonitor({
     return (
         <div className="w-full h-full flex flex-col font-mono text-cyan-500 select-none pr-1 scrollbar-cyan gap-5 overflow-y-auto">
             
-            {/* PANEL 1: SYSTEM // VITAL SIGNS */}
+            {/* PANEL 1: ASSISTANT WORKSPACE PULSE */}
             <div className="border border-cyan-950 bg-black/20 p-3.5 relative">
                 {/* Visual corners */}
                 <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-cyan-400"></div>
@@ -117,29 +112,25 @@ export function SysMonitor({
                 <div className="flex justify-between items-center text-[10px] tracking-widest border-b border-cyan-950 pb-2 mb-3">
                     <div className="flex items-center font-bold">
                         <span className="w-1.5 h-1.5 bg-cyan-400 mr-2 animate-pulse shadow-[0_0_6px_rgba(34,211,238,0.8)]"></span>
-                        {t.systemVitalSigns}
+                        Assistant pulse
                     </div>
-                    <span className="text-[8px] text-cyan-600 font-bold">{t.vitalSignsShort}</span>
+                    <span className="text-[8px] text-cyan-600 font-bold">LIVE LOCAL</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                    {/* Heart Rate Display */}
                     <div className="flex flex-col">
-                        <span className="text-[10px] text-cyan-600 tracking-wider">{t.lblHeartRate}</span>
+                        <span className="text-[10px] text-cyan-600 tracking-wider">Workspace pulse</span>
                         <div className="flex items-baseline gap-1 mt-0.5">
                             <span className="text-2xl font-bold font-sans text-cyan-300 tracking-tight transition-all duration-300">
-                                {heartRate}
+                                {apiLatency || 'N/A'}
                             </span>
-                            <span className="text-[8px] text-cyan-600 font-bold uppercase tracking-widest">{t.lblBpm}</span>
+                            <span className="text-[8px] text-cyan-600 font-bold uppercase tracking-widest">ms</span>
                         </div>
                     </div>
 
-                    {/* ECG Heartbeat line visual placeholder matching the active BPM */}
                     <div className="flex items-center justify-center h-10 overflow-hidden relative border border-cyan-950/40 bg-black/30 rounded pr-1 mt-1">
                         <svg className="w-full h-full" viewBox="0 0 100 30" preserveAspectRatio="none">
-                            {/* ECG Grid helper */}
                             <path d="M 0 15 H 100 M 0 5 H 100 M 0 25 H 100 M 20 0 V 30 M 40 0 V 30 M 60 0 V 30 M 80 0 V 30" stroke="rgba(0,103,120,0.06)" strokeWidth="0.5" />
-                            {/* Pulsing Cardiogram wave path */}
                             <motion.path
                                 d="M 0 15 L 15 15 L 20 5 L 23 25 L 26 15 L 45 15 L 50 15 L 55 5 L 58 25 L 61 15 L 85 15 L 100 15"
                                 fill="transparent"
@@ -152,14 +143,13 @@ export function SysMonitor({
                                     strokeDashoffset: [140, 0]
                                 }}
                                 transition={{
-                                    duration: 60 / heartRate,
+                                    duration: apiLatency > 0 ? Math.min(3, Math.max(0.8, apiLatency / 180)) : 1.2,
                                     repeat: Infinity,
                                     ease: "linear"
                                 }}
                             />
-                            {/* Heart blink overlay */}
                             <div className="absolute top-1 right-1">
-                                <Heart className={`w-2.5 h-2.5 text-cyan-400 fill-cyan-400/40 ${heartRate > 74 ? 'animate-ping' : 'animate-pulse'}`} />
+                                <Activity className="w-2.5 h-2.5 text-cyan-400" />
                             </div>
                         </svg>
                     </div>
@@ -167,11 +157,11 @@ export function SysMonitor({
 
                 <div className="grid grid-cols-2 gap-4 mt-3 pt-3 border-t border-cyan-950/60 text-[10px]">
                     <div className="flex flex-col">
-                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">{t.lblBodyTemp}</span>
-                        <span className="text-cyan-300 font-bold mt-0.5">{bodyTemp} °F</span>
+                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">Local processes</span>
+                        <span className="text-cyan-300 font-bold mt-0.5">{stats.processes || 'N/A'}</span>
                     </div>
                     <div className="flex flex-col">
-                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">REST LATENCY</span>
+                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">Stream age</span>
                         <span className="text-green-400 font-bold mt-0.5 animate-pulse">{apiLatency} ms</span>
                     </div>
                 </div>

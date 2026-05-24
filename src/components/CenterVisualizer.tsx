@@ -6,6 +6,11 @@ import {
   formatPercentMetric,
   formatTextMetric,
 } from '../services/truthfulUiPolicies';
+import {
+  buildAssistantBriefing,
+  resolveAssistantPresence,
+} from '../services/personalAssistantPresentation';
+import { isSystemStatsEvent, parseSystemStreamMessage } from '../services/systemStreamEvents';
 
 export type CognitiveState = 'idle' | 'thinking' | 'searching' | 'speaking';
 
@@ -49,43 +54,54 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
   const [tasks, setTasks] = React.useState<any[]>([]);
   const [gateway, setGateway] = React.useState<{ budget: number; spent: number; cacheHits: number } | null>(null);
   const [logs, setLogs] = React.useState<string[]>([
-    "SYS/INIT:: Security matrix cleared.",
-    "HERMES/MATRIX:: Core gateway active.",
-    "DB/SQLITE5:: FTS5 memory index built.",
-    "NET/VOIP:: Standby listening established."
+    "Javis is ready to watch the workspace.",
+    "Local gateway is available.",
+    "SQLite memory index is ready.",
+    "Voice channel is on standby."
   ]);
 
-  // Fetch metrics and statistics periodically matching terminal state
   React.useEffect(() => {
     let active = true;
 
-    async function fetchAllData() {
+    async function fetchContextData() {
       try {
-        const [statsRes, tasksRes, gatewayRes] = await Promise.all([
-          fetch('/api/system/stats').then(res => res.ok ? res.json() : null),
+        const [tasksRes, gatewayRes] = await Promise.all([
           fetch('/api/tasks').then(res => res.ok ? res.json() : []),
           fetch('/api/gateway/stats').then(res => res.ok ? res.json() : null)
         ]);
 
         if (!active) return;
-        if (statsRes) {
-          setStats(statsRes);
-          if (statsRes.systemLogs && statsRes.systemLogs.length > 0) {
-            setLogs(statsRes.systemLogs);
-          }
-        }
         if (tasksRes) setTasks(tasksRes);
         if (gatewayRes) setGateway(gatewayRes);
       } catch (err) {
-        console.warn("Failed to update CenterVisualizer dynamic data", err);
+        console.warn("Failed to update CenterVisualizer context data", err);
       }
     }
 
-    fetchAllData();
-    const intervalId = setInterval(fetchAllData, 2000); // Poll every 2s for reactive logs flow
+    fetchContextData();
+
+    const stream = new EventSource('/api/system/stream');
+    stream.onmessage = (event) => {
+      const parsed = parseSystemStreamMessage(event.data);
+      if (!active || !parsed) return;
+
+      if (isSystemStatsEvent(parsed)) {
+        const nextStats = parsed.stats as any;
+        setStats(nextStats);
+        if (Array.isArray(nextStats.systemLogs) && nextStats.systemLogs.length > 0) {
+          setLogs(nextStats.systemLogs);
+        }
+      } else if (parsed.type === 'SYNC_PULSE') {
+        fetchContextData();
+      }
+    };
+    stream.onerror = () => {
+      console.warn('CenterVisualizer system stream disconnected.');
+    };
+
     return () => {
       active = false;
-      clearInterval(intervalId);
+      stream.close();
     };
   }, []);
 
@@ -181,22 +197,6 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
 
   const speeds = getDurations();
 
-  // Core Text Title
-  const getCoreText = () => {
-    if (isMicActive) {
-      return webrtcStats?.state === 'connected' ? 'VOIP_LINK' : 'HANDSHAKE';
-    }
-
-    switch (cognitiveState) {
-      case 'thinking': return 'NEURAL_THINK';
-      case 'searching': return 'FTS5_SCAN';
-      case 'speaking': return 'SPEECH_OUT';
-      case 'idle':
-      default:
-        return 'ACTIVE';
-    }
-  };
-
   const getStrokeColor = () => {
     if (isMicActive) return '#21c55d';
     switch (cognitiveState) {
@@ -216,6 +216,17 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
   const displayCodec = formatTextMetric(webrtcStats?.codec).toUpperCase();
   const vadStatus = isMicActive ? 'ACTIVE' : 'STANDBY';
   const ampState = voiceAmplitude.toFixed(1);
+  const assistantPresence = resolveAssistantPresence({
+    cognitiveState,
+    isMicActive: Boolean(isMicActive),
+    webrtcState: webrtcStats?.state,
+  });
+  const criticalLogCount = logs.filter(log => /error|fail|warning|critical/i.test(log)).length;
+  const pendingTasks = tasks.filter(task => task?.status !== 'Completed').length;
+  const assistantBriefing = buildAssistantBriefing({
+    pendingTasks,
+    criticalAlerts: criticalLogCount,
+  });
   const waveHeights = buildTelemetryWaveHeights({
     count: 42,
     timestampMs: Date.now(),
@@ -263,7 +274,7 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           <circle cx="390" cy="390" r="1.5" fill={hudColor} />
         </svg>
 
-        {/* 4 Interactive Terminal HUD Message Boxes with system parameters */}
+        {/* 4 assistant context panels with real system parameters */}
         {/* Memory Box (Top Left) */}
         <div 
           className="absolute w-[175px] bg-[#020905]/95 p-2 border font-mono text-[8px] tracking-wider transition-all duration-500 rounded-sm hover:bg-black/95 shadow-[0_0_15px_rgba(0,0,0,0.8)] backdrop-blur-xs flex flex-col gap-1 select-none pointer-events-auto"
@@ -275,23 +286,23 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           }}
         >
           <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
-            <span style={{ color: hudColor }} className="font-bold tracking-widest">[01/MEMORY/FTS5]</span>
-            <span className="text-emerald-500 animate-pulse text-[7.5px] font-bold">ONLINE</span>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">WORKSPACE MEMORY</span>
+            <span className="text-emerald-500 animate-pulse text-[7.5px] font-bold">READY</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>COGNITIVE FRAGMENTS:</span>
+            <span>Saved context:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.cognitiveCount !== undefined ? stats.cognitiveCount : 0} FRAG
+              {stats?.cognitiveCount !== undefined ? stats.cognitiveCount : 0}
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>FTS5 INDEX SIZE:</span>
+            <span>Conversation blocks:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.messagesCount !== undefined ? stats.messagesCount : 0} BLK
+              {stats?.messagesCount !== undefined ? stats.messagesCount : 0}
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>DB INSTANCE:</span>
+            <span>Storage:</span>
             <span className="text-emerald-400 font-bold">SQLITE5/FTS5</span>
           </div>
         </div>
@@ -307,24 +318,24 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           }}
         >
           <div className="flex justify-between border-b pb-1 mb-1" style={{ borderColor: `${hudColor}25` }}>
-            <span style={{ color: hudColor }} className="font-bold tracking-widest">[02/DSPY/EVOLVE]</span>
-            <span className="text-emerald-500 text-[7px] font-bold animate-pulse">OPTIMIZED</span>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">RECENT SIGNAL</span>
+            <span className="text-emerald-500 text-[7px] font-bold animate-pulse">LIVE</span>
           </div>
           <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
-            <span>TRACE RECORDS:</span>
+            <span>Cost events:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.costLogsCount !== undefined ? stats.costLogsCount : 0} TRAC
+              {stats?.costLogsCount !== undefined ? stats.costLogsCount : 0}
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70 text-[8px] mb-1.5">
-            <span>NEURAL SYNC:</span>
+            <span>Context reuse:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.neuralSync || '99.55'}%
+              {stats?.neuralSync || 'N/A'}%
             </span>
           </div>
           <div className="flex justify-between border-t border-cyan-800/10 pt-1 mt-1 text-[7px] text-cyan-500/80">
-            <span>LOG SEC:</span>
-            <span className="truncate max-w-[124px] text-cyan-400 font-sans">{logs[logs.length - 1] || 'STANDBY'}</span>
+            <span>Latest:</span>
+            <span className="truncate max-w-[124px] text-cyan-400 font-sans">{logs[logs.length - 1] || 'Quiet for now'}</span>
           </div>
         </div>
 
@@ -339,19 +350,19 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           }}
         >
           <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
-            <span style={{ color: hudColor }} className="font-bold tracking-widest">[03/NET/VOIP]</span>
-            <span className="text-blue-400 text-[7.5px] font-bold animate-pulse">STREAMING</span>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">VOICE LINK</span>
+            <span className="text-blue-400 text-[7.5px] font-bold animate-pulse">{isMicActive ? 'OPEN' : 'STANDBY'}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>BANDWIDTH FLW:</span>
+            <span>Bitrate:</span>
             <span style={{ color: hudColor }} className="font-bold">{displayBitrate}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>VOIP LATENCY:</span>
+            <span>Latency:</span>
             <span style={{ color: hudColor }} className="font-bold">{displayRtt}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>SIP PROTOCOL:</span>
+            <span>Codec:</span>
             <span style={{ color: hudColor }} className="font-bold truncate max-w-[80px] inline-block text-right">
               {displayCodec}
             </span>
@@ -369,11 +380,11 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           }}
         >
           <div className="flex justify-between border-b pb-1" style={{ borderColor: `${hudColor}25` }}>
-            <span style={{ color: hudColor }} className="font-bold tracking-widest">[04/CORE/VAD]</span>
+            <span style={{ color: hudColor }} className="font-bold tracking-widest">ASSISTANT CARE</span>
             <span className={isMicActive ? "text-green-400 text-[7.5px] font-bold animate-pulse" : "text-cyan-400 text-[7.5px] font-bold"}>{vadStatus}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70 items-center">
-            <span>MIC LEVEL:</span>
+            <span>Voice level:</span>
             <span style={{ color: hudColor }} className="font-bold">{ampState} dB</span>
           </div>
           <div className="h-1 bg-cyan-950/80 rounded overflow-hidden my-1 border border-cyan-900/30">
@@ -387,21 +398,21 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
             ></div>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>DOCKER CLIENT:</span>
+            <span>Runtime:</span>
             <span style={{ color: hudColor }} className="font-bold">
               {stats?.nodeVersion ? `NODE_${stats.nodeVersion.split('.')[0].toUpperCase()}` : 'N/A'}
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>ACCUM COST:</span>
+            <span>Spend:</span>
             <span style={{ color: hudColor }} className="font-bold">{gateway ? `$${gateway.spent.toFixed(5)} USD` : 'N/A'}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>CACHE HITS:</span>
+            <span>Cache:</span>
             <span style={{ color: hudColor }} className="font-bold">{gateway ? `${formatPercentMetric(gateway.cacheHits)} CACHED` : 'N/A'}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
-            <span>AUTH METRIC:</span>
+            <span>Security:</span>
             <span className="text-emerald-400 font-bold">{stats?.secStatus || 'N/A'}</span>
           </div>
         </div>
@@ -486,11 +497,11 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
               <div className="absolute -bottom-[1.5px] -left-[1.5px] w-2 h-2 border-b-2 border-l-2 border-cyan-400"></div>
               <div className="absolute -bottom-[1.5px] -right-[1.5px] w-2 h-2 border-b-2 border-r-2 border-cyan-400"></div>
 
-              <span className="text-[7.5px] tracking-[0.3em] text-cyan-500/80 font-bold uppercase mb-0.5">CORE</span>
-              <span className={`tracking-[0.15em] text-[11px] font-bold font-mono transition-all duration-500 ${theme.text} uppercase`}>
-                {getCoreText()}
+              <span className="text-[7.5px] tracking-[0.22em] text-cyan-500/80 font-bold uppercase mb-1">Javis</span>
+              <span className={`tracking-[0.04em] text-[11px] text-center leading-tight font-bold font-mono transition-all duration-500 ${theme.text}`}>
+                {assistantPresence.label}
               </span>
-              <span className="text-[6.5px] tracking-widest text-cyan-600 font-semibold mt-1 animate-pulse">SYSTEM OK</span>
+              <span className="text-[6.5px] tracking-[0.08em] text-cyan-500/80 font-semibold mt-1 text-center leading-tight">{pendingTasks} tasks watched</span>
             </div>
           </motion.div>
         </div>
@@ -521,8 +532,12 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
                     ? 'text-emerald-400 animate-pulse'
                     : 'text-cyan-400'
           }`}>
-            {isMicActive ? (webrtcStats?.state === 'connected' ? 'VOIP ACTIVE' : 'VOIP STBY') : (cognitiveState === 'idle' ? 'AWAITING COMMAND...' : `${cognitiveState}`)}
+            {assistantPresence.label}
           </span>
+        </div>
+        <div className="max-w-[440px] text-center px-5 py-2 rounded-md border border-cyan-950/60 bg-black/35 shadow-[inset_0_0_12px_rgba(6,182,212,0.04)]">
+          <div className="text-[11px] text-cyan-200/90 leading-relaxed font-mono tracking-[0.02em]">{assistantPresence.detail}</div>
+          <div className="text-[9px] text-cyan-500/90 mt-1 font-mono">{assistantBriefing}</div>
         </div>
          
         {/* Real Network RX/TX Traffic Visualizer */}

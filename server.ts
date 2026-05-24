@@ -16,6 +16,7 @@ import { calculateHeapHeadroomPercent, resolveStrictSandboxRequirement, summariz
 import { buildDatabaseHealthSnapshot, collectCriticalMonitoringAlerts, type MonitoringAlert } from "./src/services/hermesMonitoring";
 import { buildRebootSequencePlan } from "./src/services/rebootSequence";
 import { buildDefaultTaskReport, resolveMcpTemplateById, type McpTemplateDefinition } from "./src/services/hermesServerHelpers";
+import { buildAutomationCapabilities, resolveEngineCapability, resolveRebootProbeDelayMs } from "./src/services/truthfulCapabilityPolicies";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -612,210 +613,6 @@ export async function getGitHubAuthStatus(): Promise<{ authenticated: boolean; u
   } catch (e: any) {
     return { authenticated: false, details: "GitHub CLI (gh) not located in system environment paths." };
   }
-}
-
-interface Complex {
-  re: number;
-  im: number;
-}
-
-type StateVector = [Complex, Complex, Complex, Complex];
-
-function complexAdd(a: Complex, b: Complex): Complex {
-  return { re: a.re + b.re, im: a.im + b.im };
-}
-
-function complexMul(a: Complex, b: Complex): Complex {
-  return {
-    re: a.re * b.re - a.im * b.im,
-    im: a.re * b.im + a.im * b.re
-  };
-}
-
-function applySingleQubitGate(state: StateVector, q: number, u: [[Complex, Complex], [Complex, Complex]]): StateVector {
-  const nextState: StateVector = [{ re: 0, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }];
-  const u00 = u[0][0];
-  const u01 = u[0][1];
-  const u10 = u[1][0];
-  const u11 = u[1][1];
-
-  if (q === 0) {
-    for (let s1 = 0; s1 < 2; s1++) {
-      const idx0 = s1 * 2 + 0;
-      const idx1 = s1 * 2 + 1;
-      const st0 = state[idx0];
-      const st1 = state[idx1];
-      nextState[idx0] = complexAdd(complexMul(u00, st0), complexMul(u01, st1));
-      nextState[idx1] = complexAdd(complexMul(u10, st0), complexMul(u11, st1));
-    }
-  } else {
-    for (let s0 = 0; s0 < 2; s0++) {
-      const idx0 = 0 * 2 + s0;
-      const idx1 = 1 * 2 + s0;
-      const st0 = state[idx0];
-      const st1 = state[idx1];
-      nextState[idx0] = complexAdd(complexMul(u00, st0), complexMul(u01, st1));
-      nextState[idx1] = complexAdd(complexMul(u10, st0), complexMul(u11, st1));
-    }
-  }
-  return nextState;
-}
-
-function applyCNOTGate(state: StateVector, control: number, target: number): StateVector {
-  const nextState: StateVector = [...state];
-  if (control === 0 && target === 1) {
-    const temp = nextState[1];
-    nextState[1] = nextState[3];
-    nextState[3] = temp;
-  } else if (control === 1 && target === 0) {
-    const temp = nextState[2];
-    nextState[2] = nextState[3];
-    nextState[3] = temp;
-  }
-  return nextState;
-}
-
-export function runQuantumSynapseSimulation(qubits: number = 2): {
-  qubits: number;
-  circuit: string;
-  states: { [key: string]: number };
-  synapticCoherence: number;
-  entropy: number;
-} {
-  const loadAvg = os.loadavg()[0] || 0.1;
-  const memUsage = process.memoryUsage().heapUsed / process.memoryUsage().heapTotal;
-
-  // Thermal noise derived in real-time from active CPU Load average.
-  const thermalNoise = Math.min(1.5, Math.max(0.01, loadAvg * 0.1));
-
-  // Build unitary matrix configurations
-  const H_GATE: [[Complex, Complex], [Complex, Complex]] = [
-    [{ re: 1 / Math.sqrt(2), im: 0 }, { re: 1 / Math.sqrt(2), im: 0 }],
-    [{ re: 1 / Math.sqrt(2), im: 0 }, { re: -1 / Math.sqrt(2), im: 0 }]
-  ];
-
-  const X_GATE: [[Complex, Complex], [Complex, Complex]] = [
-    [{ re: 0, im: 0 }, { re: 1, im: 0 }],
-    [{ re: 1, im: 0 }, { re: 0, im: 0 }]
-  ];
-
-  const ryGate = (theta: number): [[Complex, Complex], [Complex, Complex]] => [
-    [{ re: Math.cos(theta / 2), im: 0 }, { re: -Math.sin(theta / 2), im: 0 }],
-    [{ re: Math.sin(theta / 2), im: 0 }, { re: Math.cos(theta / 2), im: 0 }]
-  ];
-
-  const rxGate = (theta: number): [[Complex, Complex], [Complex, Complex]] => [
-    [{ re: Math.cos(theta / 2), im: 0 }, { re: 0, im: -Math.sin(theta / 2) }],
-    [{ re: 0, im: -Math.sin(theta / 2) }, { re: Math.cos(theta / 2), im: 0 }]
-  ];
-
-  // Initialize status register at |00>
-  let state: StateVector = [
-    { re: 1, im: 0 },
-    { re: 0, im: 0 },
-    { re: 0, im: 0 },
-    { re: 0, im: 0 }
-  ];
-
-  let circuitText = "";
-  // Switch topology dynamically based on physical hardware load rather than a fake timer
-  const circuitId = Math.floor(os.loadavg()[0] * 10 + (os.freemem() / (1024 * 1024))) % 4;
-
-  if (circuitId === 0) {
-    // Topologically active Bell State entanglement with environmental thermal phase jitter
-    const actualRy0 = thermalNoise;
-    state = applySingleQubitGate(state, 0, H_GATE);
-    if (actualRy0 > 0.01) {
-      state = applySingleQubitGate(state, 0, ryGate(actualRy0));
-    }
-    state = applyCNOTGate(state, 0, 1);
-
-    const noiseStr = actualRy0 > 0.01 ? `Ry(${actualRy0.toFixed(2)})` : "";
-    const padLine = "═".repeat(noiseStr.length);
-    circuitText =
-      `q_0: ──H─${noiseStr ? `─${noiseStr}─` : ""}──●──\n` +
-      `         ${noiseStr ? ` ${" ".repeat(noiseStr.length)} ` : ""}   │  \n` +
-      `q_1: ────${padLine}${noiseStr ? "──" : ""}──X──\n`;
-
-  } else if (circuitId === 1) {
-    // Asymmetric entanglement model (Ry rot with high-load thermal expansion)
-    const theta0 = (Math.PI / 3) + thermalNoise;
-    const theta1 = Math.PI / 4;
-
-    state = applySingleQubitGate(state, 0, ryGate(theta0));
-    state = applySingleQubitGate(state, 1, rxGate(theta1));
-    state = applyCNOTGate(state, 1, 0);
-
-    circuitText =
-      `q_0: ──Ry(${theta0.toFixed(2)})──X──\n` +
-      `                         │  \n` +
-      `q_1: ──Rx(${theta1.toFixed(2)})──●──\n`;
-
-  } else if (circuitId === 2) {
-    // Quantum interference wave filter
-    state = applySingleQubitGate(state, 0, H_GATE);
-    state = applySingleQubitGate(state, 1, H_GATE);
-    state = applySingleQubitGate(state, 1, rxGate(thermalNoise));
-    state = applyCNOTGate(state, 0, 1);
-    state = applySingleQubitGate(state, 1, H_GATE);
-
-    const noiseStr = `Rx(${thermalNoise.toFixed(2)})`;
-    const padLine = "═".repeat(noiseStr.length);
-    circuitText =
-      `q_0: ──H──${padLine}──●─────────────\n` +
-      `          ${" ".repeat(noiseStr.length)}  │             \n` +
-      `q_1: ──H──${noiseStr}──X──H──────────\n`;
-
-  } else {
-    // STARK Neural Core quantum superposition synergy circuit
-    const rotVal = (Math.PI / 4) + thermalNoise;
-    state = applySingleQubitGate(state, 0, ryGate(Math.PI / 2));
-    state = applySingleQubitGate(state, 1, X_GATE);
-    state = applyCNOTGate(state, 0, 1);
-    state = applySingleQubitGate(state, 1, ryGate(rotVal));
-    state = applySingleQubitGate(state, 0, H_GATE);
-
-    circuitText =
-      `q_0: ──Ry(1.57)──●──H─────────────\n` +
-      `                 │                \n` +
-      `q_1: ──X─────────X──Ry(${rotVal.toFixed(2)})──\n`;
-  }
-
-  // Calculate measurement probabilites from complex state amplitudes
-  const p00 = Math.min(1.0, Math.max(0.0, state[0].re * state[0].re + state[0].im * state[0].im));
-  const p01 = Math.min(1.0, Math.max(0.0, state[1].re * state[1].re + state[1].im * state[1].im));
-  const p10 = Math.min(1.0, Math.max(0.0, state[2].re * state[2].re + state[2].im * state[2].im));
-  const p11 = Math.min(1.0, Math.max(0.0, state[3].re * state[3].re + state[3].im * state[3].im));
-
-  // Renormalize slightly to guard against floating-point inaccuracies
-  const sum = p00 + p01 + p10 + p11;
-  const scale = sum > 0 ? 1 / sum : 1.0;
-
-  const states = {
-    "00": Number((p00 * scale).toFixed(4)),
-    "01": Number((p01 * scale).toFixed(4)),
-    "10": Number((p10 * scale).toFixed(4)),
-    "11": Number((p11 * scale).toFixed(4))
-  };
-
-  // Calculate Shannon Entropy of register projection
-  let shannonEntropy = 0;
-  for (const prob of [states["00"], states["01"], states["10"], states["11"]]) {
-    if (prob > 0.0001) {
-      shannonEntropy -= prob * Math.log2(prob);
-    }
-  }
-
-  // Derive Synaptic Coherence using dynamic system load resistance
-  const coherenceRating = Math.max(0.4, Math.min(0.999, 0.992 - (thermalNoise * 0.08) - (memUsage * 0.02)));
-
-  return {
-    qubits,
-    circuit: circuitText,
-    states,
-    synapticCoherence: Number(coherenceRating.toFixed(4)),
-    entropy: Number(shannonEntropy.toFixed(4))
-  };
 }
 
 export async function getPowerShellDetails(): Promise<{ policy: string; version: string }> {
@@ -2554,6 +2351,76 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     broadcastUiEvent({ type: 'SYNC_PULSE', timestamp: Date.now() });
   });
 
+  const buildSystemStatsSnapshot = () => {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
+
+    const cpus = os.cpus();
+    const loadAvg = os.loadavg();
+    const cpuUsage = computedCpuUsage || Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100));
+    const finalGpu = osGpuUsage > 0 ? osGpuUsage : 0;
+
+    let finalTmp = "N/A";
+    if (osGpuTemp > 0) {
+      finalTmp = `${osGpuTemp}°C`;
+    } else if (siCpuTemp !== null && siCpuTemp > 0) {
+      finalTmp = `${Math.round(siCpuTemp)}°C`;
+    }
+
+    const powerDraw = siPower !== null && siPower > 0 ? `${siPower} W` : "N/A";
+    const activeFans = siFans.length > 0 ? `${siFans[0]} RPM` : "N/A";
+    const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0 ? `${siCpuVoltage.toFixed(3)} V` : "N/A";
+    const finalFreq = siCpuSpeed !== null && siCpuSpeed > 0 ? `${siCpuSpeed.toFixed(2)}GHz` : "N/A";
+
+    const finalNet = currentRxSpeed > 0 || currentTxSpeed > 0
+      ? `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`
+      : "0KB/s";
+
+    const diskIoString = currentDiskReadSpeed > 0 || currentDiskWriteSpeed > 0
+      ? `${(currentDiskReadSpeed / 1024 / 1024).toFixed(1)} R | ${(currentDiskWriteSpeed / 1024 / 1024).toFixed(1)} W (MB/s)`
+      : "0.0 MB/s WAIT";
+
+    const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
+    const secStatus = apiKey ? "SEC_CLEARED" : "SEC_REQUIRED";
+
+    return {
+      cpu: cpuUsage,
+      mem: memUsage,
+      net: finalNet,
+      diskIo: diskIoString,
+      dbFlushCount: serverDB.getDbFlushCount(),
+      rxSpeed: currentRxSpeed,
+      txSpeed: currentTxSpeed,
+      gpu: finalGpu,
+      tmp: finalTmp,
+      powerDraw,
+      fans: activeFans,
+      voltage: activeVoltage,
+      freq: finalFreq,
+      uptime: Math.round(os.uptime() / 3600),
+      processes: osProcessCount > 0 ? osProcessCount : 0,
+      os: os.platform().toUpperCase(),
+      secStatus,
+      controls: {
+        sandboxPerimeterActive: shieldActive,
+        highPriorityModeActive: reactorOverdrive,
+        databaseLinkAvailable: satelliteLinked,
+        runtimePowerPercent: corePower,
+      },
+      heapHeadroom: calculateHeapHeadroomPercent(
+        process.memoryUsage().heapUsed,
+        v8.getHeapStatistics().heap_size_limit
+      ),
+      nodeVersion: process.version,
+      costLogsCount: serverDB.getCostLogs().length,
+      messagesCount: serverDB.getAllMessages().length,
+      cognitiveCount: serverDB.getCognitiveMemories().length,
+      pingLatencyMs: lastPingLatencyMs,
+      systemLogs: serverDB.getSystemLogs().map(log => `${log.category}/${log.level}:: ${log.message}`),
+    };
+  };
+
   app.get("/api/system/stream", (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -2561,6 +2428,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     
     // Send initial connection heartbeat
     res.write(`data: ${JSON.stringify({ type: 'CONNECTED', timestamp: Date.now() })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'SYSTEM_STATS', stats: buildSystemStatsSnapshot(), timestamp: Date.now() })}\n\n`);
     const rawDatabase = buildDatabaseHealthSnapshot({
       ...serverDB.getSqliteHealth(),
       activeAlertCount: activeMonitoringAlerts.length,
@@ -2597,97 +2465,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
   // --- Real-time Local OS System Stats Endpoint ---
   app.get("/api/system/stats", (req, res) => {
     try {
-      const totalMem = os.totalmem();
-      const freeMem = os.freemem();
-      const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
-      
-      const cpus = os.cpus();
-      const loadAvg = os.loadavg();
-      
-      // Calculate true dynamic CPU usage based on worker metrics
-      let cpuUsage = computedCpuUsage || Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100));
-      
-      // Calculate dynamic memory and GPU base on overcharged matrix
-      let finalMem = memUsage;
-      
-      let finalGpu = osGpuUsage > 0 ? osGpuUsage : 0;
-
-      let finalTmp = "N/A";
-      if (osGpuTemp > 0) {
-        finalTmp = `${osGpuTemp}°C`;
-      } else if (siCpuTemp !== null && siCpuTemp > 0) {
-        finalTmp = `${Math.round(siCpuTemp)}°C`;
-      }
-
-      let powerDraw = "N/A";
-      if (siPower !== null && siPower > 0) {
-        powerDraw = `${siPower} W`;
-      }
-
-      const activeFans = siFans.length > 0 
-        ? `${siFans[0]} RPM` 
-        : "N/A";
-
-      const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0
-        ? `${siCpuVoltage.toFixed(3)} V`
-        : "N/A";
-
-      let finalFreq = "N/A";
-      if (siCpuSpeed !== null && siCpuSpeed > 0) {
-        finalFreq = `${siCpuSpeed.toFixed(2)}GHz`;
-      }
-
-      let finalNet = "0KB/s";
-      if (currentRxSpeed > 0 || currentTxSpeed > 0) {
-        finalNet = `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`;
-      }
-      
-      let diskIoString = "0.0 MB/s WAIT";
-      if (currentDiskReadSpeed > 0 || currentDiskWriteSpeed > 0) {
-        diskIoString = `${(currentDiskReadSpeed / 1024 / 1024).toFixed(1)} R | ${(currentDiskWriteSpeed / 1024 / 1024).toFixed(1)} W (MB/s)`;
-      }
-
-      const clampedLatency = Math.min(5000, Math.max(10, globalLLMLatencyMs));
-      
-      const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
-      const secStatus = apiKey ? "SEC_CLEARED" : "SEC_REQUIRED";
-
-      const now = Date.now();
-      const currentLogs = serverDB.getSystemLogs();
-
-      res.json({
-        cpu: cpuUsage,
-        mem: finalMem,
-        net: finalNet,
-        diskIo: diskIoString,
-        dbFlushCount: serverDB.getDbFlushCount(),
-        rxSpeed: currentRxSpeed,
-        txSpeed: currentTxSpeed,
-        gpu: finalGpu,
-        tmp: finalTmp,
-        powerDraw: powerDraw,
-        fans: activeFans,
-        voltage: activeVoltage,
-        freq: finalFreq,
-        uptime: Math.round(os.uptime() / 3600),
-        processes: osProcessCount > 0 ? osProcessCount : 0,
-        os: os.platform().toUpperCase(),
-        secStatus,
-        shieldActive,
-        reactorOverdrive,
-        satelliteLinked,
-        corePower,
-        heapHeadroom: calculateHeapHeadroomPercent(
-          process.memoryUsage().heapUsed,
-          v8.getHeapStatistics().heap_size_limit
-        ),
-        nodeVersion: process.version,
-        costLogsCount: serverDB.getCostLogs().length,
-        messagesCount: serverDB.getAllMessages().length,
-        cognitiveCount: serverDB.getCognitiveMemories().length,
-        pingLatencyMs: lastPingLatencyMs,
-        systemLogs: serverDB.getSystemLogs().map(log => `${log.category}/${log.level}:: ${log.message}`)
-      });
+      res.json(buildSystemStatsSnapshot());
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2758,9 +2536,9 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       }
       
       if (engine === "azure-quantum" || engine === "stark-quantum") {
-        const quantumData = runQuantumSynapseSimulation();
-        serverDB.addSystemLog('SYS', 'SUCCESS', `HERMES Core Index optimization analyzed: Coherence ${(quantumData.synapticCoherence * 100).toFixed(2)}%`);
-        return res.json({ success: true, engine, ...quantumData });
+        const capability = resolveEngineCapability(engine, process.env as Record<string, string | undefined>);
+        serverDB.addSystemLog('SYS', 'WARN', `Engine ${engine} unavailable: ${capability.reason}`);
+        return res.status(501).json({ success: false, ...capability });
       }
       
       if (engine === "powershell") {
@@ -2792,6 +2570,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         rebootId,
         acknowledgedAt,
         shutdownDelayMs,
+        probeIntervalMs: resolveRebootProbeDelayMs(750),
         phases: buildRebootSequencePlan({
           cpuUsage: computedCpuUsage || 0,
           memoryUsage: memUsage,
@@ -3426,7 +3205,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
 
   // --- External MCP Webhooks API Routes ---
   app.get("/api/mcp/webhooks", (req, res) => {
-    res.json({ success: true, webhooks: serverDB.getMcpWebhooks() });
+    res.json({ success: true, webhooks: serverDB.getMcpWebhooks(), automationCapabilities: buildAutomationCapabilities() });
   });
 
   app.post("/api/mcp/webhooks", (req, res) => {
@@ -3462,7 +3241,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
 
   // --- MCP Routines API Routes ---
   app.get("/api/mcp/routines", (req, res) => {
-    res.json({ success: true, routines: serverDB.getMcpRoutines() });
+    res.json({ success: true, routines: serverDB.getMcpRoutines(), automationCapabilities: buildAutomationCapabilities() });
   });
 
   app.post("/api/mcp/routines", (req, res) => {
@@ -3903,6 +3682,12 @@ JARVIS Synthesis:`;
 
   setInterval(() => {
     try {
+      broadcastUiEvent({
+        type: 'SYSTEM_STATS',
+        stats: buildSystemStatsSnapshot(),
+        timestamp: Date.now(),
+      });
+
       const rawDatabase = buildDatabaseHealthSnapshot({
         ...serverDB.getSqliteHealth(),
         activeAlertCount: activeMonitoringAlerts.length,

@@ -107,12 +107,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const [isSavingCli, setIsSavingCli] = useState<boolean>(false);
 
   // Dynamic system security audit and telemetry fetching
-  const [synapseLatency, setSynapseLatency] = useState<string>('SCANNING...');
-  const [securitySignals, setSecuritySignals] = useState<string>('SCANNING...');
-  const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('SCANNING...');
-  const [encryptionLevel, setEncryptionLevel] = useState<string>('SCANNING...');
-  const [activePort, setActivePort] = useState<string>('SCANNING...');
-  const [sandboxControl, setSandboxControl] = useState<string>('SCANNING...');
+  const [synapseLatency, setSynapseLatency] = useState<string>('Not checked yet');
+  const [securitySignals, setSecuritySignals] = useState<string>('Not checked yet');
+  const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('Not checked yet');
+  const [encryptionLevel, setEncryptionLevel] = useState<string>('Not checked yet');
+  const [activePort, setActivePort] = useState<string>('Not checked yet');
+  const [sandboxControl, setSandboxControl] = useState<string>('Not checked yet');
   const [isAuditing, setIsAuditing] = useState<boolean>(false);
 
   useEffect(() => {
@@ -534,8 +534,6 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     let engineParam = "powershell";
     if (cliId === "copilot") {
       engineParam = "copilot";
-    } else if (cliId === "hermes" || cliId === "claude-code") {
-      engineParam = "stark-quantum";
     }
     
     try {
@@ -557,11 +555,6 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
             `SYS: ISOLATED PHYSICAL BINARY RUNNER ACTIVATED: ${cliId.toUpperCase()}`,
             `Backend API will now natively spawn distinct subprocess using standard CLI '${cliId}'. OpenRouter LLM inference is completely bypassed, sir.`
           );
-        } else if (engineParam === "stark-quantum") {
-          triggerLog(
-            `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
-            `Connected to ${cliId}.`
-          );
         } else {
           triggerLog(
             `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
@@ -574,7 +567,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     } catch {
       triggerLog(
         `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
-        `Active pipeline connected to ${cliId.replace('-', ' ')} protocol successfully.`
+        `Unable to verify a local engine connection for ${cliId.replace('-', ' ')}.`
       );
     }
   };
@@ -2171,8 +2164,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                       onClick={async () => {
                         const updated = { ...settings, elevenLabsKey, openrouterKey, openaiKey, geminiKey };
                         await saveSettings(updated);
-                        setEnvSaveStatus('SAVED TO DATABASE');
-                        setTimeout(() => setEnvSaveStatus(''), 2000);
+                        setEnvSaveStatus(`Saved at ${new Date().toLocaleTimeString()}`);
                       }}
                     >
                       <Key className="w-3 h-3" />

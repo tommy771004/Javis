@@ -11,6 +11,7 @@ export interface RebootSequenceResponse {
   rebootId: string;
   acknowledgedAt: number;
   shutdownDelayMs: number;
+  probeIntervalMs?: number;
   phases: RebootSequencePhase[];
 }
 

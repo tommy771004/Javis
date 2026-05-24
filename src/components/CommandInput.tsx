@@ -76,9 +76,9 @@ export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(f
             <div className="text-cyan-500 tracking-widest border-b border-cyan-950/80 pb-2 mb-1.5 flex items-center justify-between opacity-95 uppercase">
                 <div className="flex items-center font-bold">
                     <Terminal className="w-3.5 h-3.5 mr-2 text-cyan-400" />
-                    {t.lblCommandDirectory}
+                    Talk to Javis
                 </div>
-                <span className="text-[7.5px] text-cyan-600 tracking-[0.2em] font-semibold font-mono">TUP_98</span>
+                <span className="text-[7.5px] text-cyan-600 tracking-[0.16em] font-semibold font-mono">workspace companion</span>
             </div>
 
             <form onSubmit={handleSubmit} className="flex gap-2 relative items-end">
@@ -95,7 +95,7 @@ export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(f
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder={isMicActive ? t.placeholderVoiceActive : t.placeholderTextActive}
+                    placeholder={isMicActive ? 'I am listening. Speak naturally.' : 'Ask me what to do next, or describe the task in plain language.'}
                     rows={1}
                     style={{ resize: 'none', overflowY: 'hidden' }}
                     className="flex-1 bg-cyan-950/10 border border-cyan-900/60 px-3 py-2 text-cyan-100 placeholder:text-cyan-800/60 focus:outline-none focus:border-cyan-500/80 focus:bg-cyan-950/20 text-xs tracking-widest font-mono rounded-sm transition-all leading-[1.5] min-h-[36px]"
@@ -103,7 +103,7 @@ export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(f
                 <button
                     type="submit"
                     className="border border-cyan-900/60 hover:border-cyan-400/80 px-4 text-cyan-500 hover:text-cyan-300 hover:bg-cyan-950/40 active:scale-95 transition-all flex items-center justify-center rounded-sm cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.05)] h-9 flex-shrink-0"
-                    title="Transmit Command (Enter)"
+                    title="Send to Javis"
                 >
                     <Play className="w-3.5 h-3.5 fill-cyan-500/85 hover:fill-cyan-400" />
                 </button>
@@ -121,7 +121,7 @@ export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(f
                     }`}
                 >
                     <Mic className={`w-3.5 h-3.5 ${isMicActive ? 'text-green-400' : 'text-cyan-600'}`} />
-                    {isMicActive ? t.lblVoiceActiveBtn : t.lblVoiceInactiveBtn}
+                    {isMicActive ? 'Listening now' : 'Open voice channel'}
                 </button>
 
                 {/* HTML5 Native Fullscreen Expansion */}
@@ -134,7 +134,7 @@ export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(f
                 </button>
 
                 {/* Hint */}
-                <p className="text-[8px] text-cyan-900 text-center tracking-wider">Enter · Send &nbsp;|&nbsp; Shift+Enter · New Line</p>
+                <p className="text-[8px] text-cyan-800/90 text-center tracking-[0.08em]">A rough instruction is enough. I will help shape it into the next concrete move.</p>
             </div>
         </div>
     );

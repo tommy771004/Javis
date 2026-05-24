@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ShieldAlert, RefreshCw, Cpu, Activity, Zap } from 'lucide-react';
 import { playCalibrationSynth } from '../services/audioSynth';
 import { REBOOT_SEQUENCE_EVENT, resolveRebootProbePhase, type RebootSequencePhase, type RebootSequenceResponse } from '../services/rebootSequence';
+import { resolveRebootProbeDelayMs } from '../services/truthfulCapabilityPolicies';
 
 export function SpectrumRebootOverlay() {
   const [isRebooting, setIsRebooting] = useState(false);
@@ -43,8 +44,8 @@ export function SpectrumRebootOverlay() {
 
     let isSubscribed = true;
     let hasSeenDisconnect = false;
-    let closeTimer: ReturnType<typeof setTimeout> | null = null;
     let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    const probeDelayMs = resolveRebootProbeDelayMs(sequence.probeIntervalMs);
 
     const applyPhaseById = (phaseId: RebootSequencePhase['id']) => {
       applyPhase(sequence.phases.find(phase => phase.id === phaseId));
@@ -89,11 +90,9 @@ export function SpectrumRebootOverlay() {
               progress: 100,
               message: `CTRL: CONTROL PLANE ONLINE. UPTIME ${Math.floor(stats.uptime || 0)}s | SQLITE ${String(dbHealth?.integrityStatus || 'unknown').toUpperCase()} | MCP STATUS REACHABLE.`,
             });
-            closeTimer = setTimeout(() => {
-              if (!isSubscribed) return;
-              setIsRebooting(false);
-              setSequence(null);
-            }, 350);
+            if (!isSubscribed) return;
+            setIsRebooting(false);
+            setSequence(null);
             return;
           }
 
@@ -107,7 +106,7 @@ export function SpectrumRebootOverlay() {
           applyPhaseById('offline');
         }
 
-        await new Promise(resolve => setTimeout(resolve, 350));
+        await new Promise(resolve => setTimeout(resolve, probeDelayMs));
       }
     };
 
@@ -115,16 +114,12 @@ export function SpectrumRebootOverlay() {
       if (!isSubscribed) return;
       setProgress(100);
       setCurrentStep(`CTRL: RESTART MONITOR FAILED: ${err.message}`);
-      closeTimer = setTimeout(() => {
-        if (!isSubscribed) return;
-        setIsRebooting(false);
-        setSequence(null);
-      }, 1000);
+      setIsRebooting(false);
+      setSequence(null);
     });
 
     return () => {
       isSubscribed = false;
-      if (closeTimer) clearTimeout(closeTimer);
       if (watchdogTimer) clearTimeout(watchdogTimer);
     };
   }, [isRebooting, sequence]);

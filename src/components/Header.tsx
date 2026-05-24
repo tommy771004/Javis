@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Bell, Settings, Volume2, VolumeX } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 import { JarvisLogo } from './JarvisLogo';
+import { buildPersonalGreeting } from '../services/personalAssistantPresentation';
 
 export function Header({ 
   onOpenSettings, 
@@ -36,6 +37,8 @@ export function Header({
     return () => window.removeEventListener('identity-updated', updateIdentity);
   }, [t.tStark]);
 
+  const greeting = buildPersonalGreeting(operatorName || t.tStark, time);
+
   return (
     <header className="flex justify-between items-center w-full text-cyan-500 font-mono p-4 pb-2 border-b border-cyan-950 select-none bg-black/40 backdrop-blur-sm">
       {/* Left: JARVIS Brand & Motto */}
@@ -44,7 +47,7 @@ export function Header({
         <JarvisLogo size={32} />
         <div className="flex flex-col">
           <span className="text-base font-bold tracking-[0.25em] text-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.5)]">{t.brandName}</span>
-          <span className="text-[7.5px] tracking-[0.06em] text-cyan-600/80 font-semibold uppercase">{t.brandMotto}</span>
+          <span className="text-[8px] tracking-[0.08em] text-cyan-500/90 font-semibold normal-case">{greeting}</span>
         </div>
       </div>
 

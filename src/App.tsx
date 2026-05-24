@@ -118,7 +118,7 @@ export default function App() {
   const [isThinking, setIsThinking] = useState(false);
   const [isHermesActive, setIsHermesActive] = useState(false);
 
-  // Security Matrix & Permissions settings hooks
+  // Security and permission settings hooks
   const [securitySettings, setSecuritySettings] = useState<SecuritySettings>({
     shellMode: 'manual',
     writeMode: 'manual',
@@ -147,9 +147,9 @@ export default function App() {
           }
         }
         setLogs([
-          "SYS: Connection established with local workstation.",
-          "SYS: JARVIS online [Mark LXXXV].",
-          "SYS: All local security protocols nominal."
+          "SYS: Local workspace connection is ready.",
+          "SYS: Javis is online and watching for your next useful step.",
+          "SYS: Security checks are available in the dashboard when you need them."
         ]);
       })
       .catch(e => {
@@ -278,12 +278,9 @@ export default function App() {
       speakingFrameId = requestAnimationFrame(checkOutputVolume);
     };
 
-    const startDelay = setTimeout(() => {
-      checkOutputVolume();
-    }, 40);
+    speakingFrameId = requestAnimationFrame(checkOutputVolume);
 
     return () => {
-      clearTimeout(startDelay);
       cancelAnimationFrame(speakingFrameId);
     };
   }, [cognitiveState]);
@@ -980,12 +977,10 @@ export default function App() {
   useEffect(() => {
     if (!isMicActive) return;
     stopVoiceBridge();
-    const restartTimer = setTimeout(() => {
-      startVoiceBridge();
-    }, 0);
+    void startVoiceBridge();
 
     return () => {
-      clearTimeout(restartTimer);
+      stopVoiceBridge();
     };
   }, [sttProvider]);
 
@@ -1035,21 +1030,21 @@ export default function App() {
     }
 
     if (next) {
-      const startupMsg = "Switching AI Core to HERMES AGENT intelligence matrix. Closed learning loop active. SQLite state.db mapped via FTS5 indexers. Dynamic cost-aware gateway online.";
+      const startupMsg = "Hermes agent mode is active. I will use workspace memory, task context, and cost-aware routing for the next steps.";
       setLogs(prevLogs => [
         ...prevLogs,
-        "SYS: Initiating core protocol swap...",
-        "SYS: HERMES MATRIX active.",
+        "SYS: Switching into Hermes agent mode.",
+        "SYS: Workspace memory and task context are available.",
         `HERMES: ${startupMsg}`
       ]);
-      speakText("Hermes online. Closed learning loop initialized. How can I assist you, sir?");
+      speakText("Hermes is online. I am ready to help with the next step.");
     } else {
       setLogs(prevLogs => [
         ...prevLogs,
-        "SYS: Deactivating Hermes matrix...",
-        "SYS: JARVIS core online. All systems nominal."
+        "SYS: Returning to Javis companion mode.",
+        "SYS: I will keep the workspace ready for your next instruction."
       ]);
-      speakText("Jarvis protocols fully restored, sir.");
+      speakText("Javis companion mode is ready.");
     }
   };
 
@@ -1298,7 +1293,7 @@ export default function App() {
             errMsg
           ]);
           
-          speakText(`Warning, sir! File write request has been physically blocked by Stark-Defense Matrix. Reason: ${errMsg}`);
+          speakText(`File write request blocked by the configured workspace safety policy. Reason: ${errMsg}`);
           return;
         }
 
@@ -1453,7 +1448,7 @@ export default function App() {
                         ? 'bg-cyan-950/85 text-cyan-400 border border-cyan-500/50' 
                         : 'bg-emerald-950/85 text-emerald-400 border border-emerald-500/50'
                   }`}>
-                    {pendingAction.type === 'execute' ? '⚡ WINDOWS DIRECT EXECUTE' : pendingAction.type === 'create_task' ? '📋 LOCAL DATABASE MATRIX' : '💾 SAFE-BOUND FILESYSTEM PATCH'}
+                    {pendingAction.type === 'execute' ? 'WINDOWS DIRECT EXECUTE' : pendingAction.type === 'create_task' ? 'LOCAL TASK DATABASE' : 'SAFE FILESYSTEM PATCH'}
                   </span>
                 </div>
 
