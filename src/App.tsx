@@ -966,46 +966,65 @@ export default function App() {
     };
   }, []);
 
-  const handleToggleHermes = () => {
-    setIsHermesActive(prev => {
-      const next = !prev;
-      
-      const updatedSettings = {
-        shellMode: next ? 'auto' : 'manual',
-        writeMode: next ? 'auto' : 'manual',
-        taskMode: next ? 'auto' : 'manual',
-        voiceProfile: securitySettings.voiceProfile
-      };
-      setSecuritySettings(updatedSettings as SecuritySettings);
-      localStorage.setItem('jarvis_security_settings', JSON.stringify(updatedSettings));
+  const handleToggleHermes = async () => {
+    const next = !isHermesActive;
+    
+    const updatedSettings: SecuritySettings = {
+      ...securitySettings,
+      shellMode: next ? 'auto' : 'manual',
+      writeMode: next ? 'auto' : 'manual',
+      taskMode: next ? 'auto' : 'manual'
+    };
+    
+    setIsHermesActive(next);
+    setSecuritySettings(updatedSettings);
+    localStorage.setItem('jarvis_security_settings', JSON.stringify(updatedSettings));
 
-      if (next) {
-        const startupMsg = "Switching AI Core to HERMES AGENT intelligence matrix. Closed learning loop active. SQLite state.db mapped via FTS5 indexers. Dynamic cost-aware gateway online.";
-        setLogs(prevLogs => [
-          ...prevLogs,
-          "SYS: Initiating core protocol swap...",
-          "SYS: HERMES MATRIX active.",
-          `HERMES: ${startupMsg}`
-        ]);
-        speakText("Hermes online. Closed learning loop initialized. How can I assist you, sir?");
-      } else {
-        setLogs(prevLogs => [
-          ...prevLogs,
-          "SYS: Deactivating Hermes matrix...",
-          "SYS: JARVIS core online. All systems nominal."
-        ]);
-        speakText("Jarvis protocols fully restored, sir.");
-      }
-      return next;
-    });
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedSettings)
+      });
+    } catch (e) {
+      console.error("Failed to sync settings to server:", e);
+    }
+
+    if (next) {
+      const startupMsg = "Switching AI Core to HERMES AGENT intelligence matrix. Closed learning loop active. SQLite state.db mapped via FTS5 indexers. Dynamic cost-aware gateway online.";
+      setLogs(prevLogs => [
+        ...prevLogs,
+        "SYS: Initiating core protocol swap...",
+        "SYS: HERMES MATRIX active.",
+        `HERMES: ${startupMsg}`
+      ]);
+      speakText("Hermes online. Closed learning loop initialized. How can I assist you, sir?");
+    } else {
+      setLogs(prevLogs => [
+        ...prevLogs,
+        "SYS: Deactivating Hermes matrix...",
+        "SYS: JARVIS core online. All systems nominal."
+      ]);
+      speakText("Jarvis protocols fully restored, sir.");
+    }
   };
 
-  const handleSettingsChange = (newSettings: SecuritySettings) => {
+  const handleSettingsChange = async (newSettings: SecuritySettings) => {
     setSecuritySettings(newSettings);
     if (newSettings.shellMode === 'auto' && newSettings.writeMode === 'auto' && newSettings.taskMode === 'auto') {
       setIsHermesActive(true);
     } else {
       setIsHermesActive(false);
+    }
+
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      });
+    } catch (e) {
+      console.error("Failed to sync settings to server:", e);
     }
   };
 
@@ -1288,19 +1307,6 @@ export default function App() {
     } finally {
       setIsExecutingAction(false);
       setCognitiveState('idle');
-
-      // Cognitive heuristic: Auto-advance task progress after any successful side-effect action
-      // This makes the progress bar truly 'Cognitive' rather than just a manual input
-      setTimeout(() => {
-        fetch('/api/tasks/auto-advance', { method: 'POST' })
-          .then(res => res.json())
-          .then(data => {
-            if (data.success) {
-              window.dispatchEvent(new Event('task-list-updated'));
-            }
-          })
-          .catch(() => {});
-      }, 500);
     }
   };
 

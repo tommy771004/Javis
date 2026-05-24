@@ -198,8 +198,10 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
 
   const pieData = useMemo(() => pie(distribution), [pie, distribution]);
 
-  const handleMouseMove = (e: React.MouseEvent, priorityName: string) => {
-    const rect = e.currentTarget.ownerSVGElement?.getBoundingClientRect() || e.currentTarget.getBoundingClientRect();
+  const handleMouseMove = (e: React.MouseEvent<SVGPathElement, MouseEvent>, priorityName: string) => {
+    const target = e.currentTarget as SVGElement;
+    const ownerSVG = target.ownerSVGElement;
+    const rect = ownerSVG ? ownerSVG.getBoundingClientRect() : target.getBoundingClientRect();
     if (rect) {
       const x = e.clientX - rect.left + 15;
       const y = e.clientY - rect.top - 15;

@@ -1545,8 +1545,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <button
                       onClick={() => {
                         const next = { ...settings, autoRepair: false };
-                        setSettings(next);
-                        if (onSettingsChange) onSettingsChange(next);
+                        saveSettings(next);
                       }}
                       className={`py-2 px-3 text-[10px] border cursor-pointer font-bold rounded flex items-center justify-center gap-2 transition-all ${
                         !settings.autoRepair
@@ -1560,8 +1559,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <button
                       onClick={() => {
                         const next = { ...settings, autoRepair: true };
-                        setSettings(next);
-                        if (onSettingsChange) onSettingsChange(next);
+                        saveSettings(next);
                       }}
                       className={`py-2 px-3 text-[10px] border cursor-pointer font-bold rounded flex items-center justify-center gap-2 transition-all ${
                         settings.autoRepair

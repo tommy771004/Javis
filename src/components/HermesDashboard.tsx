@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import ReactMarkdown from 'react-markdown';
 import { hermesDB, DbSkill, DbCostLog } from '../services/db';
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
 import { useI18n } from '../services/i18n';
+import { Server, Radio, Zap, Sparkles, Trash2, Plus, RefreshCw, Key, Shield, Play } from 'lucide-react';
 
 interface HermesDashboardProps {
   cognitiveState: CognitiveState;
@@ -35,7 +37,7 @@ export function HermesDashboard({
   isMicActive = false
 }: HermesDashboardProps) {
   const { t } = useI18n();
-  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'tasks' | 'gateway' | 'webrtc' | 'docs'>('tasks');
+  const [activeTab, setActiveTab] = useState<'matrix' | 'memory' | 'tasks' | 'gateway' | 'webrtc' | 'docs' | 'mcp'>('tasks');
   const [skills, setSkills] = useState<DbSkill[]>([]);
   
   // Terminal states
@@ -51,6 +53,192 @@ export function HermesDashboard({
   // Task states
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const taskSearchQueryRef = useRef('');
+  const draggingTaskIdRef = useRef<string | null>(null);
+  const lastDragTimeRef = useRef<number>(0);
+  const lastDragIdRef = useRef<string | null>(null);
+
+  // Docs state
+  const [docsContent, setDocsContent] = useState('');
+
+  // Evolution Skill state
+  const [selectedEvolutionSkill, setSelectedEvolutionSkill] = useState<string | null>(null);
+
+  // MCP ecosystem states
+  const [mcpServersText, setMcpServersText] = useState<string>('{\n  "mcpServers": {\n    "example": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-everything"]\n    }\n  }\n}');
+  const [isMcpConnecting, setIsMcpConnecting] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<string>('Standby');
+  const [mcpServers, setMcpServers] = useState<any[]>([]);
+  const [mcpTools, setMcpTools] = useState<any[]>([]);
+  const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
+  const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
+  const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
+  
+  // New entry fields
+  const [newWebhookName, setNewWebhookName] = useState('');
+  const [newWebhookUrl, setNewWebhookUrl] = useState('');
+  const [newRoutineName, setNewRoutineName] = useState('');
+  const [newRoutinePrompt, setNewRoutinePrompt] = useState('');
+
+  const loadMcpData = async () => {
+    try {
+      const statusRes = await fetch('/api/mcp/status');
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        if (data.success) setMcpServers(data.servers || []);
+      }
+      
+      setMcpToolsLoading(true);
+      const toolsRes = await fetch('/api/mcp/tools');
+      if (toolsRes.ok) {
+        const data = await toolsRes.json();
+        if (data.success) setMcpTools(data.tools || []);
+      }
+      setMcpToolsLoading(false);
+
+      const webhooksRes = await fetch('/api/mcp/webhooks');
+      if (webhooksRes.ok) {
+        const data = await webhooksRes.json();
+        if (data.success) setMcpWebhooks(data.webhooks || []);
+      }
+
+      const routinesRes = await fetch('/api/mcp/routines');
+      if (routinesRes.ok) {
+        const data = await routinesRes.json();
+        if (data.success) setMcpRoutines(data.routines || []);
+      }
+    } catch (err) {
+      console.warn('Failed to load MCP ecosystem state:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'mcp') {
+      loadMcpData();
+      const stored = localStorage.getItem('jarvis_mcp_config');
+      if (stored) {
+        setMcpServersText(stored);
+      }
+    }
+  }, [activeTab]);
+
+  const handleMcpConnect = async () => {
+    setIsMcpConnecting(true);
+    setMcpStatus("Initializing connections...");
+    try {
+      localStorage.setItem('jarvis_mcp_config', mcpServersText);
+      const resp = await fetch("/api/mcp/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: mcpServersText })
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setMcpStatus(`[SUCCESS] Registered servers.`);
+        setTerminalLogs(prev => [...prev, `[MCP SYSTEM] Successfully bonded config matrix containing live stdio streams.`]);
+        loadMcpData();
+      } else {
+        setMcpStatus(`[FAULT]: ${data.error}`);
+        setTerminalLogs(prev => [...prev, `[MCP FAULT] Alignment error: ${data.error}`]);
+      }
+    } catch (e: any) {
+      setMcpStatus(`[SYS NULL] Payload error.`);
+    } finally {
+      setIsMcpConnecting(false);
+    }
+  };
+
+  const handleAddWebhook = async () => {
+    if (!newWebhookName || !newWebhookUrl) return;
+    try {
+      const res = await fetch('/api/mcp/webhooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newWebhookName, url: newWebhookUrl })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNewWebhookName('');
+        setNewWebhookUrl('');
+        setTerminalLogs(prev => [...prev, `[MCP WEBHOOK] Registered active routing hook receiver: ${newWebhookName}`]);
+        loadMcpData();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteWebhook = async (id: string, name: string) => {
+    try {
+      await fetch(`/api/mcp/webhooks/${id}`, { method: 'DELETE' });
+      setTerminalLogs(prev => [...prev, `[MCP WEBHOOK] Deleted routing node: ${name}`]);
+      loadMcpData();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleToggleWebhook = async (id: string, active: boolean) => {
+    try {
+      await fetch('/api/mcp/webhooks/' + id + '/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active })
+      });
+      loadMcpData();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleAddRoutine = async () => {
+    if (!newRoutineName || !newRoutinePrompt) return;
+    try {
+      const res = await fetch('/api/mcp/routines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newRoutineName, prompt: newRoutinePrompt })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNewRoutineName('');
+        setNewRoutinePrompt('');
+        setTerminalLogs(prev => [...prev, `[MCP ROUTINE] Successfully compiled shortcut macro prompt: ${newRoutineName}`]);
+        loadMcpData();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteRoutine = async (id: string, name: string) => {
+    try {
+      await fetch(`/api/mcp/routines/${id}`, { method: 'DELETE' });
+      setTerminalLogs(prev => [...prev, `[MCP ROUTINE] Purged prompt sequence: ${name}`]);
+      loadMcpData();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleExecuteRoutine = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/mcp/routines/${id}/execute`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.prompt) {
+        setTerminalLogs(prev => [...prev, `[MCP MACRO] Dispatching macro prompt "${name}" into central pipeline`]);
+        window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    taskSearchQueryRef.current = taskSearchQuery;
+    loadDataFromBackend();
+  }, [taskSearchQuery]);
+
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
     x: number;
@@ -63,11 +251,18 @@ export function HermesDashboard({
   // Close context menu on any outside click or context menu trigger
   useEffect(() => {
     const closeMenu = () => setContextMenu(null);
+    const handleGlobalMouseUp = () => {
+      draggingTaskIdRef.current = null;
+    };
     window.addEventListener('click', closeMenu);
     window.addEventListener('contextmenu', closeMenu);
+    window.addEventListener('pointerup', handleGlobalMouseUp);
+    window.addEventListener('mouseup', handleGlobalMouseUp);
     return () => {
       window.removeEventListener('click', closeMenu);
       window.removeEventListener('contextmenu', closeMenu);
+      window.removeEventListener('pointerup', handleGlobalMouseUp);
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
   }, []);
 
@@ -95,6 +290,10 @@ export function HermesDashboard({
     try {
       const dbSkills = await hermesDB.getSkills();
       setSkills(dbSkills);
+      if (dbSkills.length > 0 && !selectedEvolutionSkill) {
+        const activeOne = dbSkills.find(s => s.status === 'active') || dbSkills[0];
+        setSelectedEvolutionSkill(activeOne.id);
+      }
 
       const stats = await hermesDB.getGatewayStats();
       setBudget(stats.budget);
@@ -112,7 +311,7 @@ export function HermesDashboard({
       setCognitiveMemoriesCount(memoriesCount);
       
       const settingsRes = await fetch('/api/settings');
-      const tasksRes = await fetch('/api/tasks');
+      const tasksRes = await fetch('/api/tasks/search?q=' + encodeURIComponent(taskSearchQueryRef.current));
       
       if (settingsRes.ok) {
         const data = await settingsRes.json();
@@ -129,7 +328,24 @@ export function HermesDashboard({
 
       if (tasksRes.ok) {
         const tasksData = await tasksRes.json();
-        setTasks(tasksData);
+        // Prevent overwriting the Tasks list with server state if the user is currently dragging or within 2.5 seconds of a drag gesture
+        const isActivelyDragging = draggingTaskIdRef.current !== null;
+        const wasRecentlyDragged = (Date.now() - lastDragTimeRef.current) < 2500;
+        
+        if (!isActivelyDragging && !wasRecentlyDragged) {
+          setTasks(tasksData);
+        } else {
+          setTasks(prev => {
+            const activeId = draggingTaskIdRef.current || lastDragIdRef.current;
+            return tasksData.map((t: any) => {
+              if (t.id === activeId) {
+                const localTask = prev.find(pt => pt.id === activeId);
+                return localTask ? { ...t, progress: localTask.progress, status: localTask.status } : t;
+              }
+              return t;
+            });
+          });
+        }
       }
 
       // Sync Terminal Logs with real server-side system logs
@@ -201,6 +417,15 @@ export function HermesDashboard({
 
   useEffect(() => {
     loadDataFromBackend();
+    
+    // Fetch docs once on mount
+    fetch('/api/docs/spec')
+      .then(res => res.json())
+      .then(data => {
+        if (data.content) setDocsContent(data.content);
+      })
+      .catch(err => console.warn('Failed to load docs:', err));
+
     const handleUpdate = () => loadDataFromBackend();
     window.addEventListener('task-list-updated', handleUpdate);
     window.addEventListener('skills-updated', handleUpdate);
@@ -236,13 +461,17 @@ export function HermesDashboard({
   // Real Server-Side Skill Evolution (GEPA) mutation
   const triggerSelfEvolution = () => {
     if (isEvolving) return;
+    if (!selectedEvolutionSkill) {
+      setTerminalLogs(prev => [...prev, '[SYS WARNING] Target skill not selected. Select a skill from the list above.']);
+      return;
+    }
     setIsEvolving(true);
     setCognitiveState('thinking'); // Set HUD to thinking color
     setTerminalLogs(prev => [...prev, '\n--- TRIGGERING DSPy + GEPA SELF-EVOLUTION LOOP ---']);
     setTerminalLogs(prev => [...prev, '[GEPA] Connecting to Cognitive Quantum Matrix via SSE stream...']);
 
     // Initialize EventSource pointing to our new GET SSE endpoint
-    const eventSource = new EventSource('/api/skills/evolve');
+    const eventSource = new EventSource(`/api/skills/evolve?skillId=${selectedEvolutionSkill}`);
 
     eventSource.onmessage = (event) => {
       try {
@@ -354,17 +583,17 @@ export function HermesDashboard({
 
       {/* Tabs Menu */}
       <div className="flex gap-2 mb-4 bg-emerald-950/20 p-1 border border-emerald-900/30">
-        {(['matrix', 'memory', 'tasks', 'gateway', 'webrtc', 'docs'] as const).map(tab => (
+        {(['matrix', 'memory', 'tasks', 'gateway', 'webrtc', 'docs', 'mcp'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`flex-1 py-1.5 text-[9px] xl:text-[10px] tracking-wider xl:tracking-widest text-center transition-all uppercase border ${
+            className={`flex-1 py-1.5 text-[9px] xl:text-[10px] tracking-wider xl:tracking-widest text-center transition-all uppercase border truncate ${
               activeTab === tab 
                 ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[inset_0_0_8px_rgba(16,185,129,0.2)]' 
                 : 'border-transparent text-emerald-600 hover:text-emerald-400 hover:bg-emerald-950/45'
             }`}
           >
-            {tab === 'matrix' ? t.hermesTabLoop : tab === 'memory' ? t.hermesTabFts : tab === 'tasks' ? t.hermesTabTasks : tab === 'gateway' ? t.hermesTabGateway : tab === 'webrtc' ? t.hermesTabVoip : t.hermesTabDocs}
+            {tab === 'mcp' ? 'MCP' : (tab === 'matrix' ? t.hermesTabLoop : tab === 'memory' ? t.hermesTabFts : tab === 'tasks' ? t.hermesTabTasks : tab === 'gateway' ? t.hermesTabGateway : tab === 'webrtc' ? t.hermesTabVoip : t.hermesTabDocs)}
           </button>
         ))}
       </div>
@@ -462,11 +691,8 @@ export function HermesDashboard({
                 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-cyan">
                   {(() => {
-                    const filteredTasks = tasks.filter(task => 
-                      task.description.toLowerCase().includes(taskSearchQuery.toLowerCase())
-                    );
-                    return filteredTasks.length > 0 ? (
-                      filteredTasks.map(task => (
+                    return tasks.length > 0 ? (
+                      tasks.map(task => (
                         <div 
                           key={task.id} 
                           className={`border p-3 flex flex-col gap-2 transition-all cursor-pointer relative select-none ${
@@ -542,22 +768,26 @@ export function HermesDashboard({
                                   max="100" 
                                   step="5"
                                   value={task.progress || 0}
+                                  onPointerDown={() => {
+                                    draggingTaskIdRef.current = task.id;
+                                    lastDragIdRef.current = task.id;
+                                    lastDragTimeRef.current = Date.now();
+                                  }}
+                                  onPointerUp={() => {
+                                    draggingTaskIdRef.current = null;
+                                    lastDragTimeRef.current = Date.now();
+                                  }}
                                   onChange={async (e) => {
                                     const newProgress = parseInt(e.target.value);
+                                    lastDragIdRef.current = task.id;
+                                    lastDragTimeRef.current = Date.now();
                                     // Live optimistic update for seamless experience
                                     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: newProgress, status: newProgress === 100 ? 'Completed' : t.status } : t));
-                                    const res = await fetch(`/api/tasks/${task.id}`, {
+                                    await fetch(`/api/tasks/${task.id}`, {
                                       method: 'PUT',
                                       headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ progress: newProgress })
                                     });
-                                    if (res.ok) {
-                                      // Soft refresh list
-                                      const freshRes = await fetch('/api/tasks');
-                                      if (freshRes.ok) {
-                                        setTasks(await freshRes.json());
-                                      }
-                                    }
                                   }}
                                   className="flex-1 h-1 bg-emerald-950 accent-emerald-400 border border-emerald-900/60 rounded-sm cursor-pointer"
                                 />
@@ -938,7 +1168,11 @@ export function HermesDashboard({
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   {skills.map(skill => (
-                    <div key={skill.id} className="border border-emerald-900/40 p-2 bg-emerald-950/15 relative">
+                    <div 
+                      key={skill.id} 
+                      className={`border p-2 relative cursor-pointer hover:bg-emerald-900/40 transition-all ${selectedEvolutionSkill === skill.id ? 'border-emerald-400 bg-emerald-900/50 shadow-[0_0_8px_rgba(16,185,129,0.4)]' : 'border-emerald-900/40 bg-emerald-950/15'}`}
+                      onClick={() => setSelectedEvolutionSkill(skill.id)}
+                    >
                       <div className="flex justify-between items-center text-[10px] mb-1">
                         <span className="text-emerald-300 font-bold">{skill.name}</span>
                         <span className="text-emerald-500 font-bold bg-emerald-950 px-1 border border-emerald-900/50">{skill.version}</span>
@@ -1287,58 +1521,321 @@ export function HermesDashboard({
               transition={{ duration: 0.2 }}
               className="space-y-4 text-emerald-400/90 leading-relaxed text-[10px] pb-4"
             >
-              <div className="border border-emerald-900/40 p-3 bg-emerald-950/15 space-y-3 font-mono max-h-[380px] overflow-y-auto scrollbar-cyan pr-2">
-                <div>
-                  <h4 className="text-emerald-300 font-bold text-xs tracking-wider border-b border-emerald-900/50 pb-1.5 uppercase mb-1">
-                    NousResearch Hermes-Agent Specifications
-                  </h4>
-                  <p className="opacity-90 leading-relaxed">
-                    Hermes Agent is an autonomous AI agent framework focusing on <strong>experience-driven evolution</strong>. Unlike stateless session setups, it records historical traces, parses failure nodes using DSPy, and updates its core system instructions dynamically.
-                  </p>
+              <div className="border border-emerald-900/40 p-3 bg-emerald-950/15 space-y-3 font-mono max-h-[380px] overflow-y-auto scrollbar-cyan pr-2 markdown-body custom-markdown">
+                {docsContent ? (
+                  <ReactMarkdown>{docsContent}</ReactMarkdown>
+                ) : (
+                  <div className="text-emerald-700/80 italic text-center py-4">Loading documentation...</div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'mcp' && (
+            <motion.div
+              key="mcp"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+              className="space-y-4 text-emerald-400/90 leading-relaxed text-[10px] pb-4"
+            >
+              {/* Header Info */}
+              <div className="border border-emerald-900/40 p-3 bg-emerald-950/15 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="text-[11px] font-bold tracking-widest text-emerald-300 uppercase flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5 text-emerald-400" />
+                    MODEL CONTEXT PROTOCOL (MCP) INTEGRATION HUB
+                  </div>
+                  <div className="text-[8px] text-emerald-600 tracking-wider">
+                    Orchestrate local stdio processes, custom external webhooks, and trigger context-aware execution macros.
+                  </div>
+                </div>
+                <button
+                  onClick={loadMcpData}
+                  className="px-3 py-1 bg-emerald-950/45 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[9px] uppercase font-bold tracking-wider transition-all flex items-center gap-1.5 shrink-0 self-start md:self-auto"
+                >
+                  <RefreshCw className="w-2.5 h-2.5 animate-spin-slow" />
+                  Reload Core
+                </button>
+              </div>
+
+              {/* Grid System */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                {/* CONFIG & TOOLS (Left column takes 7 cols) */}
+                <div className="lg:col-span-7 space-y-4">
+                  {/* MCP Servers Config */}
+                  <div className="border border-emerald-900/40 p-3 bg-[#021008] space-y-3">
+                    <div className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase border-b border-emerald-900/40 pb-1.5 flex justify-between items-center">
+                      <span>Server Config (JSON/stdio alignment)</span>
+                      <span className="flex items-center gap-1 text-[8px] tracking-wide text-emerald-500 pr-1">
+                        <span className={`w-1.5 h-1.5 rounded-full ${mcpStatus.includes('SUCCESS') ? 'bg-emerald-400 shadow-[0_0_4px_#34d399]' : 'bg-amber-400 animate-pulse'}`}></span>
+                        {mcpStatus}
+                      </span>
+                    </div>
+
+                    <p className="text-[8px] text-emerald-600 leading-normal">
+                      Child configuration array for tool spawning. Format matches standard Claude Desktop config.
+                    </p>
+
+                    <textarea
+                      value={mcpServersText}
+                      onChange={(e) => setMcpServersText(e.target.value)}
+                      className="w-full h-[150px] bg-black/60 border border-emerald-900/50 rounded px-2.5 py-2 text-[10px] text-emerald-400 font-mono tracking-wider focus:outline-none focus:border-emerald-500 focus:shadow-[0_0_8px_rgba(16,185,129,0.15)] scrollbar-cyan"
+                      spellCheck="false"
+                    />
+
+                    <div className="flex flex-wrap gap-2 justify-between items-center">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setMcpServersText(JSON.stringify({
+                            mcpServers: {
+                              "sqlite": {
+                                "command": "npx",
+                                "args": ["-y", "@modelcontextprotocol/server-sqlite"],
+                                "env": { "SQLITE_DB_PATH": "./mcp_database.db" }
+                              }
+                            }
+                          }, null, 2))}
+                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition"
+                        >
+                          + SQLite Preset
+                        </button>
+                        <button
+                          onClick={() => setMcpServersText(JSON.stringify({
+                            mcpServers: {
+                              "everything": {
+                                "command": "npx",
+                                "args": ["-y", "@modelcontextprotocol/server-everything"]
+                              }
+                            }
+                          }, null, 2))}
+                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition"
+                        >
+                          + Everything Preset
+                        </button>
+                      </div>
+
+                      <button
+                        onClick={handleMcpConnect}
+                        disabled={isMcpConnecting}
+                        className="px-3.5 py-1 bg-emerald-900/40 hover:bg-emerald-500/20 border border-emerald-500/50 hover:border-emerald-400 text-emerald-300 text-[9px] uppercase tracking-wider font-bold transition-all disabled:opacity-50"
+                      >
+                        {isMcpConnecting ? 'Aligning...' : 'Synchronize Servers'}
+                      </button>
+                    </div>
+
+                    {/* Active Running Instances */}
+                    <div className="border border-emerald-900/30 p-2.5 bg-emerald-950/5 space-y-2">
+                      <div className="text-[8px] text-emerald-500 uppercase font-bold tracking-wider">Active Instances ({mcpServers.length})</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {mcpServers.length > 0 ? (
+                          mcpServers.map((srv, idx) => (
+                            <div key={idx} className="border border-emerald-900/50 p-2 bg-black/40 flex justify-between items-center">
+                              <div className="space-y-0.5">
+                                <span className="font-bold text-emerald-300 text-[9px] uppercase block">{srv.name}</span>
+                                <span className="text-[8px] text-emerald-600 block">{srv.toolCount || 0} Tools Loaded</span>
+                              </div>
+                              <span className={`px-1.5 py-0.5 text-[7px] font-bold border ${
+                                srv.status === 'connected' 
+                                  ? 'border-green-800 bg-green-950/10 text-green-400' 
+                                  : srv.status === 'connecting'
+                                  ? 'border-amber-800 bg-amber-950/10 text-amber-500 animate-pulse'
+                                  : 'border-red-800 bg-red-950/10 text-red-500'
+                              } uppercase`}>
+                                {srv.status}
+                              </span>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-emerald-700/60 italic text-[8px] col-span-2 py-1 text-center">No active stdio connection nodes. Adjust server settings & click reload.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Discovered Context Tools */}
+                  <div className="border border-emerald-900/40 p-3 bg-[#021008] space-y-3">
+                    <div className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase border-b border-emerald-900/40 pb-1.5 flex items-center justify-between">
+                      <span className="flex items-center gap-1"><Sparkles className="w-3 h-3 text-emerald-400" /> Loaded Tools ({mcpTools.length})</span>
+                      {mcpToolsLoading && <span className="text-[8px] text-emerald-500 animate-pulse font-mono font-bold uppercase">Scanning process streams...</span>}
+                    </div>
+
+                    <div className="max-h-[220px] overflow-y-auto scrollbar-cyan pr-1 divide-y divide-emerald-950">
+                      {mcpTools.length > 0 ? (
+                        mcpTools.map((tool, index) => (
+                          <div key={index} className="py-2.5 hover:bg-emerald-950/10 px-1 transition-colors">
+                            <div className="flex justify-between items-center gap-2 mb-1">
+                              <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider">{tool.name}</span>
+                              <span className="text-[7px] text-emerald-600 bg-emerald-950 border border-emerald-900/50 px-1.5 font-bold rounded-sm py-0.5">
+                                Source: {tool._server}
+                              </span>
+                            </div>
+                            <p className="text-[9px] text-emerald-600 leading-normal mb-1.5">{tool.description}</p>
+                            
+                            {/* Parameters Schema Spec */}
+                            {tool.inputSchema?.properties && (
+                              <div className="bg-black/30 p-1.5 border border-emerald-950/30 font-mono text-[7.5px] text-emerald-500/80 leading-relaxed max-h-[80px] overflow-y-auto pr-1">
+                                <span className="text-emerald-600 font-bold">Args schema:</span>
+                                <ul className="list-disc pl-3.5 mt-0.5 space-y-0.5">
+                                  {Object.entries(tool.inputSchema.properties).map(([propName, propDef]: [string, any]) => (
+                                    <li key={propName}>
+                                      <span className="text-emerald-400 font-bold">{propName}</span> ({propDef.type || 'any'}
+                                      {tool.inputSchema.required?.includes(propName) && <span className="text-amber-500/80 font-bold">*</span>})
+                                      {propDef.description ? `: ${propDef.description}` : ''}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-emerald-700/80 italic text-center py-6 text-[9px]">No context skills loaded. Connect custom MCP server nodes to load schema definitions.</div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
-                <div>
-                  <h5 className="text-emerald-300 font-bold border-l-2 border-emerald-500 pl-1.5 mb-1.5 uppercase tracking-wide">
-                    1. Three-Layer Memory Persistence
-                  </h5>
-                  <ul className="list-disc pl-4 space-y-1 opacity-80">
-                    <li><strong>Session Context:</strong> Auto-compresses tokens when context window boundaries are met.</li>
-                    <li><strong>SQLite/FTS5 Database:</strong> Virtual key-text matching indices across full conversation histories, retrieving files/traces in sub-10ms intervals.</li>
-                    <li><strong>Plain Markdown Profiles:</strong> Persists state using readable markdown files (<code className="text-emerald-300">USER.md</code> & <code className="text-emerald-300">MEMORY.md</code>).</li>
-                  </ul>
-                </div>
+                {/* WEBHOOKS & PROMPT MACROS (Right column takes 5 cols) */}
+                <div className="lg:col-span-5 space-y-4">
+                  {/* Webhook API Hooks */}
+                  <div className="border border-emerald-900/40 p-3 bg-[#021008] space-y-3">
+                    <div className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase border-b border-emerald-900/40 pb-1.5 flex items-center gap-1">
+                      <Radio className="w-3.5 h-3.5 text-emerald-400" />
+                      External Webhooks ({mcpWebhooks.length})
+                    </div>
 
-                <div>
-                  <h5 className="text-emerald-300 font-bold border-l-2 border-emerald-500 pl-1.5 mb-1.5 uppercase tracking-wide">
-                    2. Dynamic Skill Curation Standard
-                  </h5>
-                  <p className="opacity-80 leading-normal mb-1.5">
-                    Successful workflows are packaged into reusable skills conforming to the <code className="text-emerald-300">agentskills.io</code> specification. Injected on-the-fly, avoiding repetitious context discovery.
-                  </p>
-                </div>
+                    {/* New Webhook Creation */}
+                    <div className="border border-emerald-950/70 p-2.5 bg-black/20 rounded-xs space-y-2">
+                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Add Distributed Webhook Node</span>
+                      
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          placeholder="Name (e.g. Server-Node-B)"
+                          value={newWebhookName}
+                          onChange={(e) => setNewWebhookName(e.target.value)}
+                          className="w-full bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Node URL (https://...)"
+                          value={newWebhookUrl}
+                          onChange={(e) => setNewWebhookUrl(e.target.value)}
+                          className="w-full bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      
+                      <button
+                        onClick={handleAddWebhook}
+                        className="w-full py-1 bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[8.5px] rounded-xs uppercase font-bold tracking-wider transition-all flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" /> Bind Node
+                      </button>
+                    </div>
 
-                <div>
-                  <h5 className="text-emerald-300 font-bold border-l-2 border-emerald-500 pl-1.5 mb-1.5 uppercase tracking-wide">
-                    3. GEPA evolutionary pipelines
-                  </h5>
-                  <p className="opacity-80 leading-normal">
-                    Genetic-Pareto Prompt Evolution utilizes trace evaluation sets, runs mutations, filters signature changes based on Pareto cost constraints, and patches the system configurations to boost overall accuracy.
-                  </p>
-                </div>
+                    {/* Webhooks list */}
+                    <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                      {mcpWebhooks.length > 0 ? (
+                        mcpWebhooks.map((wh) => (
+                          <div key={wh.id} className="bg-black/40 border border-emerald-900/30 p-2 flex justify-between items-center gap-2 group hover:border-emerald-700/50 transition-colors">
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              {/* Trigger Switch */}
+                              <button
+                                onClick={() => handleToggleWebhook(wh.id, !wh.active)}
+                                className="relative flex items-center justify-center cursor-pointer select-none shrink-0"
+                              >
+                                <div className={`w-3.5 h-3.5 rounded-xs border ${wh.active ? 'bg-emerald-500 border-emerald-400' : 'bg-transparent border-emerald-800'} transition-all`} />
+                                {wh.active && <div className="absolute inset-0 bg-emerald-200/10 blur-[1px]" />}
+                              </button>
+                              
+                              <div className="text-[9px] leading-tight overflow-hidden">
+                                <span className={`font-bold block truncate tracking-wide ${wh.active ? 'text-emerald-300 font-bold' : 'text-emerald-600 line-through'}`}>
+                                  {wh.name}
+                                </span>
+                                <span className="text-[7.5px] text-emerald-600 block truncate">{wh.url}</span>
+                              </div>
+                            </div>
+                            
+                            <button
+                              onClick={() => handleDeleteWebhook(wh.id, wh.name)}
+                              className="p-1 border border-transparent hover:border-emerald-900/50 text-emerald-700 hover:text-red-400 transition-colors hover:bg-emerald-950/45"
+                              title="Delete webhook"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No external webhook endpoints configured. Webhook triggers inactive.</div>
+                      )}
+                    </div>
+                  </div>
 
-                <div>
-                  <h5 className="text-emerald-300 font-bold border-l-2 border-emerald-500 pl-1.5 mb-1.5 uppercase tracking-wide">
-                    4. Command-Line Core CLI
-                  </h5>
-                  <div className="grid grid-cols-2 gap-1 border border-emerald-950 p-2 text-[9px] bg-black/20 font-mono">
-                    <div><code className="text-emerald-300">hermes chat</code></div>
-                    <div>Launch TUI/CLI chat</div>
-                    <div><code className="text-emerald-300">hermes model</code></div>
-                    <div>Interactive setup</div>
-                    <div><code className="text-emerald-300">hermes skills</code></div>
-                    <div>Manage curation list</div>
-                    <div><code className="text-emerald-300">hermes doctor</code></div>
-                    <div>Run diagnostic check</div>
+                  {/* Macros Routines */}
+                  <div className="border border-emerald-900/40 p-3 bg-[#021008] space-y-3">
+                    <div className="text-[10px] text-emerald-400 font-bold tracking-widest uppercase border-b border-emerald-900/40 pb-1.5 flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                      Prompt Macros ({mcpRoutines.length})
+                    </div>
+
+                    {/* New Routine creation */}
+                    <div className="border border-emerald-950/70 p-2.5 bg-black/20 rounded-xs space-y-2">
+                      <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-wider block">Compile Prompt Macro Sequence</span>
+                      <input
+                        type="text"
+                        placeholder="Macro Identifier (e.g. Audit Logs)"
+                        value={newRoutineName}
+                        onChange={(e) => setNewRoutineName(e.target.value)}
+                        className="w-full bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500"
+                      />
+                      <textarea
+                        placeholder="Define sequence prompt payload..."
+                        value={newRoutinePrompt}
+                        onChange={(e) => setNewRoutinePrompt(e.target.value)}
+                        className="w-full h-12 bg-black/60 border border-emerald-900/50 rounded px-2 py-1 text-[9px] text-emerald-100 placeholder:text-emerald-800 focus:outline-none focus:border-emerald-500 font-mono resize-none text-[8.5px]"
+                      />
+                      <button
+                        onClick={handleAddRoutine}
+                        className="w-full py-1 bg-emerald-950/60 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[8.5px] rounded-xs uppercase font-bold tracking-wider transition-all flex items-center justify-center gap-1"
+                      >
+                        <Plus className="w-3 h-3" /> Register Macro
+                      </button>
+                    </div>
+
+                    {/* Routines list */}
+                    <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                      {mcpRoutines.length > 0 ? (
+                        mcpRoutines.map((routine) => (
+                          <div key={routine.id} className="bg-black/40 border border-emerald-900/40 p-2.5 rounded-xs flex flex-col gap-2 group hover:border-emerald-700/40 transition-colors">
+                            <div className="flex justify-between items-start">
+                              <span className="text-[10px] text-emerald-300 font-bold uppercase tracking-wider">{routine.name}</span>
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={() => handleExecuteRoutine(routine.id, routine.name)}
+                                  className="px-2 py-0.5 bg-emerald-950 border border-emerald-800 hover:bg-emerald-500/10 text-emerald-300 text-[8px] uppercase tracking-wide flex items-center gap-0.5 transition-colors font-bold"
+                                >
+                                  <Play className="w-2 h-2 text-emerald-400" /> Dispatch
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteRoutine(routine.id, routine.name)}
+                                  className="p-1 border border-transparent hover:border-emerald-900/50 text-emerald-700 hover:text-red-400 transition-colors hover:bg-emerald-950/45"
+                                  title="Purge"
+                                >
+                                  <Trash2 className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            </div>
+                            <p className="font-mono text-[7.5px] text-emerald-600 bg-black/30 p-1.5 border border-emerald-950 italic whitespace-pre-wrap break-all leading-relaxed max-h-[50px] overflow-y-auto scrollbar-cyan select-all">
+                              {routine.prompt}
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-emerald-700/60 italic text-center py-4 text-[8.5px]">No custom macros compiled in cognitive banks.</div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

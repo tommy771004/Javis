@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload } from 'lucide-react';
+import { Upload, FileText, FileJson, FileCode, FileImage, FileArchive, File as FileIcon } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 
 export function FileUpload() {
@@ -8,8 +8,10 @@ export function FileUpload() {
     const [statusText, setStatusText] = useState('');
     const [isUploading, setIsUploading] = useState(false);
     const [uploadSuccess, setUploadSuccess] = useState(false);
+    const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
     // Advanced local document query states
+
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [isSearching, setIsSearching] = useState(false);
@@ -55,6 +57,7 @@ export function FileUpload() {
     const handleFile = async (file: File) => {
         setIsUploading(true);
         setUploadSuccess(false);
+        setUploadedFile(null);
         setStatusText(`Reading ${file.name}...`);
 
         try {
@@ -77,6 +80,7 @@ export function FileUpload() {
                 if (response.ok) {
                     const data = await response.json();
                     setUploadSuccess(true);
+                    setUploadedFile(file);
                     setStatusText(`SUCCESS: ${file.name} saved inside ${data.filePath} and indexed.`);
                 } else {
                     const err = await response.json().catch(() => ({}));
@@ -95,6 +99,7 @@ export function FileUpload() {
         } catch (err: any) {
             console.error(err);
             setUploadSuccess(false);
+            setUploadedFile(null);
             setStatusText(`ERROR: Failed to upload file. ${err.message}`);
             setIsUploading(false);
         }
@@ -123,6 +128,35 @@ export function FileUpload() {
         fileInputRef.current?.click();
     };
 
+    const renderIcon = () => {
+        const baseClass = `w-5 h-5 mb-1.5 transition-opacity ${
+            isUploading 
+                ? 'animate-bounce text-amber-500' 
+                : uploadSuccess 
+                    ? 'text-green-400' 
+                    : 'opacity-60 group-hover:opacity-100'
+        }`;
+        
+        if (uploadSuccess && uploadedFile) {
+            const ext = uploadedFile.name.split('.').pop()?.toLowerCase() || '';
+            if (['js', 'ts', 'tsx', 'jsx', 'py', 'html', 'css'].includes(ext)) {
+                return <FileCode className={baseClass} strokeWidth={1.5} />;
+            } else if (['json'].includes(ext)) {
+                return <FileJson className={baseClass} strokeWidth={1.5} />;
+            } else if (['png', 'jpg', 'jpeg', 'svg', 'gif', 'webp'].includes(ext)) {
+                return <FileImage className={baseClass} strokeWidth={1.5} />;
+            } else if (['zip', 'tar', 'gz', 'rar'].includes(ext)) {
+                return <FileArchive className={baseClass} strokeWidth={1.5} />;
+            } else if (['txt', 'md', 'csv', 'pdf', 'doc', 'docx'].includes(ext)) {
+                return <FileText className={baseClass} strokeWidth={1.5} />;
+            } else {
+                return <FileIcon className={baseClass} strokeWidth={1.5} />;
+            }
+        }
+        
+        return <Upload className={baseClass} strokeWidth={1.5} />;
+    };
+
     return (
         <div className="flex flex-col mb-4 font-mono text-[11px] select-none space-y-3">
             <div className="text-cyan-500 tracking-widest border-b border-cyan-800/50 pb-2 mb-2 flex items-center opacity-80 uppercase">
@@ -148,13 +182,7 @@ export function FileUpload() {
                             : 'border-cyan-800/50 hover:border-cyan-500/50 text-cyan-600'
                 }`}
             >
-                <Upload className={`w-5 h-5 mb-1.5 transition-opacity ${
-                    isUploading 
-                        ? 'animate-bounce text-amber-500' 
-                        : uploadSuccess 
-                            ? 'text-green-400' 
-                            : 'opacity-60 group-hover:opacity-100'
-                }`} strokeWidth={1.5} />
+                {renderIcon()}
                 
                 <div className="tracking-[0.12em] px-2 text-center text-[9.5px]">
                     {isUploading 

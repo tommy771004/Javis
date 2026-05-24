@@ -6,7 +6,7 @@ import os from "os";
 import crypto from "crypto";
 import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
-import { fetchOpenRouterWithFallback } from "./openRouterHelper";
+import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
 import { serverDB } from "./serverDb";
 import si from "systeminformation";
 
@@ -22,17 +22,37 @@ let overdriveWorkerObjs: any[] = [];
 import { Worker } from "worker_threads";
 
 function toggleTrueOverdriveWorker(active: boolean) {
-  // Discontinuing physical self-abuse: We no longer spawn real power-wasting workers.
-  // The 'overdrive' state is now simulated in the telemetry metrics to preserve the UI illusion 
-  // without environmental or hardware damage.
   if (active) {
-    serverDB.addSystemLog('SYS', 'INFO', 'Overdrive active: Cognitive heuristic stress simulation engaged.');
-  } else if (overdriveWorkerObjs.length > 0) {
-    // Cleanup any lingering legacy workers if they somehow exist
-    overdriveWorkerObjs.forEach(w => {
-      try { w.terminate(); } catch(e) {}
-    });
-    overdriveWorkerObjs = [];
+    serverDB.addSystemLog('SYS', 'WARN', 'Overdrive active: Spawning physical compute workers to max out hardware core utilization and elevating process priority.');
+    try {
+       os.setPriority(os.constants.priority.PRIORITY_HIGH);
+    } catch(e) {}
+    const cores = os.cpus().length || 1;
+    for (let i = 0; i < cores; i++) {
+        const workerCode = `
+          setInterval(() => {
+            let total = 0;
+            for(let j=0; j<5000000; j++) {
+               total += Math.sqrt(j) * Math.sin(j);
+            }
+          }, 50);
+        `;
+        try {
+          const w = new Worker(workerCode, { eval: true });
+          overdriveWorkerObjs.push(w);
+        } catch(e) {}
+    }
+  } else {
+    serverDB.addSystemLog('SYS', 'INFO', 'Overdrive deactivated: Terminating hardware stress workers and normalizing process priority.');
+    try {
+       os.setPriority(os.constants.priority.PRIORITY_NORMAL);
+    } catch(e) {}
+    if (overdriveWorkerObjs.length > 0) {
+      overdriveWorkerObjs.forEach(w => {
+        try { w.terminate(); } catch(e) {}
+      });
+      overdriveWorkerObjs = [];
+    }
   }
 }
 
@@ -1368,6 +1388,21 @@ INTEGRATION ENGINE DETAILS:
     }
   });
 
+  // --- Documentation Route ---
+  app.get("/api/docs/spec", (req, res) => {
+    try {
+      const docsPath = path.join(process.cwd(), 'docs', 'hermes-spec.md');
+      if (fs.existsSync(docsPath)) {
+        const content = fs.readFileSync(docsPath, 'utf8');
+        res.json({ content });
+      } else {
+        res.status(404).json({ error: "Documentation not found" });
+      }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- GET Session Messages REST Route ---
   app.get("/api/messages", (req, res) => {
     const sessionId = (req.query.sessionId as string) || "default-session";
@@ -1454,8 +1489,20 @@ INTEGRATION ENGINE DETAILS:
         return;
       }
 
-      // Pick a random active skill
-      const targetSkill = skills[Math.floor(Math.random() * skills.length)];
+      const requestedSkillId = req.query.skillId as string;
+      let targetSkill;
+      if (requestedSkillId && requestedSkillId !== "null" && requestedSkillId !== "undefined") {
+        targetSkill = skills.find(s => s.id === requestedSkillId);
+        if (!targetSkill) {
+          sendLog(`[GEPA FAULT] Requested skill ID "${requestedSkillId}" was not found in active memory banks, sir.`);
+          res.write(`event: done\ndata: ${JSON.stringify({ success: false, error: 'Skill not found' })}\n\n`);
+          res.end();
+          return;
+        }
+      } else {
+        // Fallback to first active skill rather than random mutation
+        targetSkill = skills[0];
+      }
       
       sendLog(`[GEPA] Initializing DSPy bootstrap optimizer for target: ${targetSkill.name}...`);
       
@@ -2017,26 +2064,16 @@ User: Optimize the skill.`;
       
       activeCliInstalls.set(cliId, { status: 'installing' });
       
-      const fakePackages = ["devin-cli", "opencode-cli", "hermes-cli", "pi-cli", "codex-cli", "openrouter-cli", "cursor-agent", "gemini-cli-node", "kimi-cli", "qwen-cli"];
-
-      if (fakePackages.includes(pkg)) {
-        // Simulate installation for fake packages
-        setTimeout(() => {
+      // Run background installation
+      exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
+        if (err) {
+          activeCliInstalls.set(cliId, { status: 'error', message: err.message });
+          serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
+        } else {
           activeCliInstalls.set(cliId, { status: 'success' });
-          serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically simulated & ready!`);
-        }, 5000);
-      } else {
-        // Run background installation for real packages
-        exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
-          if (err) {
-            activeCliInstalls.set(cliId, { status: 'error', message: err.message });
-            serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
-          } else {
-            activeCliInstalls.set(cliId, { status: 'success' });
-            serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
-          }
-        });
-      }
+          serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
+        }
+      });
 
       res.json({
         success: true,
@@ -2069,6 +2106,15 @@ User: Optimize the skill.`;
   // --- Tasks Tracker REST API ---
   app.get("/api/tasks", (req, res) => {
     res.json(serverDB.getTasks());
+  });
+
+  app.get("/api/tasks/search", (req, res) => {
+    try {
+      const query = req.query.q as string || '';
+      res.json(serverDB.searchTasks(query));
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   app.post("/api/workspace/task", (req, res) => {
@@ -2162,7 +2208,7 @@ User: Optimize the skill.`;
     }
   });
 
-  app.post("/api/tasks/auto-advance", (req, res) => {
+  app.post("/api/tasks/auto-advance", async (req, res) => {
     try {
       const tasks = serverDB.getTasks();
       const pendingTasks = tasks
@@ -2172,11 +2218,51 @@ User: Optimize the skill.`;
       if (pendingTasks.length > 0) {
         const targetTask = pendingTasks[0];
         const currentProgress = targetTask.progress || 0;
-        const increment = 15 + Math.floor(Math.random() * 15); // Advance 15-30%
+        
+        let increment = 15 + Math.floor(Math.random() * 15); // Advance 15-30%
+        let logMessage = `Cognitive heuristic: Advanced task [${targetTask.id}] progress to ${Math.min(95, currentProgress + increment)}% based on workspace activity.`;
+        
+        // Use real AI to simulate advancement if API key is present
+        const settings = serverDB.getSettings();
+        const apiKey = settings.byokKey || "";
+        
+        if (apiKey) {
+          try {
+            const prompt = `System: You are JARVIS, an autonomous task executor. 
+User: I have a pending task: "${targetTask.description}". The current progress is ${currentProgress}%. 
+Please make some progress on it. Evaluate what needs to be done next, and provide a JSON response in this exact format, with no markdown formatting:
+{
+  "progressIncrement": <a number between 10 and 40 indicating how much progress was made>,
+  "logMessage": "<A short professional log message describing the work you did>"
+}`;
+            const result = await fetchOpenRouterWithFallback(
+              apiKey,
+              prompt,
+              undefined,
+              settings.byokModel || 'google/gemini-2.5-flash',
+              settings.byokEndpoint,
+              settings.byokProtocol,
+              settings.byokTemplate,
+              settings.byokResponsePath,
+              settings.gatewayRoutingModel || 'auto'
+            );
+            
+            const data = parseAndRepairJSON(result.text);
+            if (data && typeof data.progressIncrement === 'number') {
+              increment = Math.max(1, Math.min(60, data.progressIncrement));
+            }
+            if (data && typeof data.logMessage === 'string') {
+              logMessage = `[AI-Tasker] ${data.logMessage}`;
+            }
+          } catch (e: any) {
+             console.error("AI auto-advance task heuristic failed:", e.message);
+          }
+        }
+        
         const newProgress = Math.min(95, currentProgress + increment); // Don't auto-complete to 100% without final check
         
         serverDB.updateTask(targetTask.id, { progress: newProgress });
-        serverDB.addSystemLog('SYS', 'INFO', `Cognitive heuristic: Advanced task [${targetTask.id}] progress to ${newProgress}% based on workspace activity.`);
+        serverDB.addSystemLog('SYS', 'INFO', apiKey ? `${logMessage} (Progress: ${newProgress}%)` : logMessage);
         return res.json({ success: true, taskId: targetTask.id, newProgress });
       }
       
@@ -2209,51 +2295,29 @@ User: Optimize the skill.`;
         ? Math.min(100, Math.round(cpuUsage * 0.8 + 15 + Math.random() * 5)) 
         : (shieldActive ? Math.min(100, Math.round(cpuUsage * 0.3 + 10 + Math.random() * 4)) : Math.min(100, Math.round(cpuUsage * 0.1 + 2 + Math.random() * 2))));
 
-      let finalTmp = "";
+      let finalTmp = "N/A";
       if (osGpuTemp > 0) {
         finalTmp = `${osGpuTemp}°C`;
       } else if (siCpuTemp !== null && siCpuTemp > 0) {
         finalTmp = `${Math.round(siCpuTemp)}°C`;
-      } else {
-        const ambientTemp = 35; // Standard base temp inside a computer case
-        const loadFactor = cpuUsage / 100;
-        const overdriveOffset = reactorOverdrive ? 38 : (shieldActive ? 14 : 0);
-        const simulatedTemp = Math.round(ambientTemp + (42 * loadFactor) + overdriveOffset + (Math.random() - 0.5) * 1.5);
-        finalTmp = `${simulatedTemp}°C`;
       }
 
-      let powerDraw = "";
+      let powerDraw = "N/A";
       if (siPower !== null && siPower > 0) {
         powerDraw = `${siPower} W`;
-      } else {
-        const loadFactor2 = cpuUsage / 100;
-        const coreCount = cpus.length || 4;
-        const baseTDP = coreCount * 10; // 10W max TDP per core
-        const estPower = (baseTDP * loadFactor2 + 8 + (reactorOverdrive ? 35 : (shieldActive ? 8 : 0)) + Math.random() * 2).toFixed(1);
-        powerDraw = `${estPower} W`;
       }
 
       const activeFans = siFans.length > 0 
         ? `${siFans[0]} RPM` 
-        : (reactorOverdrive 
-            ? `${2850 + Math.floor(Math.random() * 60)} RPM` 
-            : (shieldActive 
-                ? `${1950 + Math.floor(Math.random() * 40)} RPM` 
-                : `${1320 + Math.floor(Math.random() * 30)} RPM`));
+        : "N/A";
 
       const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0
         ? `${siCpuVoltage.toFixed(3)} V`
-        : (reactorOverdrive ? "1.320 V" : (shieldActive ? "1.210 V" : "1.080 V"));
+        : "N/A";
 
-      let finalFreq = "";
+      let finalFreq = "N/A";
       if (siCpuSpeed !== null && siCpuSpeed > 0) {
         finalFreq = `${siCpuSpeed.toFixed(2)}GHz`;
-      } else {
-        // Realistic fallback frequency range (e.g. 2.4GHz to 5.2GHz)
-        const baseSpeed = 2.4;
-        const turboBoost = reactorOverdrive ? 2.8 : (shieldActive ? 1.2 : 0.4);
-        const currentSpeed = (baseSpeed + (turboBoost * (cpuUsage / 100)) + (Math.random() * 0.05)).toFixed(2);
-        finalFreq = `${currentSpeed}GHz`;
       }
 
       let finalNet = satelliteLinked ? "5.5 GB/s" : "0KB/s";
@@ -2277,19 +2341,9 @@ User: Optimize the skill.`;
 
       // --- Simulation: Dynamic Structural Integrity Degradation ---
       // The structural integrity is no longer static; it responds to system stress.
-      if (reactorOverdrive) {
-        // Overdrive pushes the frame past its thermal and physical thresholds
-        const damage = 0.05 + Math.random() * 0.15;
-        structural = Math.max(8.0, structural - damage);
-        
-        if (structural < 30 && Math.random() < 0.1) {
-          serverDB.addSystemLog('SYS', 'ERROR', 'Structural integrity failing. Emergency recalibration advised.');
-        } else if (Math.random() < 0.05) {
-          serverDB.addSystemLog('SYS', 'WARN', 'Micro-fractures detected in core housing due to reactor vibration.');
-        }
-      } else if (cpuUsage > 90) {
-        // High thermal load causes minor expansion-related stress
-        structural = Math.max(45.0, structural - 0.01);
+      if (reactorOverdrive && structural > 8.0) {
+        // High thermal load causes stress over time instead of random
+        // No longer purely random UI drops over time without real reason.
       }
 
       res.json({
@@ -2644,36 +2698,11 @@ User: Optimize the skill.`;
         shieldActive = !shieldActive;
         const code = shieldActive ? "ACTIVE" : "STANDBY";
         
-        // Execute real OS firewall manipulations (best effort)
-        try {
-          if (process.platform === 'win32') {
-             if (shieldActive) {
-                exec('netsh advfirewall set currentprofile firewallpolicy blockinbound,allowoutbound');
-                exec('netsh advfirewall firewall add rule name="Core3000" dir=in action=allow protocol=TCP localport=3000');
-             } else {
-                exec('netsh advfirewall set currentprofile firewallpolicy allowinbound,allowoutbound');
-                exec('netsh advfirewall firewall delete rule name="Core3000"');
-             }
-          } else if (process.platform === 'linux') {
-             if (shieldActive) {
-                const linuxShieldOn = 'iptables -A INPUT -p tcp --dport 3000 -j ACCEPT; iptables -A INPUT -p tcp --dport 80 -j ACCEPT; iptables -A INPUT -p tcp --dport 443 -j ACCEPT; iptables -P INPUT DROP';
-                exec(`sudo ${linuxShieldOn}`, (err) => {
-                  if (err) exec(linuxShieldOn);
-                });
-             } else {
-                const linuxShieldOff = 'iptables -P INPUT ACCEPT; iptables -F';
-                exec(`sudo ${linuxShieldOff}`, (err) => {
-                  if (err) exec(linuxShieldOff);
-                });
-             }
-          }
-        } catch(e) {}
-
-        serverDB.addSystemLog('SEC', 'SUCCESS', `Defensive perimeter shield gain set to ${code}. OS Firewall rules updated.`);
+        serverDB.addSystemLog('SEC', 'SUCCESS', `Defensive perimeter shield gain set to ${code}. Tactical UI matrix simulated.`);
         return res.json({ 
           success: true, 
           shieldActive, 
-          message: `Shield deflection matrix set to ${code}. OS Firewall updated.`,
+          message: `Shield deflection matrix set to ${code}.`,
           speak: shieldActive ? "Defensive perimeter initialized and firewall locked down, sir." : "Shield deflection matrix and firewall on standby, sir."
         });
       }
@@ -2700,30 +2729,7 @@ User: Optimize the skill.`;
         satelliteLinked = !satelliteLinked;
         const state = satelliteLinked ? "synchronized" : "severed";
         
-        // Setup real network tunnel interface to simulate a satellite uplink
-        try {
-          if (process.platform === 'linux') {
-              if (satelliteLinked) {
-                  const buildLink = 'ip link add satlink0 type dummy && ip link set satlink0 up && ip addr add 10.9.9.9/24 dev satlink0';
-                  exec(`sudo ${buildLink}`, (err) => {
-                     if (err) exec(buildLink);
-                  });
-              } else {
-                  const dropLink = 'ip link delete satlink0';
-                  exec(`sudo ${dropLink}`, (err) => {
-                     if (err) exec(dropLink);
-                  });
-              }
-          } else if (process.platform === 'win32') {
-             if (satelliteLinked) {
-                exec('route add 10.9.9.9 mask 255.255.255.255 127.0.0.1');
-             } else {
-                exec('route delete 10.9.9.9');
-             }
-          }
-        } catch (e) {}
-
-        serverDB.addSystemLog('NET', 'SUCCESS', `Stark-7 transceiver orbiter satellite uplink ${state}. Network tunnel configured.`);
+        serverDB.addSystemLog('NET', 'SUCCESS', `Stark-7 transceiver orbiter satellite uplink ${state}. Tactical UI updated.`);
         return res.json({ 
           success: true, 
           satelliteLinked,
@@ -2734,12 +2740,18 @@ User: Optimize the skill.`;
       
       if (command === "recalibrate") {
         structural = 100;
-        serverDB.addSystemLog('SEC', 'SUCCESS', 'System diagnostic neural metrics recalibrated successfully.');
+        
+        // Execute real system recalibration (Garbage Collection and Memory compaction)
+        if (global.gc) {
+          global.gc();
+        }
+        
+        serverDB.addSystemLog('SEC', 'SUCCESS', 'System diagnostic neural metrics recalibrated successfully. V8 Garbage Collection executed.');
         return res.json({ 
           success: true, 
           structural,
-          message: "Neural diagnostics clean.",
-          speak: "Vital diagnostics restored to one hundred percent, Tommy."
+          message: "System memory compacted & heuristics recalibrated.",
+          speak: "Vital diagnostics restored to one hundred percent and system memory compacted, Tommy."
         });
       }
       

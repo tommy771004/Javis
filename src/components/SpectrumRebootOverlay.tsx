@@ -67,7 +67,7 @@ export function SpectrumRebootOverlay() {
         if (!isSubscribed) return;
         
         // Feed real sensor data to drive dynamic UI aesthetics
-        setSensorData({ temp: data.gpuTemperature || 45, load: data.osProcessCount ? (data.osProcessCount / 200).toFixed(2) : 1.21 });
+        setSensorData({ temp: data.gpuTemperature || 45, load: data.osProcessCount ? parseFloat((data.osProcessCount / 200).toFixed(2)) : 1.21 });
 
         setProgress(95);
         setCurrentStep(`SYS: ${data.mcpServersConnected} EXTERNAL MCP SERVER(S) BOUND. UPTIME: ${Math.floor(data.uptime)}s`);
