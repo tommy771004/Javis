@@ -161,13 +161,13 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
       case 'idle':
       default:
         return {
-          glow: 'rgba(34,211,238,0.5)',
-          text: 'text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.6)]',
+          glow: 'var(--color-cyan-400)',
+          text: 'text-cyan-400 drop-shadow-[0_0_15px_var(--color-cyan-500)]',
           border: 'border-cyan-950/80',
           borderDash: 'border-cyan-800/30',
-          gradient: 'bg-[radial-gradient(circle,rgba(8,145,178,0.06)_0%,rgba(8,47,73,0.15)_60%,rgba(2,6,12,0.95)_100%)]',
-          shadow: 'shadow-[inset_0_0_50px_rgba(6,182,212,0.05)]',
-          barColor: 'bg-cyan-500 shadow-[0_0_6px_rgba(34,211,238,0.6)]',
+          gradient: 'bg-cyan-900/15',
+          shadow: 'shadow-[inset_0_0_50px_var(--color-cyan-950)]',
+          barColor: 'bg-cyan-500 shadow-[0_0_6px_var(--color-cyan-500)]',
           accentColor: 'border-cyan-500/50 text-cyan-400',
           sweepGrad: 'from-cyan-500/15 to-transparent'
         };

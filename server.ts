@@ -114,6 +114,7 @@ let lastDiskReadSectors = 0;
 let lastDiskWriteSectors = 0;
 let currentDiskReadSpeed = 0; // bytes/sec
 let currentDiskWriteSpeed = 0; // bytes/sec
+let hermesDaemonInterval: NodeJS.Timeout | null = null;
 
 // Real OS Hardware Telemetry
 let osProcessCount = 0;
@@ -2888,6 +2889,43 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         });
       }
       
+      if (command === "hermes_daemon") {
+        const { enabled } = req.body;
+        if (enabled) {
+          if (!hermesDaemonInterval) {
+            serverDB.addSystemLog('SYS', 'SUCCESS', 'Hermes daemon awakened. Neural scheduling algorithm linked to active tasks.');
+            hermesDaemonInterval = setInterval(async () => {
+              try {
+                const tasks = serverDB.getTasks();
+                const pendingTasks = tasks.filter((t: any) => t.status !== 'Completed').sort((a: any, b: any) => b.createdAt - a.createdAt);
+                if (pendingTasks.length > 0) {
+                  const targetTask = pendingTasks[0];
+                  const settings = serverDB.getSettings();
+                  const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || "";
+                  const result = await advanceTaskPhysically(targetTask.id, settings, apiKey);
+                  serverDB.addSystemLog('SYS', 'INFO', `Hermes Daemon Auto-Advance: ${result.logMessage} (Progress: ${result.newProgress}%)`);
+                  broadcastMcpEvent('TASK_ADVANCED', { taskId: targetTask.id, newProgress: result.newProgress, message: result.logMessage });
+                } else {
+                  if (Math.random() < 0.1) {
+                     serverDB.addSystemLog('SYS', 'INFO', 'Hermes Daemon Matrix: Standby. Awaiting new procedural tasks.');
+                  }
+                }
+              } catch (err: any) {
+                 serverDB.addSystemLog('SYS', 'ERROR', `Hermes Daemon Error: ${err.message}`);
+              }
+            }, 10000); // Poll every 10 seconds
+          }
+          return res.json({ success: true, speak: 'Hermes autonomous cognitive daemon initialized.', message: "Hermes Daemon Automated Task Executor initialized." });
+        } else {
+          if (hermesDaemonInterval) {
+             clearInterval(hermesDaemonInterval);
+             hermesDaemonInterval = null;
+             serverDB.addSystemLog('SYS', 'WARN', 'Hermes Daemon automated execution suspended.');
+          }
+          return res.json({ success: true, speak: 'Autonomous routing suspended.', message: "Hermes Daemon Automated Task Executor disabled." });
+        }
+      }
+      
       if (command === "always-on-top") {
         const enabled: boolean = req.body.enabled === true;
         serverDB.updateSettings({ alwaysOnTop: enabled });
@@ -3724,8 +3762,27 @@ JARVIS Synthesis:`;
     }
   }, 15000);
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+  });
+
+  import('ws').then(({ WebSocketServer }) => {
+    const wss = new WebSocketServer({ server, path: '/api/voice/stream' });
+    wss.on('connection', (ws) => {
+      ws.on('message', (message, isBinary) => {
+        if (isBinary) {
+          // Echo back the received audio buffer
+          ws.send(message, { binary: true });
+        } else {
+          try {
+            const data = JSON.parse(message.toString());
+            if (data.type === 'ping') {
+              ws.send(JSON.stringify({ type: 'pong', timestamp: data.timestamp }));
+            }
+          } catch(e) {}
+        }
+      });
+    });
   });
 
   // --- Autonomous Cognitive Task Orchestrator ---

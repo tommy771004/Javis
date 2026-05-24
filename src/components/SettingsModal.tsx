@@ -180,6 +180,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const [armorModel, setArmorModel] = useState<string>('');
   const [satelliteName, setSatelliteName] = useState<string>('');
   const [activeSkin, setActiveSkin] = useState<string>('cyan');
+  const [isLightMode, setIsLightMode] = useState<boolean>(false);
 
   const [mcpServersText, setMcpServersText] = useState<string>('{\n  "mcpServers": {\n    "example": {\n      "command": "npx",\n      "args": ["-y", "@modelcontextprotocol/server-everything"]\n    }\n  }\n}');
   const [isMcpConnecting, setIsMcpConnecting] = useState(false);
@@ -292,6 +293,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
               localStorage.setItem('jarvis_active_skin', data.activeSkin);
               window.dispatchEvent(new CustomEvent('skin-updated'));
             }
+            if (data.isLightMode !== undefined) {
+              setIsLightMode(data.isLightMode);
+              localStorage.setItem('jarvis_light_mode', String(data.isLightMode));
+              window.dispatchEvent(new CustomEvent('skin-updated'));
+            }
             if (data.alwaysOnTop !== undefined) setAlwaysOnTop(data.alwaysOnTop);
             if (data.launchOnStartup !== undefined) setLaunchOnStartup(data.launchOnStartup);
           }
@@ -314,6 +320,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           fallback('jarvis_armor_model',         setArmorModel,         'Core v4.5');
           fallback('jarvis_satellite_name',      setSatelliteName,      locale === 'zh-TW' ? '本機 SQLite 資料庫' : 'LOCAL_SQLITE_DB');
           fallback('jarvis_active_skin',         setActiveSkin,         'cyan');
+          const localLight = localStorage.getItem('jarvis_light_mode');
+          if (localLight) setIsLightMode(localLight === 'true');
           fallback('jarvis_byok_key',            setOpenRouterKey);
           fallback('jarvis_byok_model',          setOpenRouterModel);
           fallback('jarvis_byok_endpoint',       setOpenRouterEndpoint);
@@ -443,6 +451,19 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     const updated = { ...settings, activeSkin: skin };
     saveSettings(updated);
     triggerLog(t.logSkinMessage(skin));
+  };
+
+  const handleLightModeToggle = () => {
+    playTactileClick();
+    const nextVal = !isLightMode;
+    setIsLightMode(nextVal);
+    localStorage.setItem('jarvis_light_mode', String(nextVal));
+    window.dispatchEvent(new CustomEvent('skin-updated'));
+    
+    // Persist to backend
+    const updated = { ...settings, isLightMode: nextVal };
+    saveSettings(updated);
+    triggerLog(`SYS: UI DOMAIN SET TO ${nextVal ? 'LIGHT' : 'DARK'} MODE.`);
   };
 
   const handleDesktopToggle = async (type: 'always-on-top' | 'startup', enabled: boolean) => {
@@ -1899,6 +1920,19 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                       <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></div>
                     </div>
                     <span className={`text-[9.5px] ${activeSkin === 'red' ? 'text-red-400/90' : 'text-cyan-700 group-hover:text-cyan-600'}`}>{t.skinRedDesc}</span>
+                  </div>
+                </div>
+
+                <div className="border border-cyan-950 bg-cyan-950/15 p-4 rounded mt-4 mb-4 flex items-center justify-between group hover:border-cyan-800 transition-colors">
+                  <div>
+                    <span className="text-[11px] font-extrabold text-cyan-400 tracking-widest uppercase block mb-1">🌗 {locale === 'zh-TW' ? '全局亮色模式 (Light Theme)' : 'Global Light Theme'}</span>
+                    <span className="text-[9.5px] text-cyan-600 block">{locale === 'zh-TW' ? '切換高對比白底主題環境' : 'Toggle high-contrast white background domain'}</span>
+                  </div>
+                  <div 
+                    className={`w-12 h-5 rounded-full p-0.5 cursor-pointer flex items-center transition-all ${isLightMode ? 'bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.6)]' : 'bg-slate-900 border border-cyan-950'}`}
+                    onClick={handleLightModeToggle}
+                  >
+                    <div className={`w-4 h-4 rounded-full bg-slate-200 shadow-sm transition-transform duration-300 ${isLightMode ? 'translate-x-7' : 'translate-x-0'}`}></div>
                   </div>
                 </div>
 

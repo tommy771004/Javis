@@ -83,6 +83,7 @@ export function HermesDashboard({
   const [tasks, setTasks] = useState<any[]>([]);
   const [taskSearchQuery, setTaskSearchQuery] = useState('');
   const taskSearchQueryRef = useRef('');
+  const taskSearchInputRef = useRef<HTMLInputElement>(null);
   const draggingTaskIdRef = useRef<string | null>(null);
   const lastDragTimeRef = useRef<number>(0);
   const lastDragIdRef = useRef<string | null>(null);
@@ -356,6 +357,28 @@ export function HermesDashboard({
     taskSearchQueryRef.current = taskSearchQuery;
     loadDataFromBackend();
   }, [taskSearchQuery]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for Ctrl+K or Cmd+K
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setActiveTab('tasks');
+        
+        // Focus with a slight delay to allow React to render the tab switch first if needed
+        setTimeout(() => {
+          if (taskSearchInputRef.current) {
+            taskSearchInputRef.current.focus();
+          }
+        }, 10);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -838,6 +861,7 @@ export function HermesDashboard({
                 {/* Task Search Input Bar */}
                 <div className="mb-3 relative">
                   <input
+                    ref={taskSearchInputRef}
                     type="text"
                     placeholder={t.hermesSearchPlaceholder}
                     value={taskSearchQuery}
@@ -880,25 +904,6 @@ export function HermesDashboard({
                   >
                     ADD
                   </button>
-                </div>
-
-                {/* Task Search Input Bar */}
-                <div className="mb-3 relative">
-                  <input
-                    type="text"
-                    placeholder={t.hermesSearchPlaceholder}
-                    value={taskSearchQuery}
-                    onChange={(e) => setTaskSearchQuery(e.target.value)}
-                    className="w-full bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-widest text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono uppercase"
-                  />
-                  {taskSearchQuery && (
-                    <button 
-                      onClick={handleClearTaskSearch}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500 hover:text-emerald-300 text-[9px] font-bold font-mono"
-                    >
-                      [CLEAR]
-                    </button>
-                  )}
                 </div>
                 
                 <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-cyan">
