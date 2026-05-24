@@ -389,6 +389,8 @@ export default function App() {
           let bytesReceived = 0;
           let packetsSent = 0;
           let bytesSent = 0;
+          let activeCodecId = '';
+          let codecString = 'Unknown Codec / Negotiation Pending';
 
           stats.forEach(report => {
             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
@@ -398,12 +400,23 @@ export default function App() {
               jitter = report.jitter || 0;
               packetsReceived = report.packetsReceived || 0;
               bytesReceived = report.bytesReceived || 0;
+              if (report.codecId) activeCodecId = report.codecId;
             }
             if (report.type === 'outbound-rtp' && report.mediaType === 'audio') {
               packetsSent = report.packetsSent || 0;
               bytesSent = report.bytesSent || 0;
             }
           });
+
+          if (activeCodecId) {
+            const codecReport = stats.get(activeCodecId);
+            if (codecReport) {
+              const mime = (codecReport.mimeType || '').replace('audio/', '');
+              const channels = codecReport.channels === 2 ? 'Stereo' : 'Mono';
+              const clock = codecReport.clockRate ? `${codecReport.clockRate / 1000}kHz` : '';
+              codecString = `${mime} ${channels} ${clock ? `@ ${clock}` : ''}`.trim();
+            }
+          }
 
           const now = Date.now();
           const timeDelta = (now - prevTimestampRef.current) / 1000;
@@ -415,7 +428,7 @@ export default function App() {
 
           setWebrtcStats(prev => ({
             ...prev,
-            codec: 'Opus Stereo @ 48kHz (128kbps)',
+            codec: codecString,
             rtt: rtt || 1, // local RTT shows as ~1ms
             jitter: parseFloat((jitter * 1000).toFixed(4)), // convert to ms
             packetsSent,

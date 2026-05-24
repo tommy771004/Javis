@@ -75,6 +75,7 @@ export interface DbSettings {
   launchOnStartup?: boolean;
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
   activeLoopNode?: 'experience' | 'curation' | 'skills' | 'gepa';
+  cliPackageMap?: Record<string, string>;
 }
 
 export interface DbMcpWebhook {
@@ -110,6 +111,11 @@ class ServerPersistenceEngine {
   private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
   private ftsDb: any;
   private systemLogs: SystemLogEntry[] = [];
+  private dataListeners: (() => void)[] = [];
+
+  onDataChanged(cb: () => void) {
+    this.dataListeners.push(cb);
+  }
 
   constructor() {
     this.ftsDb = new Database('jarvis_fts.sqlite');
@@ -292,6 +298,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       fs.writeFileSync(DB_FILE, JSON.stringify(this.cache, null, 2), 'utf8');
       this.syncMarkdownFiles();
       this.syncFTS();
+      this.dataListeners.forEach(cb => { try { cb(); } catch(e) {} });
     } catch (e) {
       console.error('Failed to write local database file', e);
     }
@@ -330,7 +337,17 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
         activeCli: 'openrouter',
         elevenLabsKey: '',
         alwaysOnTop: false,
-        launchOnStartup: false
+        launchOnStartup: false,
+        cliPackageMap: {
+          "claude-code": "@anthropic-ai/claude-code",
+          "github-cli": "github-cli",
+          "cursor-agent": "cursor",
+          "devin": "devin",
+          "gemini-cli": "gemini-cli",
+          "codex-cli": "codex-cli",
+          "copilot": "@githubnext/github-copilot-cli",
+          "hermes": "javis-hermes"
+        }
       };
       this.saveDb();
     } else {
@@ -349,6 +366,18 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       if (this.cache.settings.elevenLabsKey === undefined) this.cache.settings.elevenLabsKey = '';
       if (this.cache.settings.alwaysOnTop === undefined) this.cache.settings.alwaysOnTop = false;
       if (this.cache.settings.launchOnStartup === undefined) this.cache.settings.launchOnStartup = false;
+      if (this.cache.settings.cliPackageMap === undefined) {
+        this.cache.settings.cliPackageMap = {
+          "claude-code": "@anthropic-ai/claude-code",
+          "github-cli": "github-cli",
+          "cursor-agent": "cursor",
+          "devin": "devin",
+          "gemini-cli": "gemini-cli",
+          "codex-cli": "codex-cli",
+          "copilot": "@githubnext/github-copilot-cli",
+          "hermes": "javis-hermes"
+        };
+      }
     }
     return this.cache.settings;
   }

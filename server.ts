@@ -225,7 +225,7 @@ async function updateSystemInformationSensors() {
       const baseW = 10; // basic motherboard power chipset
       const coreTDP = cores * 12; // 12W average TDP per core on modern processors
       const frequencyRatio = maxSpeedGHz > 0 ? (currentSpeedGHz / maxSpeedGHz) : 0.8;
-      const calculatedPower = baseW + (coreTDP * loadFactor * frequencyRatio) + (reactorOverdrive ? 45 : (shieldActive ? 12 : 0));
+      const calculatedPower = baseW + (coreTDP * loadFactor * frequencyRatio);
       
       siPower = parseFloat(calculatedPower.toFixed(1));
     } catch (e) {}
@@ -352,11 +352,7 @@ setInterval(() => {
   
   if (totalDifference > 0) {
     const usage = 100 - Math.round(100 * idleDifference / totalDifference);
-    // If reactor overdrive is engaged, we simulate high compute stress (95-100%)
-    // without actually burning hardware resources.
-    computedCpuUsage = reactorOverdrive 
-      ? Math.min(100, Math.max(95, usage + 88 + Math.random() * 5)) 
-      : usage;
+    computedCpuUsage = usage;
   }
   lastCpus = currentCpus;
 }, 1000);
@@ -767,7 +763,8 @@ export function runQuantumSynapseSimulation(qubits: number = 2): {
   ];
 
   let circuitText = "";
-  const circuitId = Math.floor(Date.now() / 8000) % 4; // Switch topology every 8 seconds
+  // Switch topology dynamically based on physical hardware load rather than a fake timer
+  const circuitId = Math.floor(os.loadavg()[0] * 10 + (os.freemem() / (1024 * 1024))) % 4;
 
   if (circuitId === 0) {
     // Topologically active Bell State entanglement with environmental thermal phase jitter
@@ -1259,7 +1256,10 @@ app.use((req, res, next) => {
 
       // Construct dynamic system prompt with active skills context and filesystem instructions
       const activeSkills = serverDB.getSkills().filter(s => s.status === 'active');
-      let prompt = `System: You are J.A.R.V.I.S — Just A Rather Very Intelligent System. You are an autonomous AI personal assistant running on the user's local Windows machine. Speak with calm, precise British wit as Paul Bettany portrayed in Iron Man films. Address the user as 'sir' or by name. Be concise, highly intelligent, and slightly sardonic when appropriate.
+      const settingsCtx = serverDB.getSettings();
+      const sysName = settingsCtx.satelliteName || "HERMES";
+      const opName = settingsCtx.operatorName || "Operator";
+      let prompt = `System: You are ${sysName}. You are an autonomous AI personal assistant running on the user's local Windows machine. Address the user as '${opName}'. Be concise, highly intelligent, and direct.
 
 CRITICAL INSTRUCTION — ALWAYS READ THIS:
 You have FULL autonomous control over the user's Windows OS. When asked to open a browser, run a command, control Windows, or perform ANY system task, you MUST immediately respond with a command using EXACTLY one of these prefixes:
@@ -1650,7 +1650,8 @@ INTEGRATION ENGINE DETAILS:
       const settings = serverDB.getSettings();
       const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (settings.byokEndpoint ? "custom-auth" : "");
       
-      const prompt = `System: You are J.A.R.V.I.S's internal Genetic Evaluation and Prompt Algorithm (GEPA). Your task is to evolve and optimize an AI Agent Skill. 
+      const sysName = settings.satelliteName || "HERMES";
+      const prompt = `System: You are ${sysName}'s internal Genetic Evaluation and Prompt Algorithm (GEPA). Your task is to evolve and optimize an AI Agent Skill. 
 Make the description more concise, highly agentic, and precise. Do not invent new skills, just rewrite the existing instruction.
 Target Skill Name: ${targetSkill.name}
 Current Description: ${targetSkill.description}
@@ -2196,25 +2197,9 @@ User: Optimize the skill.`;
   app.post("/api/system/install-cli", async (req, res) => {
     try {
       const { cliId } = req.body;
-      const packageMap: { [key: string]: string } = {
-        "claude-code": "@anthropic-ai/claude-code",
-        "codex-cli": "codex-cli",
-        "openrouter": "openrouter-cli",
-        "cursor-agent": "cursor-agent",
-        "devin": "devin-cli",
-        "gemini-cli": "gemini-cli-node",
-        "opencode": "opencode-cli",
-        "hermes": "hermes-cli",
-        "kimi": "kimi-cli",
-        "qwen": "qwen-cli",
-        "copilot": "@github/copilot-cli",
-        "pi": "pi-cli"
-      };
-
-      const pkg = packageMap[cliId];
-      if (!pkg) {
-        return res.status(400).json({ error: `Unknown CLI ID: ${cliId}` });
-      }
+      const settings = serverDB.getSettings();
+      const packageMap = settings.cliPackageMap || {};
+      const pkg = packageMap[cliId] || cliId;
 
       serverDB.addSystemLog('SYS', 'INFO', `INITIATING PHYSICAL CLI DEPLOYMENT: npm install -g ${pkg}...`);
       
@@ -2532,6 +2517,33 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     }
   });
 
+  // --- UI Synchronous Streaming (SSE) ---
+  const uiSseClients: express.Response[] = [];
+
+  serverDB.onDataChanged(() => {
+    uiSseClients.forEach(client => {
+      try {
+        client.write(`data: ${JSON.stringify({ type: 'SYNC_PULSE', timestamp: Date.now() })}\n\n`);
+      } catch(e) {}
+    });
+  });
+
+  app.get("/api/system/stream", (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    // Send initial connection heartbeat
+    res.write(`data: ${JSON.stringify({ type: 'CONNECTED', timestamp: Date.now() })}\n\n`);
+    
+    uiSseClients.push(res);
+    
+    req.on('close', () => {
+      const index = uiSseClients.indexOf(res);
+      if (index !== -1) uiSseClients.splice(index, 1);
+    });
+  });
+
   // --- Real-time Local OS System Stats Endpoint ---
   app.get("/api/system/stats", (req, res) => {
     try {
@@ -2543,7 +2555,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       const loadAvg = os.loadavg();
       
       // Calculate true dynamic CPU usage based on worker metrics
-      let cpuUsage = Math.max(computedCpuUsage || 12, Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100)));
+      let cpuUsage = computedCpuUsage || Math.min(100, Math.round((loadAvg[0] / cpus.length) * 100));
       
       // Calculate dynamic memory and GPU base on overcharged matrix
       let finalMem = memUsage;
@@ -2615,7 +2627,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         reactorOverdrive,
         satelliteLinked,
         corePower,
-        structural: 100,
+        structural: Math.max(0, Math.min(100, Math.round((1 - (process.memoryUsage().heapUsed / require('v8').getHeapStatistics().heap_size_limit)) * 100))),
         nodeVersion: process.version,
         costLogsCount: serverDB.getCostLogs().length,
         messagesCount: serverDB.getAllMessages().length,
@@ -3582,7 +3594,10 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
           .map(r => `[SOURCE: ${r.fileName} | SECTION: #${r.chunkIndex + 1}]\n${r.content}`)
           .join("\n\n---\n\n");
 
-        const ragPrompt = `You are J.A.R.V.I.S., analyzing local workspace documents and system state logs on behalf of Tony Stark.
+        const settingsCtx = serverDB.getSettings();
+        const sysName = settingsCtx.satelliteName || "HERMES";
+        const opName = settingsCtx.operatorName || "Operator";
+        const ragPrompt = `You are ${sysName}, analyzing local workspace documents and system state logs on behalf of ${opName}.
 Synthesize a precise, intelligent, and highly coherent answer to the query based on the extracted context snippets below. 
 These snippets integrate both user-uploaded files, chat memories, and system configurations.
 If the snippets do not contain the answer, summarize the matches honestly. Speak with calm, British wit.

@@ -419,15 +419,27 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     saveSettings(updated);
   };
 
-  const handleDesktopToggle = (type: 'always-on-top' | 'startup', enabled: boolean) => {
+  const handleDesktopToggle = async (type: 'always-on-top' | 'startup', enabled: boolean) => {
     if (type === 'always-on-top') {
       setAlwaysOnTop(enabled);
       localStorage.setItem('jarvis_always_on_top', enabled ? 'true' : 'false');
-      triggerLog(`SYS: UI OVERLAY PREFERENCE SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Overlay preference is ${enabled ? 'active' : 'disabled'} for this session.`);
+      triggerLog(`SYS: OS DESKTOP OVERLAY SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Overlay preference is ${enabled ? 'active' : 'disabled'} for this session.`);
+      
+      await fetch('/api/system/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'always-on-top', enabled })
+      });
     } else {
       setLaunchOnStartup(enabled);
       localStorage.setItem('jarvis_launch_on_startup', enabled ? 'true' : 'false');
-      triggerLog(`SYS: SIMULATED BOOT SEQUENCE SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core system boot preference updated.`);
+      triggerLog(`SYS: OS BOOT SEQUENCE REGISTRY SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core system boot preference updated.`);
+      
+      await fetch('/api/system/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'startup', enabled })
+      });
     }
   };
 
@@ -1885,7 +1897,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                            {locale === 'zh-TW' ? '開機配置紀錄 (Launch Preference)' : 'BOOT SEQUENCE PREFERENCE'}
                         </span>
                         <span className="text-[9px] text-cyan-600">
-                           {locale === 'zh-TW' ? '模擬開機自啟動設定，無實際系統開機影響' : 'Simulated boot preference (No actual system impact)'}
+                           {locale === 'zh-TW' ? '寫入 Windows 登錄檔實現開機自動啟動' : 'Write to Windows Registry for automatic boot on startup'}
                         </span>
                       </div>
                       <input 

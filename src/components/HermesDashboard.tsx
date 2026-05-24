@@ -527,10 +527,16 @@ export function HermesDashboard({
     window.addEventListener('skills-updated', handleUpdate);
     window.addEventListener('cognitive-memory-updated', handleUpdate);
 
-    // Regular polling for autonomous updates (tasks, logs, budget)
-    const pollInterval = setInterval(() => {
-      loadDataFromBackend();
-    }, 4000);
+    // True Real-time SSE Stream for autonomous updates (tasks, logs, budget)
+    const streamSource = new EventSource('/api/system/stream');
+    streamSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'SYNC_PULSE') {
+          loadDataFromBackend();
+        }
+      } catch(e) {}
+    };
 
     // Regular stats polling for footer metrics
     const statsInterval = setInterval(async () => {
@@ -550,6 +556,7 @@ export function HermesDashboard({
       window.removeEventListener('task-list-updated', handleUpdate);
       window.removeEventListener('skills-updated', handleUpdate);
       window.removeEventListener('cognitive-memory-updated', handleUpdate);
+      streamSource.close();
       clearInterval(statsInterval);
     };
   }, [activeTab]);
@@ -1645,7 +1652,14 @@ export function HermesDashboard({
                   </div>
                 </div>
                 <button
-                  onClick={loadMcpData}
+                  onClick={async () => {
+                    window.dispatchEvent(new CustomEvent('skin-updated'));
+                    try {
+                      await fetch('/api/system/reboot', { method: 'POST' });
+                    } catch (e) {
+                      console.error("Reboot post-fire trigger expected process termination.", e);
+                    }
+                  }}
                   className="px-3 py-1 bg-emerald-950/45 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[9px] uppercase font-bold tracking-wider transition-all flex items-center gap-1.5 shrink-0 self-start md:self-auto"
                 >
                   <RefreshCw className="w-2.5 h-2.5 animate-spin-slow" />
