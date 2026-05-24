@@ -1,4 +1,6 @@
 // Client-side API wrapper communicating with the Node.js Server
+import type { FtsScoreKind } from './telemetryPresentationPolicies';
+
 export interface DbMessage {
   id: string;
   sessionId: string;
@@ -30,6 +32,15 @@ export interface DbCostLog {
   inputTokens: number;
   outputTokens: number;
   cachedTokens?: number;
+}
+
+export interface FtsSearchResult {
+  type: 'message' | 'skill';
+  title: string;
+  excerpt: string;
+  score: number;
+  scoreKind: FtsScoreKind;
+  scoreLabel: string;
 }
 
 export interface SystemLogEntry {
@@ -81,7 +92,7 @@ class ApiClient {
   }
 
   // --- FTS Search API ---
-  async queryFTS(queryText: string): Promise<Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number }>> {
+  async queryFTS(queryText: string): Promise<FtsSearchResult[]> {
     const res = await fetch('/api/memory/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

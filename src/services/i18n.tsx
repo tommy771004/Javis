@@ -165,6 +165,7 @@ export interface Translations {
   lblArmorStatus: string;
   lblPowerCore: string;
   lblStructuralIntegrity: string;
+  lblHeapHeadroom: string;
   lblSystemInteraction: string;
   lblShield: string;
   lblCorePow: string;
@@ -193,6 +194,7 @@ export interface Translations {
   lblMuteSys: string;
   lblSynapseLatency: string;
   lblAuthIsolation: string;
+  lblSecuritySignals: string;
   lblWorkspaceSandboxed: string;
   lblElevenLabsKey: string;
   lblMcpInventory: string;
@@ -388,6 +390,7 @@ const zhTWTranslations: Translations = {
   lblArmorStatus: "系統 // 硬體狀態",
   lblPowerCore: "處理器負載",
   lblStructuralIntegrity: "儲存空間狀態",
+  lblHeapHeadroom: "V8 Heap 餘裕",
   lblSystemInteraction: "任務流量控制",
   lblShield: "安全防禦",
   lblCorePow: "系統效能",
@@ -416,6 +419,7 @@ const zhTWTranslations: Translations = {
   lblMuteSys: "靜音系統音效",
   lblSynapseLatency: "突觸延遲",
   lblAuthIsolation: "授權隔離",
+  lblSecuritySignals: "安全訊號摘要",
   lblWorkspaceSandboxed: "工作區沙盒部署",
   lblElevenLabsKey: "ElevenLabs TTS API 金鑰",
   lblMcpInventory: "MCP 技能清單",
@@ -608,6 +612,7 @@ const enTranslations: Translations = {
   lblArmorStatus: "SYSTEM // HARDWARE STATUS",
   lblPowerCore: "PROCESSOR LOAD",
   lblStructuralIntegrity: "STORAGE STATUS",
+  lblHeapHeadroom: "V8 HEAP HEADROOM",
   lblSystemInteraction: "TASK FLOW CONTROL",
   lblShield: "Sandbox Security",
   lblCorePow: "System Performance",
@@ -636,6 +641,7 @@ const enTranslations: Translations = {
   lblMuteSys: "Mute System Sounds",
   lblSynapseLatency: "Synapse Latency",
   lblAuthIsolation: "Auth Isolation",
+  lblSecuritySignals: "Security Signals",
   lblWorkspaceSandboxed: "Workspace Sandboxed",
   lblElevenLabsKey: "ElevenLabs TTS API Key",
   lblMcpInventory: "MCP SKILLS INVENTORY",

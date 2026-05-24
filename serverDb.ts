@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import os from 'os';
 import Database from 'better-sqlite3';
+import { formatFtsScoreLabel, type FtsScoreKind } from './src/services/telemetryPresentationPolicies';
 
 // ---------------------------------------------------------------------------
 // Real AES-256-GCM encryption for database.json at rest
@@ -91,6 +92,15 @@ export interface SystemLogEntry {
   category: 'SYS' | 'HERMES' | 'DB' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC' | 'GEPA';
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
   message: string;
+}
+
+export interface FtsSearchResult {
+  type: 'message' | 'skill';
+  title: string;
+  excerpt: string;
+  score: number;
+  scoreKind: FtsScoreKind;
+  scoreLabel: string;
 }
 
 export interface DbSettings {
@@ -642,7 +652,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
   }
 
   // --- Backend FTS5 Matching Search ---
-  queryFTS(queryText: string): Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number }> {
+  queryFTS(queryText: string): FtsSearchResult[] {
     if (!queryText.trim()) return [];
 
     try {
@@ -675,16 +685,15 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
 
       // Transform raw SQLite rows back into normalized JSON structure
       const results = sqlResults.map(r => {
-        // BM25 in SQLite natively returns large negative numbers (more negative = better match)
-        // Normalize into a 0.0 - 1.0 confidence score simply
-        const absScore = Math.abs(r.fts_score || 0);
-        const confidence = Math.min(0.99, Math.max(0.1, 1 - (absScore / 20)));
-        
+        const score = Number((r.fts_score || 0).toFixed(2));
+
         return {
           type: r.type,
           title: r.title,
           excerpt: r.excerpt,
-          confidence: parseFloat(confidence.toFixed(2))
+          score,
+          scoreKind: 'sqlite-bm25' as const,
+          scoreLabel: formatFtsScoreLabel(score, 'sqlite-bm25')
         };
       });
 
@@ -696,7 +705,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
   }
 
   // --- Fallback memory-based FTS matching ---
-  fallbackQueryFTS(queryText: string): Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number }> {
+  fallbackQueryFTS(queryText: string): FtsSearchResult[] {
     if (!queryText.trim()) return [];
 
     const terms = queryText.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(t => t.length > 1);
@@ -825,7 +834,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     const k1 = 1.5;
     const b = 0.75;
 
-    const results: Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number; rawScore: number }> = [];
+    const results: Array<FtsSearchResult & { rawScore: number }> = [];
 
     // Score all documents using standard Okapi BM25 matching
     documents.forEach(doc => {
@@ -865,14 +874,15 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
         const maxPossibleBM25 = (k1 + 1) * sumIDFs;
         const normalizedScore = maxPossibleBM25 > 0 ? (score / maxPossibleBM25) : 0;
         const blendedScore = normalizedScore * 0.7 + matchRatio * 0.3;
-
-        const confidenceVal = Math.min(99, Math.max(40, Math.round((0.42 + blendedScore * 0.55 * priorityBoost) * 100)));
+        const weightedScore = Number((score * priorityBoost * Math.max(0.5, blendedScore)).toFixed(2));
 
         results.push({
           type: doc.type,
           title: doc.title,
           excerpt: doc.excerpt,
-          confidence: confidenceVal,
+          score: weightedScore,
+          scoreKind: 'fallback-bm25',
+          scoreLabel: formatFtsScoreLabel(weightedScore, 'fallback-bm25'),
           rawScore: score * priorityBoost
         });
       }
@@ -881,7 +891,14 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     return results
       .sort((a, b) => b.rawScore - a.rawScore)
       .slice(0, 5)
-      .map(({ type, title, excerpt, confidence }) => ({ type, title, excerpt, confidence }));
+      .map(({ type, title, excerpt, score, scoreKind, scoreLabel }) => ({
+        type,
+        title,
+        excerpt,
+        score,
+        scoreKind,
+        scoreLabel
+      }));
   }
 
 

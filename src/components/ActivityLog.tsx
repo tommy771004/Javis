@@ -8,7 +8,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
     const [shieldActive, setShieldActive] = useState(false);
     const [overloaded, setOverloaded] = useState(false);
     const [corePower, setCorePower] = useState(98);
-    const [structural, setStructural] = useState(100);
+    const [heapHeadroom, setHeapHeadroom] = useState(100);
     const [armorModel, setArmorModel] = useState('Mark LXXXV');
     const [activeWavelength, setActiveWavelength] = useState('480 nm');
     const [activeFlux, setActiveFlux] = useState('1.21 GW');
@@ -61,7 +61,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                     if (data.shieldActive !== undefined) setShieldActive(data.shieldActive);
                     if (data.reactorOverdrive !== undefined) setOverloaded(data.reactorOverdrive);
                     if (data.corePower !== undefined) setCorePower(data.corePower);
-                    if (data.structural !== undefined) setStructural(data.structural);
+                    if (data.heapHeadroom !== undefined) setHeapHeadroom(data.heapHeadroom);
 
                     // Physical calibration loop binding spectra and reactor flux to actual CPU workload & power draw
                     const cpuUsage = data.cpu || 0;
@@ -188,11 +188,11 @@ export function ActivityLog({ logs }: { logs: string[] }) {
             });
             if (res.ok) {
                 const data = await res.json();
-                setStructural(data.structural);
+                setHeapHeadroom(data.heapHeadroom);
                 
                 window.dispatchEvent(new CustomEvent('append-sys-log', {
                     detail: {
-                        message: "SYS: NEURAL MAPPING RECALIBRATED. ARMOR DIAGNOSTICS CLEAN.",
+                        message: "SYS: RUNTIME HEAP TELEMETRY RECALIBRATED. MEMORY HEADROOM UPDATED.",
                         speak: data.speak
                     }
                 }));
@@ -240,13 +240,13 @@ export function ActivityLog({ logs }: { logs: string[] }) {
 
                     <div>
                         <div className="flex justify-between text-[8px] tracking-[0.2em] uppercase mb-1.5 text-cyan-500/80">
-                            <span>{t.lblStructuralIntegrity}</span>
-                            <span className="text-cyan-400 font-bold">{structural}%</span>
+                            <span>{t.lblHeapHeadroom}</span>
+                            <span className="text-cyan-400 font-bold">{heapHeadroom}%</span>
                         </div>
                         <div className="h-1 bg-black/50 w-full overflow-hidden border border-cyan-950/40">
                             <div 
                                 className="h-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.6)] transition-all duration-700" 
-                                style={{ width: `${structural}%` }}
+                                style={{ width: `${heapHeadroom}%` }}
                             />
                         </div>
                     </div>

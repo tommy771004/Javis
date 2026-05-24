@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { apiClient, DbSkill, DbCostLog } from '../services/apiClient';
+import { apiClient, DbSkill, DbCostLog, type FtsSearchResult } from '../services/apiClient';
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
 import { useI18n } from '../services/i18n';
@@ -72,7 +72,7 @@ export function HermesDashboard({
 
   // FTS5 Memory search states
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<Array<{ type: string; title: string; excerpt: string; confidence: number }>>([]);
+  const [searchResults, setSearchResults] = useState<FtsSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
   // Task states
@@ -1479,7 +1479,7 @@ export function HermesDashboard({
                           <span>{result.title}</span>
                           <span className="flex items-center gap-1.5">
                             <span className="text-[7px] text-emerald-700/80 px-1 border border-emerald-900/40 rounded-sm">KEYWORD_DENSITY</span>
-                            Relevance: {result.confidence.toFixed(0)}%
+                            {result.scoreLabel}
                           </span>
                         </div>
                         <p className="text-emerald-400">{result.excerpt}</p>

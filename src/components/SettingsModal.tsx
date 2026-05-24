@@ -105,7 +105,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
   // Dynamic system security audit and telemetry fetching
   const [synapseLatency, setSynapseLatency] = useState<string>('SCANNING...');
-  const [authIsolation, setAuthIsolation] = useState<string>('SCANNING...');
+  const [securitySignals, setSecuritySignals] = useState<string>('SCANNING...');
   const [workspaceSandboxed, setWorkspaceSandboxed] = useState<string>('SCANNING...');
   const [encryptionLevel, setEncryptionLevel] = useState<string>('SCANNING...');
   const [activePort, setActivePort] = useState<string>('SCANNING...');
@@ -128,7 +128,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         if (!active) return;
 
         if (auditRes && auditRes.success) {
-          setAuthIsolation(auditRes.authIsolation);
+          setSecuritySignals(auditRes.securitySignals);
           setWorkspaceSandboxed(auditRes.workspaceSandboxed);
           if (auditRes.encryption) setEncryptionLevel(auditRes.encryption);
           if (auditRes.port) setActivePort(auditRes.port);
@@ -2042,8 +2042,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         <span className="text-[9px] opacity-75 block">{t.lblSynapseLatency}</span>
                       </div>
                       <div className="p-2 border border-cyan-950 bg-slate-950/40 rounded shadow-[0_0_8px_rgba(6,182,212,0.05)] hover:border-cyan-500/35 transition-all">
-                        <div className="text-emerald-400 font-bold mb-0.5 font-mono">{authIsolation}</div>
-                        <span className="text-[9px] opacity-75 block">{t.lblAuthIsolation}</span>
+                        <div className="text-emerald-400 font-bold mb-0.5 font-mono">{securitySignals}</div>
+                        <span className="text-[9px] opacity-75 block">{t.lblSecuritySignals}</span>
                       </div>
                       <div className="p-2 border border-cyan-950 bg-slate-950/40 rounded shadow-[0_0_8px_rgba(6,182,212,0.05)] hover:border-cyan-500/35 transition-all">
                         <div className="text-cyan-400 font-bold mb-0.5 font-mono truncate max-w-full" title={workspaceSandboxed}>{workspaceSandboxed}</div>

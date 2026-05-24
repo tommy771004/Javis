@@ -4,12 +4,14 @@ import fs from "fs";
 import https from "https";
 import os from "os";
 import crypto from "crypto";
+import v8 from "v8";
 import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
 import { getReactorOverdriveRuntime, normalizeMeasuredPowerWatts, resolveAutoRepairCpuTarget, resolveEffectiveShellMode } from "./serverRuntimePolicies";
 import { serverDB, DB_KEY_FINGERPRINT } from "./serverDb";
 import { resolveSecurityAuditTransportLabel } from "./src/services/settingsIntegrationPolicies";
+import { calculateHeapHeadroomPercent, resolveStrictSandboxRequirement, summarizeSecuritySignals } from "./src/services/telemetryPresentationPolicies";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -280,11 +282,12 @@ let lastPingLatencyMs = 28; // Default latency
 // Cached security audit results
 export interface SecurityAuditResult {
   success: boolean;
-  authIsolation: string;
+  securitySignals: string;
   workspaceSandboxed: string;
   encryption: string;
   port: string;
   sandboxControl: string;
+  strictSandboxRequired: boolean;
   details: {
     defenderActive: boolean;
     firewallActive: boolean;
@@ -299,11 +302,12 @@ export interface SecurityAuditResult {
 
 let cachedSecurityAudit: SecurityAuditResult = {
   success: true,
-  authIsolation: "92.0%",
+  securitySignals: "Signals 0 positive / 1 caution (CVEs: 0)",
   workspaceSandboxed: "Host-Secured",
-  encryption: "AES-128 / RSA-2048",
+  encryption: `AES-256-GCM / at-rest [KEY:${DB_KEY_FINGERPRINT}]`,
   port: "SSE /api/system/stream",
   sandboxControl: "HOST-UNSECURED",
+  strictSandboxRequired: true,
   details: {
     defenderActive: false,
     firewallActive: false,
@@ -455,24 +459,25 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     }
   } catch {}
   
-  // Scoring algorithm - Merit-based calculation (No baseline gift)
-  let baseScore = 0.0;
-
-  if (isDocker) baseScore += 25;
-  if (isWsl) baseScore += 15;
-  if (trueSandboxApplied) baseScore += 20;
-  
-  if (!isRoot) baseScore += 10;
-  if (isPrivilegedPathProtected) baseScore += 10;
-  if (memoryHardened || trueSandboxApplied) baseScore += 10;
-  if (defenderActive) baseScore += 5;
-  if (firewallActive) baseScore += 5;
-  
-  // Deduct based on CVEs (max 25 penalty)
-  baseScore -= Math.min(25, cveCount * 1.5);
-
-  const finalScore = Math.max(0, Math.min(99.9, baseScore));
-  const authIsolation = `${finalScore.toFixed(1)}%`;
+  const securitySignals = summarizeSecuritySignals({
+    isDocker,
+    isWsl,
+    trueSandboxApplied,
+    defenderActive,
+    firewallActive,
+    isRoot,
+    isPrivilegedPathProtected,
+    memoryHardened,
+    cveCount
+  });
+  const strictSandboxRequired = resolveStrictSandboxRequirement({
+    isDocker,
+    isWsl,
+    trueSandboxApplied,
+    memoryHardened,
+    isRoot,
+    isPrivilegedPathProtected
+  });
   
   let workspaceSandboxed = "Host-Secured";
   if (isRoot && !isPrivilegedPathProtected) {
@@ -507,11 +512,12 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
 
   const result: SecurityAuditResult = {
     success: true,
-    authIsolation,
+    securitySignals,
     workspaceSandboxed,
     encryption,
     port,
     sandboxControl,
+    strictSandboxRequired,
     details: {
       defenderActive,
       firewallActive,
@@ -1772,8 +1778,8 @@ User: Evolve the skill.`;
       const relativePath = path.relative(process.cwd(), safePath).replace(/\\/g, '/');
 
       // Security Audit Sandbox Enforcement
-      const isolationScore = parseFloat(cachedSecurityAudit.authIsolation);
-      const isStrictSandbox = isolationScore < 60.0;
+      const isStrictSandbox = cachedSecurityAudit.strictSandboxRequired;
+      const sandboxSignals = cachedSecurityAudit.securitySignals;
 
       // Master Firewall: HERMES Guard Path & Critical File Protection
       const fileLower = relativePath.toLowerCase();
@@ -1791,13 +1797,13 @@ User: Evolve the skill.`;
 
       // CRITICAL: Block core corruption. If Strict Sandbox is active, restrict to Safe Dirs only.
       if (isSystemCritical || (isStrictSandbox && !isInSafeDirectory)) {
-        serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: Target '${relativePath}' is protected. Strict Sandbox (${isolationScore}%) enforces Safe Directory lock. Access Denied.`);
+        serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: Target '${relativePath}' is protected. Strict Sandbox is required by current host security signals (${sandboxSignals}). Access Denied.`);
         return res.status(403).json({
           success: false,
           error: "Forbidden",
           code: "HERMES_WRITE_INTERCEPT",
-          reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted. Sandbox Isolation Score is ${isolationScore}%. Allowed folders: 'src/', 'uploads/', 'public/'.`,
-          stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSandbox Mode: STRICT (Score: ${isolationScore}%)\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
+          reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted. Strict Sandbox is active because current host security signals do not show a strong containment boundary. Allowed folders: 'src/', 'uploads/', 'public/'.`,
+          stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSandbox Mode: STRICT\nSignal Summary: ${sandboxSignals}\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
         });
       }
 
@@ -2020,20 +2026,20 @@ User: Evolve the skill.`;
       }
 
       // Security Audit Sandbox Enforcement
-      const isolationScore = parseFloat(cachedSecurityAudit.authIsolation);
-      const isStrictSandbox = isolationScore < 60.0;
+      const isStrictSandbox = cachedSecurityAudit.strictSandboxRequired;
+      const sandboxSignals = cachedSecurityAudit.securitySignals;
 
       // HERMES Guard token/allowlist command validation check
       if (isStrictSandbox || shellMode === 'manual' || shellMode === 'safe') {
         const validation = helperValidateCommand(command);
         if (isStrictSandbox && !validation.safe) {
-          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System Sandbox Isolation is LOW (${isolationScore}%). Forced SAFE mode blocked command '${command}'. Reason: ${validation.reason}`);
+          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: Strict Sandbox is required by current host security signals (${sandboxSignals}). Forced SAFE mode blocked command '${command}'. Reason: ${validation.reason}`);
           return res.status(403).json({
             success: false,
             error: "Forbidden",
             code: "HERMES_GUARD_INTERCEPT",
-            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Low Sandbox Isolation (${isolationScore}%) forces SAFE mode. Details: ${validation.reason}`,
-            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: FORCED STRICT (Score: ${isolationScore}%)\nMatrix Interception: Command violates strict local command policy rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Strict Sandbox is active because current host security signals do not show a strong containment boundary. Details: ${validation.reason}`,
+            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: FORCED STRICT\nSignal Summary: ${sandboxSignals}\nMatrix Interception: Command violates strict local command policy rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
           });
         } else if (!isStrictSandbox && !validation.safe && shellMode === 'safe') {
           serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System is running in SAFE security mode. Executing '${command}' has been blocked by HERMES Guard Security Policy. Reason: ${validation.reason}`);
@@ -2666,7 +2672,10 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         reactorOverdrive,
         satelliteLinked,
         corePower,
-        structural: Math.max(0, Math.min(100, Math.round((1 - (process.memoryUsage().heapUsed / require('v8').getHeapStatistics().heap_size_limit)) * 100))),
+        heapHeadroom: calculateHeapHeadroomPercent(
+          process.memoryUsage().heapUsed,
+          v8.getHeapStatistics().heap_size_limit
+        ),
         nodeVersion: process.version,
         costLogsCount: serverDB.getCostLogs().length,
         messagesCount: serverDB.getAllMessages().length,
@@ -2691,7 +2700,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       if (refresh) {
         serverDB.addSystemLog('SEC', 'INFO', 'Re-initiating Windows Defender & sandbox container security audit...');
         const result = await runSecurityAudit();
-        serverDB.addSystemLog('SEC', 'SUCCESS', `Security audit completed. Isolation index: ${result.authIsolation}.`);
+        serverDB.addSystemLog('SEC', 'SUCCESS', `Security audit completed. Signal summary: ${result.securitySignals}.`);
         return res.json(result);
       }
       res.json(cachedSecurityAudit);
@@ -3077,9 +3086,12 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         serverDB.addSystemLog('SEC', 'SUCCESS', 'System diagnostic neural metrics recalibrated successfully. V8 Garbage Collection executed.');
         return res.json({ 
           success: true, 
-          structural: 100,
-          message: "System memory compacted & heuristics recalibrated.",
-          speak: "Vital diagnostics restored to one hundred percent and system memory compacted, Tommy."
+          heapHeadroom: calculateHeapHeadroomPercent(
+            process.memoryUsage().heapUsed,
+            v8.getHeapStatistics().heap_size_limit
+          ),
+          message: "Runtime heap telemetry recalibrated after memory compaction.",
+          speak: "Runtime heap telemetry recalibrated and system memory compacted, Tommy."
         });
       }
       
@@ -3707,7 +3719,8 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
           fileName,
           chunkIndex,
           content: match.excerpt,
-          score: match.confidence
+          score: match.score,
+          scoreLabel: match.scoreLabel
         };
       });
 

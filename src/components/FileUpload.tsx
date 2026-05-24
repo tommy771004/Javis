@@ -249,7 +249,9 @@ export function FileUpload() {
                             <div key={idx} className="bg-slate-950/80 border border-cyan-900/40 p-2 rounded text-[9px] leading-normal font-mono">
                                 <div className="flex justify-between text-[8px] font-bold text-cyan-400/80 border-b border-cyan-950 pb-1 mb-1 items-center">
                                     <span className="truncate max-w-[70%]">📄 {res.fileName} (Chunk #{res.chunkIndex})</span>
-                                    <span className="text-amber-500 px-1 rounded border border-amber-950 bg-amber-950/10">{res.score}% MATCH</span>
+                                    <span className="text-amber-500 px-1 rounded border border-amber-950 bg-amber-950/10">
+                                        {res.scoreLabel || `Score ${res.score}`}
+                                    </span>
                                 </div>
                                 <div className="text-cyan-300/90 whitespace-pre-wrap">{res.content}</div>
                             </div>
