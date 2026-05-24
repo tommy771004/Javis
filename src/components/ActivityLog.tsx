@@ -1,17 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Shield, Zap, BarChart2, Power, Terminal } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 
 export function ActivityLog({ logs }: { logs: string[] }) {
     const logRef = useRef<HTMLDivElement>(null);
     const { t } = useI18n();
-    const [shieldActive, setShieldActive] = useState(false);
-    const [overloaded, setOverloaded] = useState(false);
     const [corePower, setCorePower] = useState(98);
     const [heapHeadroom, setHeapHeadroom] = useState(100);
     const [armorModel, setArmorModel] = useState('Mark LXXXV');
-    const [activeWavelength, setActiveWavelength] = useState('480 nm');
-    const [activeFlux, setActiveFlux] = useState('1.21 GW');
 
     useEffect(() => {
         const updateArmor = () => {
@@ -26,17 +22,10 @@ export function ActivityLog({ logs }: { logs: string[] }) {
         const updateSkinSpecs = () => {
             const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
             if (skin === 'cyan') {
-                setActiveWavelength('480 nm');
-                setActiveFlux('1.21 GW');
+                // No-op for now
             } else if (skin === 'emerald') {
-                setActiveWavelength('530 nm');
-                setActiveFlux('1.10 GW');
             } else if (skin === 'amber') {
-                setActiveWavelength('590 nm');
-                setActiveFlux('0.98 GW');
             } else if (skin === 'red') {
-                setActiveWavelength('650 nm');
-                setActiveFlux('1.65 GW');
             }
         };
 
@@ -58,28 +47,8 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                 const res = await fetch('/api/system/stats');
                 if (res.ok && active) {
                     const data = await res.json();
-                    if (data.shieldActive !== undefined) setShieldActive(data.shieldActive);
-                    if (data.reactorOverdrive !== undefined) setOverloaded(data.reactorOverdrive);
                     if (data.corePower !== undefined) setCorePower(data.corePower);
                     if (data.heapHeadroom !== undefined) setHeapHeadroom(data.heapHeadroom);
-
-                    // Physical calibration loop binding spectra and reactor flux to actual CPU workload & power draw
-                    const cpuUsage = data.cpu || 0;
-                    const powerVal = parseFloat(data.powerDraw) || 15.0;
-                    const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
-                    
-                    let baseWavelength = 480;
-                    if (skin === 'emerald') baseWavelength = 530;
-                    else if (skin === 'amber') baseWavelength = 590;
-                    else if (skin === 'red') baseWavelength = 650;
-
-                    // Micro-fluctuation of wavelength based on CPU activity (spectroscopic thermal drift!)
-                    const dynamicWavelength = (baseWavelength + (cpuUsage * 0.015) + (Math.random() - 0.5) * 0.05).toFixed(2);
-                    setActiveWavelength(`${dynamicWavelength} nm`);
-
-                    // Estimated reactor flux directly mapped to CPU power draw in Gigawatts scaled!
-                    const dynamicFlux = (powerVal * 0.015 + (Math.random() - 0.5) * 0.002).toFixed(3);
-                    setActiveFlux(`${dynamicFlux} GW`);
                 }
             } catch (err) {
                 console.warn("Failed to fetch server system vitals", err);
@@ -109,98 +78,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
         return d.toLocaleTimeString('en-US', { hour12: false });
     };
 
-    // Button event dispatchers calling backend command endpoints
-    const handleShieldToggle = async () => {
-        try {
-            const res = await fetch("/api/system/control", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ command: 'shield' })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setShieldActive(data.shieldActive);
-                
-                window.dispatchEvent(new CustomEvent('append-sys-log', {
-                    detail: {
-                        message: `SYS: DEFENSE PERIMETER SHIELD GAIN MATRIX ${data.shieldActive ? 'ACTIVE' : 'STANDBY'} (100% INTENSITY).`,
-                        speak: data.speak
-                    }
-                }));
-            }
-        } catch (err) {
-            console.error("Shield toggle API error", err);
-        }
-    };
-
-    const handleOverdrivePower = async () => {
-        try {
-            const res = await fetch("/api/system/control", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ command: 'overdrive' })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setOverloaded(data.reactorOverdrive);
-                setCorePower(data.corePower);
-                
-                window.dispatchEvent(new CustomEvent('append-sys-log', {
-                    detail: {
-                        message: data.message ? `SYS: ${String(data.message).toUpperCase()}` : "SYS: REACTOR OVERDRIVE VISUALIZATION UPDATED.",
-                        speak: data.speak
-                    }
-                }));
-            }
-        } catch (err) {
-            console.error("Reactor overdrive API error", err);
-        }
-    };
-
-    const handleSatPing = async () => {
-        try {
-            const res = await fetch("/api/system/control", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ command: 'satlink' })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                
-                window.dispatchEvent(new CustomEvent('append-sys-log', {
-                    detail: {
-                        message: data.message ? `SYS: ${data.message.toUpperCase()}` : "SYS: LOCAL DATABASE ROUTING VERIFIED. HEALTH-LINK SYNCHRONIZED.",
-                        speak: data.speak
-                    }
-                }));
-            }
-        } catch (err) {
-            console.error("Satellite sync API error", err);
-        }
-    };
-
-    const handleVitalsRecalibrate = async () => {
-        try {
-            const res = await fetch("/api/system/control", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ command: 'recalibrate' })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setHeapHeadroom(data.heapHeadroom);
-                
-                window.dispatchEvent(new CustomEvent('append-sys-log', {
-                    detail: {
-                        message: "SYS: RUNTIME HEAP TELEMETRY RECALIBRATED. MEMORY HEADROOM UPDATED.",
-                        speak: data.speak
-                    }
-                }));
-            }
-        } catch (err) {
-            console.error("Vitals recalibrate API error", err);
-        }
-    };
+    // Formatting for log lines
 
     return (
         <div className="flex-1 flex flex-col mb-4 font-mono text-[11px] min-h-[280px] select-none gap-4">
@@ -226,13 +104,13 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                     <div>
                         <div className="flex justify-between text-[8px] tracking-[0.2em] uppercase mb-1.5 text-cyan-500/80">
                             <span>{t.lblPowerCore}</span>
-                            <span className={`${overloaded ? 'text-amber-400 animate-pulse font-bold' : 'text-cyan-400 font-bold'}`}>
+                            <span className="text-cyan-400 font-bold">
                                 {corePower}%
                             </span>
                         </div>
                         <div className="h-1 bg-black/50 w-full overflow-hidden border border-cyan-950/40">
                             <div 
-                                className={`h-full transition-all duration-700 ${overloaded ? 'bg-amber-400 shadow-[0_0_6px_rgba(245,158,11,0.6)]' : 'bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.6)]'}`}
+                                className="h-full transition-all duration-700 bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.6)]"
                                 style={{ width: `${Math.min(100, corePower)}%` }}
                             />
                         </div>
@@ -251,63 +129,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3 pt-2 text-[9px] text-cyan-500/90 border-t border-cyan-950/30 mt-3 font-mono">
-                        <div>
-                            <span className="text-cyan-600 block text-[7.5px] uppercase tracking-wider">Emission Spectra</span>
-                            <span className="text-cyan-300 font-bold">{activeWavelength}</span>
-                        </div>
-                        <div>
-                            <span className="text-cyan-600 block text-[7.5px] uppercase tracking-wider">Reactor Flux</span>
-                            <span className="text-cyan-300 font-bold">{activeFlux}</span>
-                        </div>
                     </div>
-                </div>
-
-                {/* DEFENSE SYSTEMS BUTTONS */}
-                <div className="mt-4">
-                    <div className="text-[8px] text-cyan-600 tracking-widest font-bold uppercase mb-2">{t.lblSystemInteraction}</div>
-                    <div className="grid grid-cols-4 gap-2">
-                        {/* Shield Toggle */}
-                        <button 
-                            onClick={handleShieldToggle}
-                            className={`p-2 border flex flex-col items-center justify-center gap-1.5 hover:bg-cyan-950/20 active:scale-95 transition-all rounded cursor-pointer ${shieldActive ? 'border-green-500/50 bg-green-950/15 text-green-400 shadow-[0_0_8px_rgba(34,197,94,0.35)]' : 'border-cyan-950/70 text-cyan-500 hover:border-cyan-600'}`}
-                            title="Deflection Shields Toggle"
-                        >
-                            <Shield className={`w-4 h-4 ${shieldActive ? 'animate-pulse' : ''}`} />
-                            <span className="text-[6.5px] uppercase font-bold tracking-wider">{t.lblShield}</span>
-                        </button>
-                        
-                        {/* Core Overdrive */}
-                        <button 
-                            onClick={handleOverdrivePower}
-                            className={`p-2 border flex flex-col items-center justify-center gap-1.5 hover:bg-cyan-950/20 active:scale-95 transition-all rounded cursor-pointer ${overloaded ? 'border-amber-500/50 bg-amber-950/15 text-amber-400 shadow-[0_0_8px_rgba(245,158,11,0.35)]' : 'border-cyan-950/70 text-cyan-500 hover:border-cyan-600'}`}
-                            title="Arc Reactor Overcharge"
-                        >
-                            <Zap className="w-4 h-4" />
-                            <span className="text-[6.5px] uppercase font-bold tracking-wider">{t.lblCorePow}</span>
-                        </button>
-
-                        {/* Satellite link sync */}
-                        <button 
-                            onClick={handleSatPing}
-                            className="p-2 border border-cyan-950/70 text-cyan-500 hover:border-cyan-500 hover:bg-cyan-950/20 active:scale-95 transition-all rounded cursor-pointer"
-                            title="Sync Stark Satellites Link"
-                        >
-                            <BarChart2 className="w-4 h-4" />
-                            <span className="text-[6.5px] uppercase font-bold tracking-wider">{t.lblSatLink}</span>
-                        </button>
-
-                        {/* Recalibration diagnostics */}
-                        <button 
-                            onClick={handleVitalsRecalibrate}
-                            className="p-2 border border-cyan-950/70 text-cyan-500 hover:border-cyan-500 hover:bg-cyan-950/20 active:scale-95 transition-all rounded cursor-pointer"
-                            title="Recalibrate System Diagnostics"
-                        >
-                            <Power className="w-4 h-4" />
-                            <span className="text-[6.5px] uppercase font-bold tracking-wider">{t.lblCalibrate}</span>
-                        </button>
-                    </div>
-                </div>
             </div>
 
             {/* SUB-PANEL 2: SYSTEM // RT-LOG */}

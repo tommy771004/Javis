@@ -807,28 +807,36 @@ export default function App() {
             audioEl.onerror = () => {
               cancelAnimationFrame(animationId);
               audioCtx.close();
-              console.warn("ElevenLabs audio decode error, falling back to browser-native speech.");
-              speakWithLocalSpeech(spokenText);
+              setLogs(prev => [...prev, `SYS: ElevenLabs audio decode error. (Fallback disabled)`]);
+              setCognitiveState('idle');
+              stopCommsChannel();
             };
 
             audioEl.play().catch(playErr => {
-              console.warn("Playback error - direct fallback:", playErr);
-              speakWithLocalSpeech(spokenText);
+              console.warn("ElevenLabs Playback error:", playErr);
+              setLogs(prev => [...prev, `SYS: ElevenLabs playback error. (Fallback disabled)`]);
+              setCognitiveState('idle');
+              stopCommsChannel();
             });
 
           } catch (audioContextError) {
-            console.warn("WebAudio dynamic analyser setup failed, falling back to local local voice engine", audioContextError);
-            speakWithLocalSpeech(spokenText);
+            console.warn("WebAudio dynamic analyser setup failed:", audioContextError);
+            setLogs(prev => [...prev, `SYS: WebAudio context failed. (Fallback disabled)`]);
+            setCognitiveState('idle');
+            stopCommsChannel();
           }
         } else {
           // KEY_MISSING or parsing/backend API error. Warn system notify and apply local fallback.
-          setLogs(prev => [...prev, `SYS: ElevenLabs API Key missing or expired. Falling back to native British vocalist...`]);
-          speakWithLocalSpeech(spokenText);
+          setLogs(prev => [...prev, `SYS: ElevenLabs TTS Failed. Check API Key or Network. (Fallback disabled)`]);
+          setCognitiveState('idle');
+          stopCommsChannel();
         }
       })
       .catch(err => {
-         console.warn("Severe ElevenLabs network call intersection, resorting to local vocal lines:", err);
-         speakWithLocalSpeech(spokenText);
+         console.warn("Severe ElevenLabs network call intersection:", err);
+         setLogs(prev => [...prev, `SYS: ElevenLabs TTS Network Error. (Fallback disabled)`]);
+         setCognitiveState('idle');
+         stopCommsChannel();
       });
 
       return;

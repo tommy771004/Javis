@@ -916,14 +916,16 @@ export function helperValidateCommand(command: string): { safe: boolean; reason:
   let isSafe = true;
   let reason = "";
 
-  const safeVerbs = [
+  const settings = typeof serverDB !== 'undefined' ? serverDB.getSettings() : {} as any;
+
+  const safeVerbs = settings.safeVerbs || [
     'git', 'node', 'npm', 'python', 'echo', 'type', 'cat', 'whoami', 'pwd', 
     'hostname', 'ver', 'systeminfo', 'wmic', 'tasklist', 'dir', 'ls', 'ping', 
     'nslookup', 'curl', 'wget', 'select-object', 'out-string', 'out-default',
     'measure-object', 'export-clixml', 'resolve-path', 'test-path'
   ];
 
-  const blockedTriggers = [
+  const blockedTriggers = settings.blockedTriggers || [
     'rm', 'del', 'remove-item', 'kill', 'stop-process', 'restart-computer',
     'shutdown', 'netsh', 'reg', 'sc', 'npx', 'bash', 'sh', 'cmd', 'powershell',
     'invoke-expression', 'iex', 'invoke-webrequest', 'iwr', 'start-process',
@@ -2773,24 +2775,30 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
   // --- Core Process Runtime Reboot Endpoint ---
   app.post("/api/system/reboot", (req, res) => {
     try {
-      serverDB.addSystemLog('SYS', 'WARN', 'REACTOR POWER SYSTEM REBOOT: Commencing complete physical process shutdown and supervisor reload cycle...');
-      
-      // Physically reset state values
-      shieldActive = false;
-      reactorOverdrive = false;
-      corePower = 98;
-      satelliteLinked = false;
-            computedCpuUsage = 0;
+      serverDB.addSystemLog('SYS', 'WARN', 'SYSTEM REBOOT: Commencing native process restart cycle...');
       
       res.json({ 
         success: true, 
-        message: "Reactor reboot pipeline initialized. Subprocess exiting immediately..." 
+        message: "Reboot sequence initialized. Detaching and spawning replacement process..." 
       });
       
       // Delay termination/exit to allow successful transit of the HTTP response first
       setTimeout(() => {
+        const { spawn } = require('child_process');
+        
+        // Spawn a detached replacement of the current process
+        const child = spawn(process.argv[0], process.argv.slice(1), {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env,
+          cwd: process.cwd()
+        });
+        
+        child.unref();
+        
+        // Graceful exit
         process.exit(0);
-      }, 800);
+      }, 1000);
       
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -3820,11 +3828,6 @@ JARVIS Synthesis:`;
           // Force DB persist cache flush
           serverDB.purgeCache();
           serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Flushed in-transit document pools and transaction buffers.');
-
-          // Reset baseline hardware simulation counters
-          shieldActive = false;
-          corePower = 98;
-          computedCpuUsage = 12; // Cooled baseline
 
           serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Subsystem normalizing sequence completed. Status: green (nominal).');
         }

@@ -537,7 +537,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       if (data.success) {
         if (cliId === "copilot") {
           const authMsg = data.authenticated 
-            ? `Active pipeline connected to GitHub CLI protocol. OAuth validated: Logged in as ${data.user}, sir.`
+            ? `GitHub CLI OAuth validated. Logged in as ${data.user}.`
             : `Active pipeline connected. Warning: ${data.details}`;
           triggerLog(`SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`, authMsg);
         } else if (cliId === "claude-code" || cliId === "cursor-agent" || cliId === "devin" || cliId === "gemini-cli") {
@@ -548,12 +548,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         } else if (engineParam === "stark-quantum") {
           triggerLog(
             `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
-            `Quantum Entanglement established. Synaptic coherence at ${(data.synapticCoherence * 100).toFixed(2)}%, sir.`
+            `Connected to ${cliId}.`
           );
         } else {
           triggerLog(
             `SYS: ACTIVE AGENT COMPILER TRANSLATION TO ${cliId.toUpperCase()}`,
-            `Active pipeline connected to local PowerShell compiler. Execution policy: ${data.policy}, sir.`
+            `Connected to local PowerShell compiler. Policy: ${data.policy}.`
           );
         }
       } else {
@@ -568,7 +568,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   };
 
   const handleTestCLI = async () => {
-    triggerLog("SYS: INITIATING COGNITIVE TRANSMISSION SPEED DIAGNOSTIC...", "Initiating integrity scan for terminal interfaces, sir.");
+    triggerLog("SYS: INITIATING COGNITIVE TRANSMISSION SPEED DIAGNOSTIC...", "Initiating latency scan.");
     setIsScanning(true);
     setScanMessage("Ping response established... Analyzing latency...");
     
@@ -584,12 +584,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       if (data.success) {
         triggerLog(
           `SYS: INTEGRITY SCAN COMPLETED. LATENCY: ${data.latencyMs}ms VIA ${data.endpoint.toUpperCase()}.`,
-          data.speak || "Grid verified. Primary command channels are fully stable, sir."
+          data.speak || "Latency scan completed."
         );
       } else {
         triggerLog(
           `SYS: CRITICAL TELEMETRY PROBE FAILURE - CONNECTION OFFLINE.`,
-          data.speak || "Physical backup networks failed. Outer communication systems are offline, sir."
+          data.speak || "Latency scan failed."
         );
       }
     } catch (e: any) {
@@ -597,7 +597,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       setScanMessage("");
       triggerLog(
         `SYS: DIAGNOSTIC PROBE LIMIT EXCEEDED. HOST UNREACHABLE.`,
-        "Warning, sir. Sub-orbital connection failed. Physical networks are offline."
+        "Scan failed due to network error."
       );
     }
   };
@@ -615,10 +615,10 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const data = await resp.json();
       if (data.success) {
         setMcpStatus(`[SUCCESS] Connected to ${data.count} external MCP server(s).`);
-        triggerLog(`SYS: MODEL CONTEXT PROTOCOL SYNCHRONIZATION`, `Connected to ${data.count} external Model Context Protocol server(s). Integration parameters verified and standard stdio streams bonded, sir.`);
+        triggerLog(`SYS: MODEL CONTEXT PROTOCOL SYNCHRONIZATION`, `Connected to ${data.count} MCP server(s).`);
       } else {
         setMcpStatus(`[FAULT] Connection failed: ${data.error}`);
-        triggerLog(`SYS: MCP SYNC FAULT`, `Failed to connect to MCP external servers. Trace data logic error recorded, sir: ${data.error}`);
+        triggerLog(`SYS: MCP SYNC FAULT`, `MCP connection failed: ${data.error}`);
       }
     } catch (e: any) {
       setMcpStatus(`[SYS NULL] Network payload error. Standard socket connection dropped.`);
@@ -850,18 +850,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
   const handlePurgeCache = async () => {
     setIsPurgingCache(true);
-    triggerLog("SYS: INITIATING SYSTEM WIDE CACHE PURGE...", "Initiating cache purge protocols, sir.");
+    triggerLog("SYS: INITIATING SYSTEM WIDE CACHE PURGE...", "Purging cache.");
     try {
       const resp = await fetch("/api/system/purge-cache", { method: "POST" });
       const data = await resp.json();
       if (data.success) {
         window.dispatchEvent(new Event(CACHE_PURGE_RESET_EVENT));
-        triggerLog("SYS: CACHE PURGE SUCCESSFUL. DATABASE RELOADED.", "System cache has been successfully purged, sir.");
+        triggerLog("SYS: CACHE PURGE SUCCESSFUL. DATABASE RELOADED.", "Cache purged.");
       } else {
         throw new Error(data.error || "Purge Failed");
       }
     } catch (e: any) {
-      triggerLog(`SYS: CACHE PURGE FAILED - ${e.message}`, "Cache purge failed, sir.");
+      triggerLog(`SYS: CACHE PURGE FAILED - ${e.message}`, "Cache purge failed.");
     } finally {
       setIsPurgingCache(false);
     }
@@ -897,7 +897,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const data = await res.json();
       if (data.success) {
         setMcpWebhooks([...mcpWebhooks, data.webhook]);
-        triggerLog(`SYS: NEW WEBHOOK CONFIGURED [${name}]`, "Webhook routing active, sir.");
+        triggerLog(`SYS: NEW WEBHOOK CONFIGURED [${name}]`, "Webhook configured.");
       }
     } catch (e) {
       console.error(e);
@@ -908,7 +908,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     try {
       await fetch(`/api/mcp/webhooks/${id}`, { method: 'DELETE' });
       setMcpWebhooks(mcpWebhooks.filter(w => w.id !== id));
-      triggerLog(`SYS: WEBHOOK DELETED [${name}]`, "Network link severed, sir.");
+      triggerLog(`SYS: WEBHOOK DELETED [${name}]`, "Webhook deleted.");
     } catch (e) {
       console.error(e);
     }
@@ -937,7 +937,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const data = await res.json();
       if (data.success) {
         setMcpRoutines([...mcpRoutines, data.routine]);
-        triggerLog(`SYS: NEW ROUTINE COMPILED [${name}]`, "New routine synchronized to the core matrix, sir.");
+        triggerLog(`SYS: NEW ROUTINE COMPILED [${name}]`, "Routine compiled.");
       }
     } catch (e) {
       console.error(e);
@@ -948,7 +948,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     try {
       await fetch(`/api/mcp/routines/${id}`, { method: 'DELETE' });
       setMcpRoutines(mcpRoutines.filter(r => r.id !== id));
-      triggerLog(`SYS: ROUTINE PURGED [${name}]`, "Routine wiped from memory banks.");
+      triggerLog(`SYS: ROUTINE PURGED [${name}]`, "Routine deleted.");
     } catch (e) {
       console.error(e);
     }
@@ -960,8 +960,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const data = await res.json();
       if (data.success && data.prompt) {
         const source = data.source === 'mcp-server' ? 'MCP server prompt' : 'stored shortcut';
-        triggerLog(`SYS: Routine dispatched (${source}) — sending ${data.prompt.length} chars to conversation.`);
-        window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
+        triggerLog(`SYS: Routine dispatched (${source}) to background task execution. taskId: ${data.taskId}`);
+        
         setTimeout(() => onClose(), 800);
       } else {
         triggerLog(`SYS: Routine execute failed — ${data.error || 'no prompt returned'}`);

@@ -137,13 +137,13 @@ export async function fetchOpenRouterWithFallback(
   if (routingPolicy === 'haiku') {
     targetFallbackModels = FREE_MODELS;
   } else if (routingPolicy === 'sonnet') {
-    targetFallbackModels = process.env.ALLOW_PAID_FALLBACK === 'true' ? PAID_FALLBACK_MODELS : FALLBACK_MODELS;
+    targetFallbackModels = PAID_FALLBACK_MODELS;
   } else if (routingPolicy === 'auto') {
     const isComplex = prompt.length >= 10000;
-    if (isComplex && process.env.ALLOW_PAID_FALLBACK === 'true') {
+    if (isComplex) {
       targetFallbackModels = [...PAID_FALLBACK_MODELS, ...FREE_MODELS];
     } else {
-      targetFallbackModels = FALLBACK_MODELS;
+      targetFallbackModels = [...FREE_MODELS, ...PAID_FALLBACK_MODELS];
     }
   }
 

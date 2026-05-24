@@ -76,22 +76,7 @@ export function SysMonitor({
         return () => clearInterval(interval);
     }, []);
 
-    // Fluctuating vitals effect to make it look truly active
-    useEffect(() => {
-        const vitalsInterval = setInterval(() => {
-            setHeartRate(prev => {
-                const change = Math.random() > 0.5 ? 1 : -1;
-                const next = prev + change;
-                return next >= 68 && next <= 78 ? next : prev;
-            });
-            setBodyTemp(prev => {
-                const change = (Math.random() - 0.5) * 0.1;
-                const next = Number((prev + change).toFixed(1));
-                return next >= 98.4 && next <= 98.9 ? next : prev;
-            });
-        }, 3000);
-        return () => clearInterval(vitalsInterval);
-    }, []);
+
 
     const StatBar = ({ label, value, type = 'percent' }: { label: string, value: number | string, type?: 'percent' | 'text' }) => (
         <div className="mb-3 border border-cyan-950/60 p-2 relative bg-cyan-950/5 hover:bg-cyan-950/10 transition-colors">
