@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 import { JarvisLogo } from './JarvisLogo';
-import { hermesDB } from '../services/db';
+import { apiClient } from '../services/apiClient';
 import { playTactileClick } from '../services/audioSynth';
 
 export interface SecuritySettings {
@@ -315,7 +315,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       runPathScan(true);
 
       // Fetch dynamic cognitive memories from the backend RAG memory bank
-      hermesDB.getCognitiveMemories().then(mems => {
+      apiClient.getCognitiveMemories().then(mems => {
         setCognitiveMemories(mems);
       }).catch(err => {
         console.warn("Failed to load cognitive memories on mount", err);
@@ -734,7 +734,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         "Purging cognitive memory fragment from active RAG bank, sir."
       );
       
-      const remainingMems = await hermesDB.deleteCognitiveMemory(index);
+      const remainingMems = await apiClient.deleteCognitiveMemory(index);
       setCognitiveMemories(remainingMems);
       window.dispatchEvent(new CustomEvent('cognitive-memory-updated'));
       
@@ -758,7 +758,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         "Wiping all cognitive fragments from active RAG bank, sir."
       );
       
-      const remainingMems = await hermesDB.clearCognitiveMemories();
+      const remainingMems = await apiClient.clearCognitiveMemories();
       setCognitiveMemories(remainingMems);
       window.dispatchEvent(new CustomEvent('cognitive-memory-updated'));
       
@@ -785,7 +785,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         "Writing new directive to persistent memory banks, sir."
       );
       
-      const updatedMems = await hermesDB.addCognitiveMemory(addedText);
+      const updatedMems = await apiClient.addCognitiveMemory(addedText);
       setCognitiveMemories(updatedMems);
       setNewMemory('');
       

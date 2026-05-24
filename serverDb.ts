@@ -104,40 +104,7 @@ interface DatabaseSchema {
 
 const DB_FILE = path.join(process.cwd(), 'database.json');
 
-const INITIAL_SKILLS: DbSkill[] = [
-  { 
-    id: 'sqlite-fts-indexer', 
-    name: 'sqlite-fts-indexer', 
-    version: 'v1.0', 
-    status: 'active', 
-    description: 'Builds and queries fast SQLite FTS5 index matrices.',
-    yamlContent: '---\nname: sqlite-fts-indexer\ndescription: Core full-text indexing engine workflows.\nversion: 1.0\n---'
-  },
-  { 
-    id: 'task-pipeline-manager', 
-    name: 'task-pipeline-manager', 
-    version: 'v1.2', 
-    status: 'active', 
-    description: 'Coordinates pending cognitive pipelines, tracking progress and status histories.',
-    yamlContent: '---\nname: task-pipeline-manager\ndescription: Workflows for scheduling and evaluating multi-step tasks.\nversion: 1.2\n---'
-  },
-  { 
-    id: 'workspace-file-writer', 
-    name: 'workspace-file-writer', 
-    version: 'v2.1', 
-    status: 'active', 
-    description: 'Reviews filesystem permission targets and applies structured file writes safely.',
-    yamlContent: '---\nname: workspace-file-writer\ndescription: System writes and patch application with security guardrails.\nversion: 2.1\n---'
-  },
-  { 
-    id: 'router-cost-estimator', 
-    name: 'router-cost-estimator', 
-    version: 'v1.5', 
-    status: 'active', 
-    description: 'Tracks language model token spend rates and prompts routing decisions dynamically.',
-    yamlContent: '---\nname: router-cost-estimator\ndescription: Token and budget allocation workflows for API integrations.\nversion: 1.5\n---'
-  }
-];
+const INITIAL_SKILLS: DbSkill[] = [];
 
 class ServerPersistenceEngine {
   private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
@@ -236,12 +203,7 @@ class ServerPersistenceEngine {
       }
     ];
 
-    const INITIAL_COGNITIVE_MEMORIES = [
-      "User prefers lightweight UI themes with clean developer metrics.",
-      "Local system manages shell task execution safely based on permission filters.",
-      "Task manager utilizes automatic file writing pipelines for reporting.",
-      "Cost estimations are indexed continuously to preserve API budgets."
-    ];
+    const INITIAL_COGNITIVE_MEMORIES: string[] = [];
 
     try {
       if (fs.existsSync(DB_FILE)) {
@@ -490,6 +452,17 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
 
   getTasks(): DbTask[] {
     return this.cache.tasks || [];
+  }
+
+  // --- Overdrive Deep Indexing API ---
+  addDeepIndex(title: string, content: string) {
+    try {
+      if (!this.ftsDb) return;
+      const insertDoc = this.ftsDb.prepare('INSERT INTO fts_docs (type, title, excerpt, content) VALUES (?, ?, ?, ?)');
+      insertDoc.run('skill', title, content.substring(0, 100), content);
+    } catch(e) {
+      console.error("Deep index FTS insertion failed", e);
+    }
   }
 
   // --- Backend FTS5 Matching for Tasks ---

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { hermesDB, DbSkill, DbCostLog } from '../services/db';
+import { apiClient, DbSkill, DbCostLog } from '../services/apiClient';
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
 import { useI18n } from '../services/i18n';
@@ -27,6 +27,31 @@ interface HermesDashboardProps {
   };
   isMicActive?: boolean;
 }
+
+const parseSDP = (sdp?: string) => {
+  if (!sdp) return [];
+  const lines = sdp.split('\n').filter(l => l.trim().length > 0);
+  const parsed = [];
+  for (const line of lines) {
+    if (line.startsWith('m=audio')) parsed.push({ type: 'MEDIA', val: line });
+    else if (line.startsWith('a=rtpmap')) parsed.push({ type: 'CODEC', val: line });
+    else if (line.startsWith('a=candidate')) parsed.push({ type: 'ICE', val: line.replace(/candidate:[\w\d]+/g, 'candidate:***') });
+    else if (line.startsWith('c=')) parsed.push({ type: 'CONN', val: line });
+    else if (line.startsWith('a=fmtp')) parsed.push({ type: 'FMTP', val: line });
+    else if (line.startsWith('v=')) parsed.push({ type: 'VER', val: line });
+  }
+  return parsed.length > 0 ? parsed : [{ type: 'RAW', val: sdp.substring(0, 150) + '...' }];
+};
+
+const renderParsedSDP = (parsed: {type: string, val: string}[]) => {
+  if (parsed.length === 1 && parsed[0].type === 'RAW') return <div className="whitespace-pre">{parsed[0].val}</div>;
+  return parsed.map((p, i) => (
+    <div key={i} className="mb-0.5 flex gap-1.5 border-b border-emerald-900/20 pb-0.5 hover:bg-emerald-900/10">
+      <span className="text-emerald-400 font-bold min-w-[35px]">[{p.type}]</span>
+      <span className="text-emerald-600/90 truncate">{p.val}</span>
+    </div>
+  ));
+};
 
 export function HermesDashboard({ 
   cognitiveState, 
@@ -73,6 +98,11 @@ export function HermesDashboard({
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
   const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
+  
+  // MCP Tool Execution States
+  const [mcpToolParams, setMcpToolParams] = useState<{[key: string]: string}>({});
+  const [mcpToolResults, setMcpToolResults] = useState<{[key: string]: any}>({});
+  const [mcpExecutingTools, setMcpExecutingTools] = useState<{[key: string]: boolean}>({});
   
   // New entry fields
   const [newWebhookName, setNewWebhookName] = useState('');
@@ -153,15 +183,42 @@ export function HermesDashboard({
     }
   };
 
+  const handleExecuteMcpTool = async (serverName: string, toolName: string) => {
+    const key = `${serverName}-${toolName}`;
+    setMcpExecutingTools(prev => ({ ...prev, [key]: true }));
+    try {
+      let args = {};
+      const paramsText = mcpToolParams[key];
+      if (paramsText) {
+        args = JSON.parse(paramsText);
+      }
+      
+      const res = await fetch('/api/mcp/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverName, toolName, args })
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        setMcpToolResults(prev => ({ ...prev, [key]: data.result }));
+        setTerminalLogs(prev => [...prev, `[MCP SYSTEM] Tool '${toolName}' executed successfully.`]);
+      } else {
+        setMcpToolResults(prev => ({ ...prev, [key]: `ERROR: ${data.error}` }));
+        setTerminalLogs(prev => [...prev, `[MCP FAULT] Tool '${toolName}' execution failed: ${data.error}`]);
+      }
+    } catch (err: any) {
+      setMcpToolResults(prev => ({ ...prev, [key]: `ERROR: ${err.message}` }));
+      setTerminalLogs(prev => [...prev, `[MCP FAULT] Tool '${toolName}' execution failed: ${err.message}`]);
+    } finally {
+      setMcpExecutingTools(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
   const handleAddWebhook = async () => {
     if (!newWebhookName || !newWebhookUrl) return;
     try {
-      const res = await fetch('/api/mcp/webhooks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newWebhookName, url: newWebhookUrl })
-      });
-      const data = await res.json();
+      const data = await apiClient.addMcpWebhook(newWebhookName, newWebhookUrl);
       if (data.success) {
         setNewWebhookName('');
         setNewWebhookUrl('');
@@ -175,7 +232,7 @@ export function HermesDashboard({
 
   const handleDeleteWebhook = async (id: string, name: string) => {
     try {
-      await fetch(`/api/mcp/webhooks/${id}`, { method: 'DELETE' });
+      await apiClient.deleteMcpWebhook(id);
       setTerminalLogs(prev => [...prev, `[MCP WEBHOOK] Deleted routing node: ${name}`]);
       loadMcpData();
     } catch (e) {
@@ -199,12 +256,7 @@ export function HermesDashboard({
   const handleAddRoutine = async () => {
     if (!newRoutineName || !newRoutinePrompt) return;
     try {
-      const res = await fetch('/api/mcp/routines', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newRoutineName, prompt: newRoutinePrompt })
-      });
-      const data = await res.json();
+      const data = await apiClient.addMcpRoutine(newRoutineName, newRoutinePrompt);
       if (data.success) {
         setNewRoutineName('');
         setNewRoutinePrompt('');
@@ -218,7 +270,7 @@ export function HermesDashboard({
 
   const handleDeleteRoutine = async (id: string, name: string) => {
     try {
-      await fetch(`/api/mcp/routines/${id}`, { method: 'DELETE' });
+      await apiClient.deleteMcpRoutine(id);
       setTerminalLogs(prev => [...prev, `[MCP ROUTINE] Purged prompt sequence: ${name}`]);
       loadMcpData();
     } catch (e) {
@@ -228,11 +280,11 @@ export function HermesDashboard({
 
   const handleExecuteRoutine = async (id: string, name: string) => {
     try {
-      const res = await fetch(`/api/mcp/routines/${id}/execute`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success && data.prompt) {
-        setTerminalLogs(prev => [...prev, `[MCP MACRO] Dispatching macro prompt "${name}" into central pipeline`]);
-        window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
+      const data = await apiClient.executeMcpRoutine(id);
+      if (data.success && data.task) {
+        setTerminalLogs(prev => [...prev, `[MCP MACRO] Dispatched macro "${name}" as background Task [${data.task.id}]`]);
+        const tasksData = await apiClient.searchTasks(taskSearchQueryRef.current);
+        setTasks(tasksData);
       }
     } catch (e) {
       console.error(e);
@@ -243,11 +295,7 @@ export function HermesDashboard({
     setTaskSearchQuery('');
     taskSearchQueryRef.current = '';
     try {
-      const res = await fetch('/api/tasks/search?q=');
-      if (res.ok) {
-        const data = await res.json();
-        setTasks(data);
-      }
+      const data = await apiClient.searchTasks(''); setTasks(data);
     } catch (e) {
       console.error(e);
     }
@@ -307,14 +355,14 @@ export function HermesDashboard({
   // Load real server database values
   const loadDataFromBackend = async () => {
     try {
-      const dbSkills = await hermesDB.getSkills();
+      const dbSkills = await apiClient.getSkills();
       setSkills(dbSkills);
       if (dbSkills.length > 0 && !selectedEvolutionSkill) {
         const activeOne = dbSkills.find(s => s.status === 'active') || dbSkills[0];
         setSelectedEvolutionSkill(activeOne.id);
       }
 
-      const stats = await hermesDB.getGatewayStats();
+      const stats = await apiClient.getGatewayStats();
       setBudget(stats.budget);
       setSpent(stats.spent);
       setCacheHits(stats.cacheHits);
@@ -322,7 +370,7 @@ export function HermesDashboard({
       
       let memoriesCount = 0;
       try {
-        const memories = await hermesDB.getCognitiveMemories();
+        const memories = await apiClient.getCognitiveMemories();
         memoriesCount = memories.length;
       } catch (err) {
         console.warn("Failed to load cognitive memories in dashboard loop:", err);
@@ -569,7 +617,7 @@ export function HermesDashboard({
     setCognitiveState('searching'); // Set HUD to emerald search color
 
     try {
-      const matches = await hermesDB.queryFTS(searchQuery);
+      const matches = await apiClient.queryFTS(searchQuery);
       setSearchResults(matches);
       
       setTerminalLogs(prev => [
@@ -587,7 +635,7 @@ export function HermesDashboard({
 
   const handleResetBudget = async () => {
     try {
-      await hermesDB.resetBudget();
+      await apiClient.resetBudget();
       await loadDataFromBackend();
       setTerminalLogs(prev => [...prev, '[SYSTEM] Budget ledger reset successfully. Core communications unlocked.']);
     } catch (err) {
@@ -1018,10 +1066,7 @@ export function HermesDashboard({
                       </button>
                       <button
                         onClick={async () => {
-                          const res = await fetch(`/api/tasks/${deletingTaskId}`, {
-                            method: 'DELETE'
-                          });
-                          if (res.ok) {
+                          await apiClient.deleteTask(deletingTaskId); if (true) {
                             setDeletingTaskId(null);
                             loadDataFromBackend();
                           }
@@ -1103,7 +1148,7 @@ export function HermesDashboard({
                     transition={{ 
                       duration: isEvolving ? 0.6 : (cognitiveState === 'speaking' ? 1.4 : (cognitiveState === 'thinking' ? 0.9 : 4.5)), 
                       repeat: Infinity, 
-                      repeatDelay: Math.random() * 0.5,
+                      repeatDelay: 0.5,
                       ease: 'easeInOut' 
                     }}
                   />
@@ -1119,7 +1164,7 @@ export function HermesDashboard({
                      transition={{ 
                        duration: isEvolving ? 0.7 : (cognitiveState === 'speaking' ? 1.6 : (cognitiveState === 'thinking' ? 1.1 : 5.2)), 
                        repeat: Infinity, 
-                       repeatDelay: 0.8 + Math.random(),
+                       repeatDelay: 1.0,
                        ease: 'linear', 
                        delay: 0.3 
                      }}
@@ -1136,7 +1181,7 @@ export function HermesDashboard({
                     transition={{ 
                       duration: isEvolving ? 0.5 : (cognitiveState === 'speaking' ? 1.1 : (cognitiveState === 'thinking' ? 0.7 : 3.8)), 
                       repeat: Infinity, 
-                      repeatDelay: Math.random() * 1.2,
+                      repeatDelay: 0.8,
                       ease: 'circOut', 
                       delay: 0.6 
                     }}
@@ -1517,18 +1562,18 @@ export function HermesDashboard({
               <div className="grid grid-cols-2 gap-2 text-[9px]">
                 <div className="border border-emerald-900/40 bg-black/40 p-2 font-mono flex flex-col">
                   <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP OFFER MATRIX (TRANS)</span>
-                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
-                    {isMicActive 
-                      ? (webrtcStats?.offerSdp || "Awaiting SDP offer generation...")
-                      : "Awaiting mic stream capture..."
+                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
+                    {isMicActive && webrtcStats?.offerSdp
+                      ? renderParsedSDP(parseSDP(webrtcStats.offerSdp))
+                      : "Awaiting SDP offer generation..."
                     }
                   </div>
                 </div>
                 <div className="border border-emerald-900/40 bg-black/40 p-2 font-mono flex flex-col">
                   <span className="text-emerald-500 font-bold border-b border-emerald-900/40 pb-1 mb-1 block uppercase">SDP ANSWER MATRIX (RECV)</span>
-                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 whitespace-pre leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
-                    {isMicActive && webrtcStats?.state === 'connected'
-                      ? (webrtcStats?.answerSdp || "Awaiting receiver SDP answer...")
+                  <div className="flex-1 min-h-[60px] max-h-[100px] overflow-y-auto text-emerald-600/90 leading-relaxed select-text pr-1 select-all scrollbar-cyan font-mono text-[8px]">
+                    {isMicActive && webrtcStats?.state === 'connected' && webrtcStats?.answerSdp
+                      ? renderParsedSDP(parseSDP(webrtcStats.answerSdp))
                       : "Awaiting receiver SDP answer..."
                     }
                   </div>
@@ -1738,6 +1783,32 @@ export function HermesDashboard({
                                 </ul>
                               </div>
                             )}
+
+                            {/* Execute Form */}
+                            <div className="mt-2 space-y-1">
+                              <textarea 
+                                value={mcpToolParams[`${tool._server}-${tool.name}`] || ''}
+                                onChange={(e) => setMcpToolParams(prev => ({ ...prev, [`${tool._server}-${tool.name}`]: e.target.value }))}
+                                placeholder='{"arg1": "value"}'
+                                className="w-full bg-black/50 border border-emerald-900/30 rounded px-1.5 py-1 text-[8px] text-emerald-400 font-mono tracking-wider focus:outline-none focus:border-emerald-500 min-h-[30px]"
+                                spellCheck="false"
+                              />
+                              <button
+                                onClick={() => handleExecuteMcpTool(tool._server, tool.name)}
+                                disabled={mcpExecutingTools[`${tool._server}-${tool.name}`]}
+                                className="w-full py-1 bg-emerald-900/30 hover:bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[8px] uppercase tracking-wider font-bold transition-colors disabled:opacity-50"
+                              >
+                                {mcpExecutingTools[`${tool._server}-${tool.name}`] ? 'EXECUTING...' : 'EXECUTE TOOL'}
+                              </button>
+                            </div>
+
+                            {/* Execution Results */}
+                            {mcpToolResults[`${tool._server}-${tool.name}`] && (
+                              <div className="mt-1.5 bg-black/40 p-1.5 border-l-2 border-emerald-500 text-[8px] text-emerald-300 font-mono break-all max-h-[100px] overflow-y-auto">
+                                <pre className="whitespace-pre-wrap">{typeof mcpToolResults[`${tool._server}-${tool.name}`] === 'object' ? JSON.stringify(mcpToolResults[`${tool._server}-${tool.name}`], null, 2) : String(mcpToolResults[`${tool._server}-${tool.name}`])}</pre>
+                              </div>
+                            )}
+
                           </div>
                         ))
                       ) : (

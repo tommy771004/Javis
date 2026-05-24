@@ -8,7 +8,7 @@ import { ActivityLog } from './components/ActivityLog';
 import { FileUpload } from './components/FileUpload';
 import { CommandInput } from './components/CommandInput';
 import { Footer } from './components/Footer';
-import { hermesDB } from './services/db';
+import { apiClient } from './services/apiClient';
 
 import { SettingsModal, SecuritySettings } from './components/SettingsModal';
 import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
@@ -173,7 +173,7 @@ export default function App() {
   // Synchronize conversational history from backend master database
   const syncLogsFromBackend = async () => {
     try {
-      const savedMsgs = await hermesDB.getSessionMessages("default-session");
+      const savedMsgs = await apiClient.getSessionMessages("default-session");
       if (savedMsgs.length > 0) {
         const logStrings = savedMsgs.map(msg => {
           const role = msg.role === 'user' ? 'USER' : msg.role === 'system' ? 'SYS' : isHermesActive ? 'HERMES' : 'JARVIS';

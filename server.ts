@@ -23,22 +23,83 @@ import { Worker } from "worker_threads";
 
 function toggleTrueOverdriveWorker(active: boolean) {
   if (active) {
-    serverDB.addSystemLog('SYS', 'WARN', 'Overdrive active: Spawning physical compute workers to max out hardware core utilization and elevating process priority.');
+    serverDB.addSystemLog('SYS', 'WARN', 'Overdrive active: Spawning physical compute workers to perform deep codebase and dependency FTS index parsing.');
     try {
        os.setPriority(os.constants.priority.PRIORITY_HIGH);
     } catch(e) {}
     const cores = os.cpus().length || 1;
     for (let i = 0; i < cores; i++) {
         const workerCode = `
+          const fs = require('fs');
+          const path = require('path');
+          const { parentPort } = require('worker_threads');
+
+          function walkDir(dir) {
+            let results = [];
+            try {
+              const list = fs.readdirSync(dir);
+              for (let file of list) {
+                const fullPath = path.join(dir, file);
+                const stat = fs.statSync(fullPath);
+                if (stat && stat.isDirectory()) {
+                  if (!fullPath.includes('.git')) {
+                     results = results.concat(walkDir(fullPath));
+                  }
+                } else {
+                  if (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js') || file.endsWith('.d.ts')) {
+                    results.push(fullPath);
+                  }
+                }
+              }
+            } catch(e) {}
+            return results;
+          }
+
+          const allFiles = walkDir(process.cwd());
+          
+          for (let i = allFiles.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [allFiles[i], allFiles[j]] = [allFiles[j], allFiles[i]];
+          }
+
+          let fileIndex = 0;
           setInterval(() => {
-            let total = 0;
-            for(let j=0; j<5000000; j++) {
-               total += Math.sqrt(j) * Math.sin(j);
+            for(let i = 0; i < 20; i++) {
+                if (fileIndex >= allFiles.length) fileIndex = 0;
+                if (allFiles.length === 0) return;
+                
+                const filePath = allFiles[fileIndex];
+                fileIndex++;
+                
+                try {
+                   const content = fs.readFileSync(filePath, 'utf8');
+                   const funcRegex = /(?:function|const|let|class|interface|type)\\s+([a-zA-Z0-9_]+)\\s*(?:=|\\(|<|extends|implements|\\{)/g;
+                   let match;
+                   let extractedSymbols = [];
+                   while ((match = funcRegex.exec(content)) !== null) {
+                      if(match[1].length > 2) extractedSymbols.push(match[1]);
+                   }
+                   
+                   if(extractedSymbols.length > 0) {
+                      if (Math.random() < 0.05) { // Only stream 5% back to avoid main thread starvation
+                          parentPort.postMessage({
+                             type: 'symbol_chunk',
+                             file: filePath.replace(process.cwd(), ''),
+                             symbols: extractedSymbols.slice(0, 15).join(', ')
+                          });
+                      }
+                   }
+                } catch(e) {}
             }
-          }, 50);
+          }, 10);
         `;
         try {
           const w = new Worker(workerCode, { eval: true });
+          w.on('message', (msg) => {
+            if (msg.type === 'symbol_chunk') {
+               serverDB.addDeepIndex(`Codebase Matrix [${msg.file}]`, `Symbols extracted: ${msg.symbols}`);
+            }
+          });
           overdriveWorkerObjs.push(w);
         } catch(e) {}
     }
@@ -53,6 +114,33 @@ function toggleTrueOverdriveWorker(active: boolean) {
       });
       overdriveWorkerObjs = [];
     }
+  }
+}
+// --- MCP External Webhook Dispatcher ---
+function broadcastMcpEvent(eventType: string, payload: any) {
+  try {
+    const activeWebhooks = serverDB.getMcpWebhooks().filter(w => w.active);
+    if (activeWebhooks.length === 0) return;
+
+    const eventPayload = {
+      event: eventType,
+      timestamp: new Date().toISOString(),
+      data: payload
+    };
+
+    activeWebhooks.forEach(webhook => {
+      fetch(webhook.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(eventPayload)
+      }).then(res => {
+        serverDB.addSystemLog('API', 'INFO', `Webhook ${webhook.name} [${eventType}] delivered with status ${res.status}`);
+      }).catch(err => {
+        serverDB.addSystemLog('API', 'ERROR', `Webhook ${webhook.name} [${eventType}] failed: ${err.message}`);
+      });
+    });
+  } catch(e) {
+    console.error("MCP Webhook Broadcast Error:", e);
   }
 }
 
@@ -1297,6 +1385,8 @@ INTEGRATION ENGINE DETAILS:
         cachedTokens: finalCachedTokens
       });
 
+      broadcastMcpEvent('CHAT_COMPLETION', { userPrompt: message, botResponse: result.text, model: actualModel, costUsd: calculatedCost });
+
       // Log transaction details
       serverDB.addCostLog({
         id: Math.random().toString(36).substring(7),
@@ -1555,6 +1645,7 @@ User: Optimize the skill.`;
           description: mutatedDescription
         });
         serverDB.addSystemLog('GEPA', 'SUCCESS', `Successfully evolved skill ${targetSkill.name} to ${nextVer}`);
+        broadcastMcpEvent('SKILL_EVOLVED', { skillId: targetSkill.id, name: targetSkill.name, version: nextVer, description: mutatedDescription });
         sendLog(`[SUCCESS] ${targetSkill.name} upgraded to next version in database.`);
       } else {
         sendLog(`[WARN] Mutation aborted due to instability.`);
@@ -1652,14 +1743,15 @@ User: Optimize the skill.`;
 
       const relativePath = path.relative(process.cwd(), safePath).replace(/\\/g, '/');
 
-      // Master Firewall: HERMES Guard Path & Critical File Protection (Mandatory for all modes)
+      // Security Audit Sandbox Enforcement
+      const isolationScore = parseFloat(cachedSecurityAudit.authIsolation);
+      const isStrictSandbox = isolationScore < 60.0;
+
+      // Master Firewall: HERMES Guard Path & Critical File Protection
       const fileLower = relativePath.toLowerCase();
-      const isCriticalFile = 
+      const isSystemCritical = 
         fileLower === 'server.ts' || 
         fileLower === 'serverdb.ts' || 
-        fileLower === 'package.json' || 
-        fileLower === 'tsconfig.json' || 
-        fileLower === 'vite.config.ts' || 
         fileLower === 'database.json' || 
         fileLower.includes('.env') || 
         fileLower.includes('node_modules');
@@ -1669,15 +1761,15 @@ User: Optimize the skill.`;
         relativePath.startsWith('uploads/') || 
         relativePath.startsWith('public/');
 
-      // CRITICAL: Block core corruption regardless of writeMode (Manual vs Auto)
-      if (isCriticalFile || !isInSafeDirectory) {
-        serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: Target '${relativePath}' is protected by HERMES Guard Security Policy in ${writeMode.toUpperCase()} mode. Access Denied.`);
+      // CRITICAL: Block core corruption. If Strict Sandbox is active, restrict to Safe Dirs only.
+      if (isSystemCritical || (isStrictSandbox && !isInSafeDirectory)) {
+        serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: Target '${relativePath}' is protected. Strict Sandbox (${isolationScore}%) enforces Safe Directory lock. Access Denied.`);
         return res.status(403).json({
           success: false,
           error: "Forbidden",
           code: "HERMES_WRITE_INTERCEPT",
-          reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted to prevent core corruption. Allowed folders: 'src/', 'uploads/', 'public/'.`,
-          stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nWrite Mode: ${writeMode.toUpperCase()}\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
+          reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted. Sandbox Isolation Score is ${isolationScore}%. Allowed folders: 'src/', 'uploads/', 'public/'.`,
+          stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSandbox Mode: STRICT (Score: ${isolationScore}%)\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
         });
       }
 
@@ -1897,17 +1989,30 @@ User: Optimize the skill.`;
         serverDB.addSystemLog('SEC', 'SUCCESS', `AUTHORIZATION VERIFIED: OS command ticket '${ticketId}' validated.`);
       }
 
-      // HERMES Guard physical command validation check if in safe or manual mode
-      if (shellMode === 'manual' || shellMode === 'safe') {
+      // Security Audit Sandbox Enforcement
+      const isolationScore = parseFloat(cachedSecurityAudit.authIsolation);
+      const isStrictSandbox = isolationScore < 60.0;
+
+      // HERMES Guard physical command validation check
+      if (isStrictSandbox || shellMode === 'manual' || shellMode === 'safe') {
         const validation = helperValidateCommand(command);
-        if (!validation.safe) {
-          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System is running in ${shellMode.toUpperCase()} security mode. Executing '${command}' has been blocked by HERMES Guard Security Policy. Reason: ${validation.reason}`);
+        if (isStrictSandbox && !validation.safe) {
+          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System Sandbox Isolation is LOW (${isolationScore}%). Forced SAFE mode blocked command '${command}'. Reason: ${validation.reason}`);
           return res.status(403).json({
             success: false,
             error: "Forbidden",
             code: "HERMES_GUARD_INTERCEPT",
-            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Command blocked under ${shellMode.toUpperCase()} mode safety policy. Details: ${validation.reason}`,
-            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: ${shellMode.toUpperCase()}\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Low Sandbox Isolation (${isolationScore}%) forces SAFE mode. Details: ${validation.reason}`,
+            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: FORCED STRICT (Score: ${isolationScore}%)\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+          });
+        } else if (!isStrictSandbox && !validation.safe && shellMode === 'safe') {
+          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System is running in SAFE security mode. Executing '${command}' has been blocked by HERMES Guard Security Policy. Reason: ${validation.reason}`);
+          return res.status(403).json({
+            success: false,
+            error: "Forbidden",
+            code: "HERMES_GUARD_INTERCEPT",
+            reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Command blocked under SAFE mode safety policy. Details: ${validation.reason}`,
+            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: SAFE\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
           });
         }
       }
@@ -2221,8 +2326,8 @@ User: Optimize the skill.`;
     }
 
     const currentProgress = task.progress || 0;
-    let increment = 15 + Math.floor(Math.random() * 15); // Default 15-30%
-    let logMessage = `Cognitive heuristic: Advanced task [${task.id}] progress to ${Math.min(95, currentProgress + increment)}% based on workspace activity.`;
+    let increment = 0;
+    let logMessage = `Cognitive heuristic failed: No valid API Key configured for autonomous task execution. Task [${task.id}] stalled at ${currentProgress}%.`;
     let fileContentGenerated = "";
     let fileToCreate = "";
 
@@ -2365,6 +2470,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         const result = await advanceTaskPhysically(targetTask.id, settings, apiKey);
         
         serverDB.addSystemLog('SYS', 'INFO', `${result.logMessage} (Progress: ${result.newProgress}%)`);
+        broadcastMcpEvent('TASK_ADVANCED', { taskId: targetTask.id, newProgress: result.newProgress, message: result.logMessage });
         return res.json({ success: true, taskId: targetTask.id, newProgress: result.newProgress });
       }
       
@@ -2393,9 +2499,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         finalMem = Math.min(100, finalMem + 8);
       }
       
-      let finalGpu = osGpuUsage > 0 ? osGpuUsage : (reactorOverdrive 
-        ? Math.min(100, Math.round(cpuUsage * 0.8 + 15 + Math.random() * 5)) 
-        : (shieldActive ? Math.min(100, Math.round(cpuUsage * 0.3 + 10 + Math.random() * 4)) : Math.min(100, Math.round(cpuUsage * 0.1 + 2 + Math.random() * 2))));
+      let finalGpu = osGpuUsage > 0 ? osGpuUsage : 0;
 
       let finalTmp = "N/A";
       if (osGpuTemp > 0) {
@@ -2463,7 +2567,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         voltage: activeVoltage,
         freq: finalFreq,
         uptime: Math.round(os.uptime() / 3600),
-        processes: osProcessCount > 0 ? osProcessCount : 256 + Math.floor(Math.random() * 20),
+        processes: osProcessCount > 0 ? osProcessCount : 0,
         os: os.platform().toUpperCase(),
         secStatus,
         shieldActive,
@@ -2623,6 +2727,11 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         }
         
         serverDB.addSystemLog(category, 'INFO', `[LOOP_SHIFT]: ${msg}`);
+      }
+
+      if (newSettings.gatewayRoutingModel && newSettings.gatewayRoutingModel !== oldSettings.gatewayRoutingModel) {
+        const routeMode = String(newSettings.gatewayRoutingModel).toUpperCase();
+        serverDB.addSystemLog('API', 'INFO', `[ROUTING SHIFT]: Cost-Aware Gateway updated to [${routeMode}] mode.`);
       }
 
       serverDB.updateSettings(newSettings);
@@ -2838,6 +2947,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         toggleTrueOverdriveWorker(reactorOverdrive);
         corePower = reactorOverdrive ? 125 : 98;
         serverDB.addSystemLog('SEC', 'WARN', `Database query router capacity boosted to ${reactorOverdrive ? '125%' : '98% nominal'}. Direct CPU core stress applied.`);
+        broadcastMcpEvent('SYSTEM_ALERT', { alert: 'OVERDRIVE_TOGGLED', active: reactorOverdrive });
         return res.json({ 
           success: true, 
           reactorOverdrive,
@@ -2895,6 +3005,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     tools: any[];
   }
   let activeMcpServers: Map<string, McpServerInstance> = new Map();
+  let pendingMcpCalls: Map<string, {resolve: Function, reject: Function}> = new Map();
 
   app.get("/api/mcp/status", (req, res) => {
     const statusData = Array.from(activeMcpServers.entries()).map(([name, inst]) => ({
@@ -2911,6 +3022,47 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       inst.tools.forEach(t => allTools.push({ ...t, _server: inst.name }));
     });
     res.json({ success: true, tools: allTools });
+  });
+
+  // --- MCP Tool Execute Endpoint ---
+  app.post("/api/mcp/execute", async (req, res) => {
+    try {
+      const { serverName, toolName, args } = req.body;
+      const instance = activeMcpServers.get(serverName);
+      if (!instance || instance.status !== 'connected') {
+        return res.status(404).json({ success: false, error: `MCP Server '${serverName}' not found or inactive.` });
+      }
+
+      const callId = `call-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      const rpcReq = {
+        jsonrpc: '2.0',
+        id: callId,
+        method: 'tools/call',
+        params: {
+          name: toolName,
+          arguments: args || {}
+        }
+      };
+
+      const resultPromise = new Promise((resolve, reject) => {
+        pendingMcpCalls.set(callId, { resolve, reject });
+        setTimeout(() => {
+          if (pendingMcpCalls.has(callId)) {
+            pendingMcpCalls.delete(callId);
+            reject(new Error("Timeout waiting for MCP execution result."));
+          }
+        }, 30000);
+      });
+
+      instance.process.stdin?.write(JSON.stringify(rpcReq) + '\n');
+      
+      const result = await resultPromise;
+      serverDB.addSystemLog('API', 'SUCCESS', `MCP tool '${toolName}' executed successfully on '${serverName}'.`);
+      res.json({ success: true, result });
+    } catch (e: any) {
+      serverDB.addSystemLog('API', 'ERROR', `MCP tool execution fault: ${e.message}`);
+      res.status(500).json({ success: false, error: e.message });
+    }
   });
 
   // --- MCP Servers Connection Endpoint ---
@@ -2987,6 +3139,14 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
                      } else if (msg.id && String(msg.id).startsWith('tools-') && msg.result?.tools) {
                         instance.tools = msg.result.tools;
                         serverDB.addSystemLog('API', 'SUCCESS', `MCP Server '${name}' cached ${instance.tools.length} tool(s).`);
+                     } else if (msg.id && String(msg.id).startsWith('call-') && pendingMcpCalls.has(String(msg.id))) {
+                        const { resolve, reject } = pendingMcpCalls.get(String(msg.id))!;
+                        if (msg.error) {
+                           reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+                        } else {
+                           resolve(msg.result);
+                        }
+                        pendingMcpCalls.delete(String(msg.id));
                      }
                   } catch (e) {
                      // Not JSON-RPC line
@@ -3097,11 +3257,22 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     try {
       const routine = serverDB.getMcpRoutines().find(r => r.id === req.params.id);
       if (!routine) return res.status(404).json({ success: false, error: "Routine not found" });
+      const newTask = {
+        id: crypto.randomUUID(),
+        title: `Routine: ${routine.name}`,
+        description: routine.prompt,
+        status: 'In Progress' as const,
+        progress: 0,
+        createdAt: Date.now(),
+        priority: 'High' as const,
+        tags: ['mcp-routine', 'automation']
+      };
       
-      serverDB.addSystemLog('API', 'INFO', `MCP Sequence: Injecting macro prompt "${routine.name}" into active session.`);
+      serverDB.addTask(newTask);
+      serverDB.addSystemLog('HERMES', 'SUCCESS', `Registered new physical task [${newTask.id}] with priority High.`);
+      broadcastMcpEvent('TASK_CREATED', newTask);
       
-      // Return the prompt payload to be injected via frontend event system
-      res.json({ success: true, prompt: routine.prompt });
+      res.json({ success: true, task: newTask });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
     }
@@ -3322,13 +3493,15 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       fs.writeFileSync(safePath, content, 'utf8');
 
       // Server-side database document indexing
-      serverDB.addMessage({
+      const userMessage = {
         id: Math.random().toString(36).substring(7),
         sessionId: "default-session",
         role: "system",
         content: `[FILE UPLOADED]: File '${fileName}' stored in uploads directory. Content Summary:\n${content.substring(0, 800)}`,
         timestamp: Date.now()
-      });
+      };
+      serverDB.addMessage(userMessage);
+      broadcastMcpEvent('CHAT_MESSAGE', userMessage);
 
       res.json({ success: true, filePath: `uploads/${fileName}` });
     } catch (e: any) {
@@ -3512,6 +3685,8 @@ JARVIS Synthesis:`;
         if (result.newProgress >= 100) {
           activeAutonomousTaskId = null;
           serverDB.addSystemLog('HERMES', 'SUCCESS', `AUTONOMOUS DEPLOYMENT COMPLETED for [${task.id}]: ${result.logMessage}`);
+          const updatedTask = serverDB.getTasks().find(t => t.id === task.id);
+          if (updatedTask) broadcastMcpEvent('TASK_COMPLETED', updatedTask);
         } else {
           serverDB.addSystemLog('HERMES', 'INFO', `Background Thread: ${result.logMessage} [Progress: ${result.newProgress}%]`);
         }
