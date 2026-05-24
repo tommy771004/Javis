@@ -1,11 +1,17 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as d3 from 'd3';
 import { motion, AnimatePresence } from 'motion/react';
-import { Layers, PieChart, RefreshCw } from 'lucide-react';
+import { PieChart } from 'lucide-react';
+import {
+  TASK_PRIORITY_ORDER,
+  buildTaskPriorityDistribution,
+  getTaskPriorityVisual,
+  type TaskPriorityLevel,
+} from '../services/taskPriorityConfig';
 
 interface Task {
   id: number | string;
-  priority: 'High' | 'Medium' | 'Low';
+  priority: TaskPriorityLevel;
   status: 'Pending' | 'Completed';
   description: string;
   createdAt: string | Date;
@@ -97,7 +103,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
 
   // Compute breakdown, progress counts, and averages per priority
   const priorityStats = useMemo(() => {
-    return ['High', 'Medium', 'Low'].reduce((acc, p) => {
+    return TASK_PRIORITY_ORDER.reduce((acc, p) => {
       const list = filteredTasks.filter(t => t.priority === p);
       const count = list.length;
       const completed = list.filter(t => t.status === 'Completed').length;
@@ -113,18 +119,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
 
   // Priority distribution math
   const distribution = useMemo(() => {
-    const total = filteredTasks.length;
-    if (total === 0) return [];
-
-    const high = filteredTasks.filter(t => t.priority === 'High').length;
-    const medium = filteredTasks.filter(t => t.priority === 'Medium').length;
-    const low = filteredTasks.filter(t => t.priority === 'Low').length;
-
-    return [
-      { name: 'High', value: high, percentage: total > 0 ? (high / total) * 100 : 0, color: '#ef4444', glow: 'rgba(239, 68, 68, 0.5)' },
-      { name: 'Medium', value: medium, percentage: total > 0 ? (medium / total) * 100 : 0, color: '#f59e0b', glow: 'rgba(245, 158, 11, 0.5)' },
-      { name: 'Low', value: low, percentage: total > 0 ? (low / total) * 100 : 0, color: '#10b981', glow: 'rgba(16, 185, 129, 0.5)' }
-    ].filter(item => item.value > 0); // only show slice if there are tasks of this priority
+    return buildTaskPriorityDistribution(filteredTasks);
   }, [filteredTasks]);
 
   const totalTasksCount = filteredTasks.length;
@@ -145,7 +140,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
         return {
           title: sliceData.name.toUpperCase(),
           subtitle: `${sliceData.value} (${sliceData.percentage.toFixed(0)}%)`,
-          color: hoveredSlice === 'High' ? 'text-red-400' : hoveredSlice === 'Medium' ? 'text-amber-400' : 'text-green-400'
+          color: getTaskPriorityVisual(hoveredSlice as TaskPriorityLevel).textClass
         };
       }
     }
@@ -156,7 +151,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
         return {
           title: sliceData.name.toUpperCase(),
           subtitle: `${sliceData.value} (${sliceData.percentage.toFixed(0)}%) [SEL]`,
-          color: clickedPriority === 'High' ? 'text-red-400 animate-pulse' : clickedPriority === 'Medium' ? 'text-amber-400 animate-pulse' : 'text-green-400 animate-pulse'
+          color: `${getTaskPriorityVisual(clickedPriority as TaskPriorityLevel).textClass} animate-pulse`
         };
       }
     }
@@ -337,11 +332,12 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
                 />
               ) : (
                 // Draw arc path slices utilizing D3 calculated attributes & transitions
-                pieData.map((d, i) => {
+                pieData.map((d) => {
                   const isHovered = hoveredSlice === d.data.name;
                   const isClicked = clickedPriority === d.data.name;
-                  const itemColor = d.data.name === 'High' ? '#ef4444' : d.data.name === 'Medium' ? '#f59e0b' : '#10b981';
-                  const itemGlow = d.data.name === 'High' ? 'rgba(239, 68, 68, 0.45)' : d.data.name === 'Medium' ? 'rgba(245, 158, 11, 0.45)' : 'rgba(16, 185, 129, 0.45)';
+                  const visual = getTaskPriorityVisual(d.data.name as TaskPriorityLevel);
+                  const itemColor = visual.color;
+                  const itemGlow = visual.glow;
 
                   const activeArc = isHovered ? arcHovered : arc;
                   const [centroidX, centroidY] = activeArc.centroid(d);
@@ -425,9 +421,8 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
 
         {/* Legend labels details list - FULLY CLICKABLE & HIGH LIGHT ACTIVE CHANNELS */}
         <div className="flex-1 flex flex-col gap-2.5 min-w-[130px] w-full">
-          {['High', 'Medium', 'Low'].map(pLevel => {
-            const levelColor = pLevel === 'High' ? 'bg-red-500' : pLevel === 'Medium' ? 'bg-amber-500' : 'bg-emerald-500';
-            const levelTextColor = pLevel === 'High' ? 'text-red-400' : pLevel === 'Medium' ? 'text-amber-400' : 'text-green-400';
+          {TASK_PRIORITY_ORDER.map(pLevel => {
+            const visual = getTaskPriorityVisual(pLevel);
             
             // Calculate specific count
             const levelCount = filteredTasks.filter(t => t.priority === pLevel).length;
@@ -474,10 +469,10 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
                 title={levelCount > 0 ? "Click to lock visual highlight on this category" : "No active items in sequence"}
               >
                 <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${levelColor} ${
+                  <span className={`w-2 h-2 rounded-full ${visual.dotClass} ${
                     isActive || isSelected ? 'animate-pulse shadow-[0_0_8px_currentColor]' : ''
                   }`} />
-                  <span className={`text-[10px] font-bold ${levelTextColor}`}>
+                  <span className={`text-[10px] font-bold ${visual.textClass}`}>
                     {pLevel} {isSelected && <span className="text-[8px] ml-1 text-emerald-400/80">[LOCK]</span>}
                   </span>
                 </div>
@@ -509,9 +504,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
             className="mt-4 pt-3 border-t border-emerald-900/40 w-full overflow-hidden flex flex-col gap-2"
           >
             <div className="flex justify-between items-center">
-              <span className={`text-[9px] font-bold uppercase tracking-wider ${
-                clickedPriority === 'High' ? 'text-red-400' : clickedPriority === 'Medium' ? 'text-amber-400' : 'text-emerald-400'
-              }`}>
+              <span className={`text-[9px] font-bold uppercase tracking-wider ${getTaskPriorityVisual(clickedPriority as TaskPriorityLevel).textClass}`}>
                 [SYNC GATEWAY: {clickedPriority} Priority Queue]
               </span>
               <button 
@@ -573,15 +566,13 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
             style={{
               left: activeTooltip.x,
               top: activeTooltip.y,
-              borderColor: activeTooltip.priority === 'High' ? 'rgba(239, 68, 68, 0.6)' : activeTooltip.priority === 'Medium' ? 'rgba(245, 158, 11, 0.6)' : 'rgba(16, 185, 129, 0.6)',
-              boxShadow: activeTooltip.priority === 'High' ? '0 0 15px rgba(239, 68, 68, 0.2)' : activeTooltip.priority === 'Medium' ? '0 0 15px rgba(245, 158, 11, 0.2)' : '0 0 15px rgba(16, 185, 129, 0.2)',
+              borderColor: getTaskPriorityVisual(activeTooltip.priority as TaskPriorityLevel).tooltipBorder,
+              boxShadow: getTaskPriorityVisual(activeTooltip.priority as TaskPriorityLevel).tooltipShadow,
               minWidth: '180px'
             }}
           >
             <div className="flex justify-between items-center pb-1.5 border-b border-white/10 mb-2">
-              <span className={`text-[9px] font-extrabold uppercase tracking-wide ${
-                activeTooltip.priority === 'High' ? 'text-red-400' : activeTooltip.priority === 'Medium' ? 'text-amber-400' : 'text-emerald-400'
-              }`}>
+              <span className={`text-[9px] font-extrabold uppercase tracking-wide ${getTaskPriorityVisual(activeTooltip.priority as TaskPriorityLevel).textClass}`}>
                 {activeTooltip.priority} Priority Metrics
               </span>
               <span className="text-[7.5px] text-white/50 bg-white/5 px-1 py-0.5 rounded font-mono font-bold">
@@ -594,7 +585,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
               <div className="flex justify-between items-center text-[9px]">
                 <span className="text-white/70">Average Progress:</span>
                 <span className={`font-black text-[10px] ${
-                  activeTooltip.priority === 'High' ? 'text-red-400' : activeTooltip.priority === 'Medium' ? 'text-amber-400' : 'text-emerald-400'
+                  getTaskPriorityVisual(activeTooltip.priority as TaskPriorityLevel).textClass
                 }`}>
                   {priorityStats[activeTooltip.priority].avgProgress}%
                 </span>
@@ -603,9 +594,7 @@ export function TaskPriorityDonut({ tasks }: TaskPriorityDonutProps) {
               {/* Sleek digital percentage bar */}
               <div className="h-1.5 w-full bg-emerald-950/80 rounded overflow-hidden flex border border-emerald-900/30">
                 <div 
-                  className={`h-full transition-all duration-300 ${
-                    activeTooltip.priority === 'High' ? 'bg-red-500' : activeTooltip.priority === 'Medium' ? 'bg-amber-500' : 'bg-emerald-500'
-                  }`}
+                  className={`h-full transition-all duration-300 ${getTaskPriorityVisual(activeTooltip.priority as TaskPriorityLevel).barClass}`}
                   style={{ width: `${priorityStats[activeTooltip.priority].avgProgress}%` }}
                 />
               </div>

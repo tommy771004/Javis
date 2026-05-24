@@ -84,6 +84,8 @@ interface CLIOption {
   name: string;
   version: string;
   desc?: string;
+  cmd?: string;
+  executionTemplate?: string;
   isInstalled: boolean;
   tag?: string;
   statusColor: 'green' | 'red' | 'orange' | 'gray';
@@ -318,7 +320,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           };
           fallback('jarvis_operator_name',       setOperatorName,       locale === 'zh-TW' ? '系統管理員' : 'ADMIN OPERATOR');
           fallback('jarvis_armor_model',         setArmorModel,         'Core v4.5');
-          fallback('jarvis_satellite_name',      setSatelliteName,      locale === 'zh-TW' ? '本機 SQLite 資料庫' : 'LOCAL_SQLITE_DB');
+          fallback('jarvis_satellite_name',      setSatelliteName,      t.lblStarkSat4);
           fallback('jarvis_active_skin',         setActiveSkin,         'cyan');
           const localLight = localStorage.getItem('jarvis_light_mode');
           if (localLight) setIsLightMode(localLight === 'true');
@@ -2326,7 +2328,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         <div className="space-y-1">
                           <label className="text-[9px] text-cyan-600 tracking-widest uppercase font-bold">Execution Template</label>
                           <textarea value={editingCli.executionTemplate || ''} onChange={e => setEditingCli({...editingCli, executionTemplate: e.target.value})} className="w-full h-[80px] bg-slate-950 border border-cyan-900/50 rounded px-2 py-1.5 text-[11px] text-emerald-400 font-mono focus:border-cyan-400 outline-none resize-none" placeholder={'npx custom-cli run "{{prompt}}"'} />
-                          <p className="text-[8px] text-cyan-700 italic">Use {{prompt}} as the injection point.</p>
+                          <p className="text-[8px] text-cyan-700 italic">Use {'{{prompt}}'} as the injection point.</p>
                         </div>
 
                         <div className="grid grid-cols-3 gap-3">

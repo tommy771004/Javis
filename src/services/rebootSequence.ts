@@ -28,6 +28,12 @@ export interface ResolveRebootProbePhaseInput {
   probeSucceeded: boolean;
 }
 
+export interface BuildRebootObservationNoteInput {
+  probeAttempts: number;
+  elapsedMs: number;
+  disconnectObserved: boolean;
+}
+
 export function buildRebootSequencePlan(input: BuildRebootSequencePlanInput): RebootSequencePhase[] {
   const integrityLabel = input.databaseIntegrity.toUpperCase();
 
@@ -79,6 +85,16 @@ export function resolveRebootProbePhase(input: ResolveRebootProbePhaseInput) {
     phase: 'awaiting-shutdown' as const,
     hasSeenDisconnect: false,
   };
+}
+
+export function buildRebootObservationNote(input: BuildRebootObservationNoteInput) {
+  const attempts = Math.max(0, Math.floor(input.probeAttempts));
+  const elapsedMs = Math.max(0, Math.floor(input.elapsedMs));
+  const observation = input.disconnectObserved
+    ? 'Disconnect observed; waiting for replacement process telemetry.'
+    : 'Disconnect not observed yet; still waiting for real process handoff.';
+
+  return `Observed ${attempts} health probes over ${elapsedMs}ms. ${observation}`;
 }
 
 export function emitRebootSequence(detail: RebootSequenceResponse) {

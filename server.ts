@@ -5,18 +5,20 @@ import https from "https";
 import os from "os";
 import crypto from "crypto";
 import v8 from "v8";
-import { exec, spawn, ChildProcess } from "child_process";
+import { exec, fork, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
 import { getReactorOverdriveRuntime, normalizeMeasuredPowerWatts, resolveAutoRepairCpuTarget, resolveEffectiveShellMode } from "./serverRuntimePolicies";
 import { serverDB, DB_KEY_FINGERPRINT } from "./serverDb";
 import { buildHermesSystemPrompt, describeLoopNodeEffect } from "./serverPromptPolicies";
+import { type HermesRuntimeStatus } from "./src/services/hermesRuntime";
 import { resolveSecurityAuditTransportLabel } from "./src/services/settingsIntegrationPolicies";
 import { calculateHeapHeadroomPercent, resolveStrictSandboxRequirement, summarizeSecuritySignals } from "./src/services/telemetryPresentationPolicies";
 import { buildDatabaseHealthSnapshot, collectCriticalMonitoringAlerts, type MonitoringAlert } from "./src/services/hermesMonitoring";
 import { buildRebootSequencePlan } from "./src/services/rebootSequence";
 import { buildDefaultTaskReport, resolveMcpTemplateById, type McpTemplateDefinition } from "./src/services/hermesServerHelpers";
 import { buildAutomationCapabilities, resolveEngineCapability, resolveRebootProbeDelayMs } from "./src/services/truthfulCapabilityPolicies";
+import { collectWorkspaceSearchMatches, isWorkspaceDocSearchPathAllowed } from "./src/services/workspaceDocs";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -114,11 +116,227 @@ let lastDiskReadSectors = 0;
 let lastDiskWriteSectors = 0;
 let currentDiskReadSpeed = 0; // bytes/sec
 let currentDiskWriteSpeed = 0; // bytes/sec
-let hermesDaemonInterval: NodeJS.Timeout | null = null;
 
 // Real OS Hardware Telemetry
 let osProcessCount = 0;
 let osGpuTemp = 0;
+
+type HermesRuntimeChildMessage =
+  | { type: 'ready'; pid: number; timestamp: number }
+  | { type: 'heartbeat'; timestamp: number }
+  | { type: 'tick'; timestamp: number };
+
+type HermesRuntimeParentMessage = { type: 'stop' };
+
+let hermesRuntimeProcess: ChildProcess | null = null;
+let hermesRuntimeTickInFlight = false;
+let advanceTaskPhysicallyFn:
+  | ((taskId: string, settings: any, apiKey: string) => Promise<{ success: boolean; newProgress: number; logMessage: string }>)
+  | null = null;
+let hermesRuntimeStatus: HermesRuntimeStatus = {
+  desiredState: 'stopped',
+  state: 'stopped',
+  driver: 'child_process',
+  pendingTaskCount: 0,
+  currentTaskId: null,
+  lastHeartbeatAt: null,
+  lastStartedAt: null,
+  processId: null,
+  error: null,
+};
+
+function shouldHermesRun(settings = serverDB.getSettings()) {
+  return settings.shellMode === 'auto'
+    && settings.writeMode === 'auto'
+    && settings.taskMode === 'auto';
+}
+
+function getPendingHermesTasks() {
+  return serverDB
+    .getTasks()
+    .filter((task) => task.status === 'Pending')
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+function getHermesRuntimeStatus(): HermesRuntimeStatus {
+  return {
+    ...hermesRuntimeStatus,
+    pendingTaskCount: getPendingHermesTasks().length,
+  };
+}
+
+async function handleHermesRuntimeTick() {
+  if (hermesRuntimeTickInFlight) {
+    return;
+  }
+
+  hermesRuntimeTickInFlight = true;
+
+  try {
+    const settings = serverDB.getSettings();
+    const pendingTasks = getPendingHermesTasks();
+
+    hermesRuntimeStatus.pendingTaskCount = pendingTasks.length;
+
+    if (!shouldHermesRun(settings)) {
+      hermesRuntimeStatus.currentTaskId = null;
+      return;
+    }
+
+    if (pendingTasks.length === 0) {
+      hermesRuntimeStatus.currentTaskId = null;
+      return;
+    }
+
+    const targetTask = pendingTasks[0];
+    hermesRuntimeStatus.currentTaskId = targetTask.id;
+
+    const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || "";
+    if (!advanceTaskPhysicallyFn) {
+      throw new Error('Hermes runtime task engine has not been initialized yet.');
+    }
+
+    const result = await advanceTaskPhysicallyFn(targetTask.id, settings, apiKey);
+    const updatedTask = serverDB.getTask(targetTask.id);
+
+    hermesRuntimeStatus.pendingTaskCount = getPendingHermesTasks().length;
+    hermesRuntimeStatus.currentTaskId = updatedTask?.status === 'Pending' ? targetTask.id : null;
+    hermesRuntimeStatus.error = null;
+
+    serverDB.addSystemLog(
+      'SYS',
+      'INFO',
+      `Hermes Runtime Tick: ${result.logMessage} (Progress: ${result.newProgress}%)`,
+    );
+    broadcastMcpEvent('TASK_ADVANCED', {
+      taskId: targetTask.id,
+      newProgress: result.newProgress,
+      message: result.logMessage,
+    });
+  } catch (error: any) {
+    hermesRuntimeStatus.state = 'error';
+    hermesRuntimeStatus.error = error.message;
+    serverDB.addSystemLog('SYS', 'ERROR', `Hermes Runtime Error: ${error.message}`);
+  } finally {
+    hermesRuntimeTickInFlight = false;
+  }
+}
+
+function attachHermesRuntimeListeners(child: ChildProcess) {
+  child.on('message', (message: HermesRuntimeChildMessage) => {
+    if (!message || typeof message !== 'object' || !('type' in message)) {
+      return;
+    }
+
+    if (message.type === 'ready') {
+      hermesRuntimeStatus.state = 'running';
+      hermesRuntimeStatus.processId = message.pid;
+      hermesRuntimeStatus.lastStartedAt = message.timestamp;
+      hermesRuntimeStatus.lastHeartbeatAt = message.timestamp;
+      hermesRuntimeStatus.error = null;
+      serverDB.addSystemLog('SYS', 'SUCCESS', `Hermes daemon online via child process [PID ${message.pid}].`);
+      return;
+    }
+
+    if (message.type === 'heartbeat') {
+      hermesRuntimeStatus.lastHeartbeatAt = message.timestamp;
+      return;
+    }
+
+    if (message.type === 'tick') {
+      hermesRuntimeStatus.lastHeartbeatAt = message.timestamp;
+      void handleHermesRuntimeTick();
+    }
+  });
+
+  child.once('error', (error) => {
+    hermesRuntimeStatus.state = 'error';
+    hermesRuntimeStatus.error = error.message;
+    hermesRuntimeStatus.processId = null;
+    hermesRuntimeProcess = null;
+    serverDB.addSystemLog('SYS', 'ERROR', `Hermes daemon failed to start: ${error.message}`);
+  });
+
+  child.once('exit', (code, signal) => {
+    const wasStopping = hermesRuntimeStatus.desiredState === 'stopped' || hermesRuntimeStatus.state === 'stopping';
+
+    hermesRuntimeProcess = null;
+    hermesRuntimeStatus.processId = null;
+    hermesRuntimeStatus.currentTaskId = null;
+
+    if (wasStopping) {
+      hermesRuntimeStatus.state = 'stopped';
+      hermesRuntimeStatus.error = null;
+      serverDB.addSystemLog('SYS', 'WARN', 'Hermes daemon child process stopped.');
+      return;
+    }
+
+    hermesRuntimeStatus.state = 'error';
+    hermesRuntimeStatus.error = `child exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`;
+    serverDB.addSystemLog('SYS', 'ERROR', `Hermes daemon child process exited unexpectedly (${hermesRuntimeStatus.error}).`);
+  });
+}
+
+function startHermesRuntimeDaemon() {
+  hermesRuntimeStatus.desiredState = 'running';
+  hermesRuntimeStatus.pendingTaskCount = getPendingHermesTasks().length;
+
+  if (hermesRuntimeProcess && hermesRuntimeStatus.state !== 'error') {
+    return getHermesRuntimeStatus();
+  }
+
+  hermesRuntimeStatus.state = 'starting';
+  hermesRuntimeStatus.error = null;
+
+  const entryFile = process.argv[1];
+  const child = fork(entryFile, [], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HERMES_RUNTIME_CHILD: '1',
+      HERMES_RUNTIME_INTERVAL_MS: '7000',
+    },
+    execArgv: process.execArgv,
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  });
+
+  hermesRuntimeProcess = child;
+  attachHermesRuntimeListeners(child);
+
+  return getHermesRuntimeStatus();
+}
+
+function stopHermesRuntimeDaemon() {
+  hermesRuntimeStatus.desiredState = 'stopped';
+  hermesRuntimeStatus.pendingTaskCount = getPendingHermesTasks().length;
+  hermesRuntimeStatus.currentTaskId = null;
+
+  if (!hermesRuntimeProcess) {
+    hermesRuntimeStatus.state = 'stopped';
+    hermesRuntimeStatus.error = null;
+    return getHermesRuntimeStatus();
+  }
+
+  hermesRuntimeStatus.state = 'stopping';
+  const child = hermesRuntimeProcess;
+  child.send({ type: 'stop' } satisfies HermesRuntimeParentMessage);
+
+  setTimeout(() => {
+    if (hermesRuntimeProcess === child && hermesRuntimeStatus.state === 'stopping') {
+      child.kill();
+    }
+  }, 1500);
+
+  return getHermesRuntimeStatus();
+}
+
+function syncHermesRuntimeToSettings() {
+  if (shouldHermesRun()) {
+    return startHermesRuntimeDaemon();
+  }
+
+  return stopHermesRuntimeDaemon();
+}
 let osGpuUsage = 0;
 
 let siCpuTemp: number | null = null;
@@ -1253,6 +1471,113 @@ app.use((req, res, next) => {
     }
   });
 
+  app.post("/api/workspace/docs/search", (req, res) => {
+    try {
+      const query = String(req.body?.query || '').trim();
+      if (!query) {
+        return res.json({ success: true, query: '', matches: [], memoryMatches: [] });
+      }
+
+      const workspaceRoots = ['src', 'docs', 'tests'];
+      const looseFiles = ['README.md', 'DESIGN.md', 'schedule.md'];
+      const documents: Array<{ filePath: string; content: string }> = [];
+
+      const walk = (relativeDir: string) => {
+        const absoluteDir = path.join(process.cwd(), relativeDir);
+        if (!fs.existsSync(absoluteDir)) {
+          return;
+        }
+
+        for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
+          const relativePath = path.join(relativeDir, entry.name).replace(/\\/g, '/');
+          if (entry.isDirectory()) {
+            walk(relativePath);
+            continue;
+          }
+
+          if (!isWorkspaceDocSearchPathAllowed(relativePath)) {
+            continue;
+          }
+
+          const absolutePath = path.join(process.cwd(), relativePath);
+          const fileSize = fs.statSync(absolutePath).size;
+          if (fileSize > 200_000) {
+            continue;
+          }
+
+          documents.push({
+            filePath: relativePath,
+            content: fs.readFileSync(absolutePath, 'utf8'),
+          });
+        }
+      };
+
+      workspaceRoots.forEach(walk);
+
+      for (const relativePath of looseFiles) {
+        const absolutePath = path.join(process.cwd(), relativePath);
+        if (!fs.existsSync(absolutePath) || !isWorkspaceDocSearchPathAllowed(relativePath)) {
+          continue;
+        }
+
+        documents.push({
+          filePath: relativePath,
+          content: fs.readFileSync(absolutePath, 'utf8'),
+        });
+      }
+
+      const matches = collectWorkspaceSearchMatches(documents, query, 8);
+      const memoryMatches = serverDB.queryFTS(query);
+
+      res.json({ success: true, query, matches, memoryMatches });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.post("/api/workspace/docs/read", (req, res) => {
+    try {
+      const filePath = String(req.body?.filePath || '').replace(/\\/g, '/');
+      if (!filePath || !isWorkspaceDocSearchPathAllowed(filePath)) {
+        return res.status(403).json({ error: 'Access denied: unsupported docs path.' });
+      }
+
+      const safePath = path.resolve(process.cwd(), filePath);
+      if (!safePath.startsWith(process.cwd())) {
+        return res.status(403).json({ error: 'Access denied: path outside workspace.' });
+      }
+
+      if (!fs.existsSync(safePath)) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+
+      const content = fs.readFileSync(safePath, 'utf8');
+      res.json({ success: true, filePath, content });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get("/api/hermes/runtime", (_req, res) => {
+    res.json({ success: true, status: getHermesRuntimeStatus() });
+  });
+
+  app.post("/api/hermes/runtime", (req, res) => {
+    try {
+      const enabled = req.body?.enabled === true;
+      const status = enabled ? startHermesRuntimeDaemon() : stopHermesRuntimeDaemon();
+      res.json({
+        success: true,
+        status,
+        message: enabled
+          ? 'Hermes daemon requested through child-process runtime.'
+          : 'Hermes daemon shutdown requested.',
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
   // --- GET Session Messages REST Route ---
   app.get("/api/messages", (req, res) => {
     const sessionId = (req.query.sessionId as string) || "default-session";
@@ -2310,6 +2635,8 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     return { success: true, newProgress, logMessage };
   }
 
+  advanceTaskPhysicallyFn = advanceTaskPhysically;
+
   app.post("/api/tasks/auto-advance", async (req, res) => {
     try {
       const tasks = serverDB.getTasks();
@@ -2629,6 +2956,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       }
 
       serverDB.updateSettings(newSettings);
+      syncHermesRuntimeToSettings();
       res.json({ success: true, settings: serverDB.getSettings() });
     } catch (e: any) {
       serverDB.addSystemLog('SYS', 'ERROR', `Failed to apply new settings: ${e.message}`);
@@ -2891,39 +3219,17 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       
       if (command === "hermes_daemon") {
         const { enabled } = req.body;
-        if (enabled) {
-          if (!hermesDaemonInterval) {
-            serverDB.addSystemLog('SYS', 'SUCCESS', 'Hermes daemon awakened. Neural scheduling algorithm linked to active tasks.');
-            hermesDaemonInterval = setInterval(async () => {
-              try {
-                const tasks = serverDB.getTasks();
-                const pendingTasks = tasks.filter((t: any) => t.status !== 'Completed').sort((a: any, b: any) => b.createdAt - a.createdAt);
-                if (pendingTasks.length > 0) {
-                  const targetTask = pendingTasks[0];
-                  const settings = serverDB.getSettings();
-                  const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || "";
-                  const result = await advanceTaskPhysically(targetTask.id, settings, apiKey);
-                  serverDB.addSystemLog('SYS', 'INFO', `Hermes Daemon Auto-Advance: ${result.logMessage} (Progress: ${result.newProgress}%)`);
-                  broadcastMcpEvent('TASK_ADVANCED', { taskId: targetTask.id, newProgress: result.newProgress, message: result.logMessage });
-                } else {
-                  if (Math.random() < 0.1) {
-                     serverDB.addSystemLog('SYS', 'INFO', 'Hermes Daemon Matrix: Standby. Awaiting new procedural tasks.');
-                  }
-                }
-              } catch (err: any) {
-                 serverDB.addSystemLog('SYS', 'ERROR', `Hermes Daemon Error: ${err.message}`);
-              }
-            }, 10000); // Poll every 10 seconds
-          }
-          return res.json({ success: true, speak: 'Hermes autonomous cognitive daemon initialized.', message: "Hermes Daemon Automated Task Executor initialized." });
-        } else {
-          if (hermesDaemonInterval) {
-             clearInterval(hermesDaemonInterval);
-             hermesDaemonInterval = null;
-             serverDB.addSystemLog('SYS', 'WARN', 'Hermes Daemon automated execution suspended.');
-          }
-          return res.json({ success: true, speak: 'Autonomous routing suspended.', message: "Hermes Daemon Automated Task Executor disabled." });
-        }
+        const status = enabled ? startHermesRuntimeDaemon() : stopHermesRuntimeDaemon();
+        return res.json({
+          success: true,
+          status,
+          speak: enabled
+            ? 'Hermes autonomous cognitive daemon initialized through the persistent child process runtime.'
+            : 'Autonomous routing suspended.',
+          message: enabled
+            ? 'Hermes child-process runtime requested.'
+            : 'Hermes child-process runtime suspended.',
+        });
       }
       
       if (command === "always-on-top") {
@@ -3574,7 +3880,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       const userMessage = {
         id: Math.random().toString(36).substring(7),
         sessionId: "default-session",
-        role: "system",
+        role: "system" as const,
         content: `[FILE UPLOADED]: File '${fileName}' stored in uploads directory. Content Summary:\n${content.substring(0, 800)}`,
         timestamp: Date.now()
       };
@@ -3785,12 +4091,19 @@ JARVIS Synthesis:`;
     });
   });
 
+  syncHermesRuntimeToSettings();
+
   // --- Autonomous Cognitive Task Orchestrator ---
   let activeAutonomousTaskId: string | null = null;
   setInterval(async () => {
     try {
       const settings = serverDB.getSettings();
       if (!settings || settings.taskMode !== 'auto') {
+        activeAutonomousTaskId = null;
+        return;
+      }
+
+      if (shouldHermesRun(settings)) {
         activeAutonomousTaskId = null;
         return;
       }
@@ -3857,4 +4170,37 @@ JARVIS Synthesis:`;
   }, 1000 * 60); // Check once every minute
 }
 
-startServer();
+function runHermesRuntimeChild() {
+  const intervalMs = Math.max(2000, Number(process.env.HERMES_RUNTIME_INTERVAL_MS || 7000));
+  const send = (message: HermesRuntimeChildMessage) => {
+    if (typeof process.send === 'function') {
+      process.send(message);
+    }
+  };
+
+  send({ type: 'ready', pid: process.pid, timestamp: Date.now() });
+
+  const timer = setInterval(() => {
+    const timestamp = Date.now();
+    send({ type: 'heartbeat', timestamp });
+    send({ type: 'tick', timestamp });
+  }, intervalMs);
+
+  process.on('message', (message: HermesRuntimeParentMessage) => {
+    if (message?.type === 'stop') {
+      clearInterval(timer);
+      process.exit(0);
+    }
+  });
+
+  process.on('disconnect', () => {
+    clearInterval(timer);
+    process.exit(0);
+  });
+}
+
+if (process.env.HERMES_RUNTIME_CHILD === '1') {
+  runHermesRuntimeChild();
+} else {
+  startServer();
+}

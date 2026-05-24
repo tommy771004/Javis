@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 
 export type Locale = 'zh-TW' | 'en';
 
@@ -232,6 +232,15 @@ export interface Translations {
   logLocaleZhTwSpeak: string;
   logLocaleEnMessage: string;
   logLocaleEnSpeak: string;
+}
+
+export interface RuntimeTranslationInput {
+  brandName?: string;
+  brandMotto?: string;
+  footerClassified?: string;
+  footerCopyright?: string;
+  satelliteName?: string;
+  overrides?: Partial<Translations>;
 }
 
 const zhTWTranslations: Translations = {
@@ -685,10 +694,53 @@ interface I18nContextType {
   setLocale: (locale: Locale) => void;
 }
 
+function readBrowserRuntimeTranslationInput(): RuntimeTranslationInput {
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return {};
+  }
+
+  let groupedOverrides: Partial<Translations> | undefined;
+  const rawGrouped = localStorage.getItem('jarvis_translation_overrides');
+  if (rawGrouped) {
+    try {
+      groupedOverrides = JSON.parse(rawGrouped) as Partial<Translations>;
+    } catch {
+      groupedOverrides = undefined;
+    }
+  }
+
+  return {
+    brandName: localStorage.getItem('jarvis_brand_name') || undefined,
+    brandMotto: localStorage.getItem('jarvis_brand_motto') || undefined,
+    footerClassified: localStorage.getItem('jarvis_footer_classified') || undefined,
+    footerCopyright: localStorage.getItem('jarvis_footer_copyright') || undefined,
+    satelliteName: localStorage.getItem('jarvis_satellite_name') || undefined,
+    overrides: groupedOverrides,
+  };
+}
+
+export function buildRuntimeTranslationOverrides(
+  _locale: Locale,
+  input: RuntimeTranslationInput,
+): Partial<Translations> {
+  const overrides: Partial<Translations> = {
+    ...(input.overrides || {}),
+  };
+
+  if (input.brandName) overrides.brandName = input.brandName;
+  if (input.brandMotto) overrides.brandMotto = input.brandMotto;
+  if (input.footerClassified) overrides.lblClassified = input.footerClassified;
+  if (input.footerCopyright) overrides.lblCopyright = input.footerCopyright;
+  if (input.satelliteName) overrides.lblStarkSat4 = input.satelliteName;
+
+  return overrides;
+}
+
 const I18nContext = createContext<I18nContextType | undefined>(undefined);
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('zh-TW');
+  const [runtimeOverrides, setRuntimeOverrides] = useState<Partial<Translations>>({});
 
   useEffect(() => {
     const saved = localStorage.getItem('jarvis_active_locale');
@@ -702,7 +754,60 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('jarvis_active_locale', newLocale);
   };
 
-  const t = getTranslations(locale);
+  useEffect(() => {
+    let isActive = true;
+
+    const syncRuntimeOverrides = async () => {
+      const browserInput = readBrowserRuntimeTranslationInput();
+      let settingsInput: RuntimeTranslationInput = {};
+
+      try {
+        const res = await fetch('/api/settings');
+        if (res.ok) {
+          const settings = await res.json();
+          settingsInput = {
+            brandName: settings.brandName,
+            brandMotto: settings.brandMotto,
+            footerClassified: settings.footerClassified,
+            footerCopyright: settings.footerCopyright,
+            satelliteName: settings.satelliteName,
+            overrides: settings.translationOverrides,
+          };
+        }
+      } catch {
+        // Fall back to browser overrides only.
+      }
+
+      if (!isActive) return;
+      setRuntimeOverrides(
+        buildRuntimeTranslationOverrides(locale, {
+          ...settingsInput,
+          ...browserInput,
+          overrides: {
+            ...(settingsInput.overrides || {}),
+            ...(browserInput.overrides || {}),
+          },
+        }),
+      );
+    };
+
+    void syncRuntimeOverrides();
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('identity-updated', syncRuntimeOverrides);
+      window.addEventListener('storage', syncRuntimeOverrides);
+    }
+
+    return () => {
+      isActive = false;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('identity-updated', syncRuntimeOverrides);
+        window.removeEventListener('storage', syncRuntimeOverrides);
+      }
+    };
+  }, [locale]);
+
+  const t = useMemo(() => getTranslations(locale, runtimeOverrides), [locale, runtimeOverrides]);
 
   return (
     <I18nContext.Provider value={{ locale, t, setLocale }}>
@@ -719,6 +824,7 @@ export function useI18n() {
   return context;
 }
 
-export function getTranslations(locale: Locale): Translations {
-  return locale === 'zh-TW' ? zhTWTranslations : enTranslations;
+export function getTranslations(locale: Locale, overrides: Partial<Translations> = {}): Translations {
+  const base = locale === 'zh-TW' ? zhTWTranslations : enTranslations;
+  return { ...base, ...overrides };
 }

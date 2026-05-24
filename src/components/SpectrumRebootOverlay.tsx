@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldAlert, RefreshCw, Cpu, Activity, Zap } from 'lucide-react';
+import { RefreshCw, Zap } from 'lucide-react';
 import { playCalibrationSynth } from '../services/audioSynth';
-import { REBOOT_SEQUENCE_EVENT, resolveRebootProbePhase, type RebootSequencePhase, type RebootSequenceResponse } from '../services/rebootSequence';
+import { REBOOT_SEQUENCE_EVENT, buildRebootObservationNote, resolveRebootProbePhase, type RebootSequencePhase, type RebootSequenceResponse } from '../services/rebootSequence';
 import { resolveRebootProbeDelayMs } from '../services/truthfulCapabilityPolicies';
 
 export function SpectrumRebootOverlay() {
@@ -44,21 +44,33 @@ export function SpectrumRebootOverlay() {
 
     let isSubscribed = true;
     let hasSeenDisconnect = false;
-    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let probeAttempts = 0;
+    const startedAt = Date.now();
     const probeDelayMs = resolveRebootProbeDelayMs(sequence.probeIntervalMs);
 
-    const applyPhaseById = (phaseId: RebootSequencePhase['id']) => {
-      applyPhase(sequence.phases.find(phase => phase.id === phaseId));
+    const applyPhaseById = (
+      phaseId: RebootSequencePhase['id'],
+      disconnectObserved: boolean,
+      attempts: number,
+    ) => {
+      const basePhase = sequence.phases.find(phase => phase.id === phaseId);
+      if (!basePhase) return;
+
+      applyPhase({
+        ...basePhase,
+        message: `${basePhase.message} ${buildRebootObservationNote({
+          probeAttempts: attempts,
+          elapsedMs: Date.now() - startedAt,
+          disconnectObserved,
+        })}`,
+      });
     };
 
     const pollForRecovery = async () => {
-      applyPhaseById('awaiting-shutdown');
-      watchdogTimer = setTimeout(() => {
-        if (!isSubscribed) return;
-        setCurrentStep('CTRL: RESTART ACKNOWLEDGED, BUT PROCESS HANDOFF HAS NOT BEEN OBSERVED YET. STILL WAITING FOR AN ACTUAL DISCONNECT/RECOVERY CYCLE.');
-      }, Math.max(6000, sequence.shutdownDelayMs * 4));
+      applyPhaseById('awaiting-shutdown', false, probeAttempts);
 
       while (isSubscribed) {
+        probeAttempts += 1;
         try {
           const statsRes = await fetch('/api/system/stats', { cache: 'no-store' });
           if (!statsRes.ok) {
@@ -80,7 +92,7 @@ export function SpectrumRebootOverlay() {
           hasSeenDisconnect = nextState.hasSeenDisconnect;
 
           if (nextState.phase === 'reconnected') {
-            applyPhaseById('reconnect');
+            applyPhaseById('reconnect', hasSeenDisconnect, probeAttempts);
             const dbRes = await fetch('/api/system/database-health', { cache: 'no-store' });
             const dbHealth = dbRes.ok ? await dbRes.json() : null;
             if (!isSubscribed) return;
@@ -88,7 +100,11 @@ export function SpectrumRebootOverlay() {
             applyPhase({
               id: 'complete',
               progress: 100,
-              message: `CTRL: CONTROL PLANE ONLINE. UPTIME ${Math.floor(stats.uptime || 0)}s | SQLITE ${String(dbHealth?.integrityStatus || 'unknown').toUpperCase()} | MCP STATUS REACHABLE.`,
+              message: `CTRL: CONTROL PLANE ONLINE. UPTIME ${Math.floor(stats.uptime || 0)}s | SQLITE ${String(dbHealth?.integrityStatus || 'unknown').toUpperCase()} | MCP STATUS REACHABLE. ${buildRebootObservationNote({
+                probeAttempts,
+                elapsedMs: Date.now() - startedAt,
+                disconnectObserved: hasSeenDisconnect,
+              })}`,
             });
             if (!isSubscribed) return;
             setIsRebooting(false);
@@ -96,14 +112,14 @@ export function SpectrumRebootOverlay() {
             return;
           }
 
-          applyPhaseById('awaiting-shutdown');
+          applyPhaseById('awaiting-shutdown', hasSeenDisconnect, probeAttempts);
         } catch (_error) {
           const nextState = resolveRebootProbePhase({
             hasSeenDisconnect,
             probeSucceeded: false,
           });
           hasSeenDisconnect = nextState.hasSeenDisconnect;
-          applyPhaseById('offline');
+          applyPhaseById('offline', hasSeenDisconnect, probeAttempts);
         }
 
         await new Promise(resolve => setTimeout(resolve, probeDelayMs));
@@ -120,7 +136,6 @@ export function SpectrumRebootOverlay() {
 
     return () => {
       isSubscribed = false;
-      if (watchdogTimer) clearTimeout(watchdogTimer);
     };
   }, [isRebooting, sequence]);
 

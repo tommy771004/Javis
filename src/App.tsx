@@ -13,6 +13,7 @@ import { apiClient } from './services/apiClient';
 import { SettingsModal, SecuritySettings } from './components/SettingsModal';
 import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
 import { startCommsChannel, stopCommsChannel, playTactileClick, getMasterAnalyser, modulateSynthVolumeForSpeech } from './services/audioSynth';
+import { type HermesRuntimeStatus } from './services/hermesRuntime';
 import { CACHE_PURGE_RESET_EVENT, createInitialWebRtcStats, createUiResetSnapshot } from './services/uiResetPolicies';
 import { resolveGlobalShortcutAction } from './services/hermesDashboardInteractions';
 import { buildOperationalSpeechFallback } from './services/truthfulUiPolicies';
@@ -121,6 +122,7 @@ export default function App() {
   const [isMicActive, setIsMicActive] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [isHermesActive, setIsHermesActive] = useState(false);
+  const [hermesRuntimeStatus, setHermesRuntimeStatus] = useState<HermesRuntimeStatus | null>(null);
 
   // Security and permission settings hooks
   const [securitySettings, setSecuritySettings] = useState<SecuritySettings>({
@@ -141,26 +143,54 @@ export default function App() {
   }, [securitySettings.elevenLabsKey]);
 
   useEffect(() => {
-    fetch('/api/settings')
-      .then(res => res.json())
-      .then(data => {
-        if (data) {
-          setSecuritySettings(data);
-          if (data.shellMode === 'auto' && data.writeMode === 'auto' && data.taskMode === 'auto') {
-            setIsHermesActive(true);
-          }
+    const loadBootstrapState = async () => {
+      try {
+        const settingsRes = await fetch('/api/settings');
+        const runtimeRes = await fetch('/api/hermes/runtime');
+        const settingsData = settingsRes.ok ? await settingsRes.json() : null;
+        const runtimeData = runtimeRes.ok ? await runtimeRes.json() : null;
+
+        if (settingsData) {
+          setSecuritySettings(settingsData);
         }
+
+        if (runtimeData?.status) {
+          setHermesRuntimeStatus(runtimeData.status);
+          setIsHermesActive(runtimeData.status.state === 'running' || runtimeData.status.state === 'starting');
+        } else if (settingsData?.shellMode === 'auto' && settingsData?.writeMode === 'auto' && settingsData?.taskMode === 'auto') {
+          setIsHermesActive(true);
+        }
+
         setLogs([
           "SYS: Local workspace connection is ready.",
           "SYS: Javis is online and watching for your next useful step.",
           "SYS: Security checks are available in the dashboard when you need them."
         ]);
-      })
-      .catch(e => {
+      } catch (e) {
         console.error("Failed to load settings from server", e);
         setLogs(["SYS: ERROR - Failed to reach local control plane."]);
-      });
+      }
+    };
+
+    void loadBootstrapState();
   }, []);
+
+  const refreshHermesRuntimeStatus = async () => {
+    try {
+      const runtimeRes = await fetch('/api/hermes/runtime');
+      if (!runtimeRes.ok) return null;
+      const runtimeData = await runtimeRes.json();
+      if (runtimeData?.status) {
+        setHermesRuntimeStatus(runtimeData.status);
+        setIsHermesActive(runtimeData.status.state === 'running' || runtimeData.status.state === 'starting');
+        return runtimeData.status as HermesRuntimeStatus;
+      }
+    } catch (e) {
+      console.warn('Failed to refresh Hermes runtime status', e);
+    }
+
+    return null;
+  };
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -977,19 +1007,19 @@ export default function App() {
         body: JSON.stringify(updatedSettings)
       });
       
-      const ctrlRes = await fetch('/api/system/control', {
+      const ctrlRes = await fetch('/api/hermes/runtime', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: 'hermes_daemon', enabled: next })
+        body: JSON.stringify({ enabled: next })
       });
       
       if (ctrlRes.ok) {
         const data = await ctrlRes.json();
-        if (data.speak) {
-          speakText(data.speak);
-        } else {
-          speakText(next ? "Hermes is online. I am ready to help with the next step." : "Javis companion mode is ready.");
+        if (data.status) {
+          setHermesRuntimeStatus(data.status);
+          setIsHermesActive(data.status.state === 'running' || data.status.state === 'starting');
         }
+        speakText(next ? "Hermes is online. I am ready to help with the next step." : "Javis companion mode is ready.");
       } else {
         speakText(next ? "Hermes is online. I am ready to help with the next step." : "Javis companion mode is ready.");
       }
@@ -1029,6 +1059,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newSettings)
       });
+      await refreshHermesRuntimeStatus();
     } catch (e) {
       console.error("Failed to sync settings to server:", e);
     }
@@ -1522,7 +1553,11 @@ export default function App() {
         
         {/* Left Side: System Monitor */}
         <div className="w-full lg:w-[280px] xl:w-[320px] flex-shrink-0 lg:h-full overflow-y-auto lg:overflow-hidden">
-          <SysMonitor isHermesActive={isHermesActive} onToggleHermes={handleToggleHermes} />
+          <SysMonitor
+            isHermesActive={isHermesActive}
+            hermesRuntimeStatus={hermesRuntimeStatus}
+            onToggleHermes={handleToggleHermes}
+          />
         </div>
 
         {/* Center: AI Core Visualizer */}

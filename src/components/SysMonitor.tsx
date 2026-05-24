@@ -1,17 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Activity, Wifi, Shield, ShieldCheck, Zap, Power } from 'lucide-react';
+import { Activity, Shield, ShieldCheck, Zap, Power } from 'lucide-react';
+import { resolveHermesRuntimeUiState, type HermesRuntimeStatus } from '../services/hermesRuntime';
 import { useI18n } from '../services/i18n';
 import { isSystemStatsEvent, parseSystemStreamMessage, resolveStreamAgeMs } from '../services/systemStreamEvents';
 
 export function SysMonitor({ 
     isHermesActive = false, 
+    hermesRuntimeStatus,
     onToggleHermes = () => {} 
 }: { 
     isHermesActive?: boolean; 
+    hermesRuntimeStatus?: HermesRuntimeStatus | null;
     onToggleHermes?: () => void; 
 }) {
     const { t } = useI18n();
+    const runtimeUi = resolveHermesRuntimeUiState(
+        hermesRuntimeStatus ?? {
+            desiredState: isHermesActive ? 'running' : 'stopped',
+            state: isHermesActive ? 'running' : 'stopped',
+            driver: 'child_process',
+            pendingTaskCount: 0,
+            currentTaskId: null,
+            lastHeartbeatAt: null,
+            lastStartedAt: null,
+            processId: null,
+            error: null
+        }
+    );
 
     const [stats, setStats] = useState({
         cpu: 0,
@@ -304,23 +320,42 @@ export function SysMonitor({
 
             {/* BUTTONS MATRIX IN HUD */}
             <div className="space-y-2 mt-1">
-                {isHermesActive ? (
+                {runtimeUi.active ? (
                     <button 
                         onClick={onToggleHermes}
-                        className="w-full border border-emerald-500 bg-emerald-500/15 text-emerald-300 py-2.5 text-[9px] tracking-[0.2em] font-bold cursor-pointer hover:bg-emerald-500/25 transition-all shadow-[0_0_12px_rgba(16,185,129,0.30)] flex items-center justify-center gap-2"
+                        disabled={runtimeUi.pending}
+                        className={`w-full py-2.5 text-[9px] tracking-[0.2em] font-bold transition-all flex items-center justify-center gap-2 ${
+                            runtimeUi.pending
+                                ? 'border border-amber-500/60 bg-amber-500/10 text-amber-300 cursor-wait'
+                                : 'border border-emerald-500 bg-emerald-500/15 text-emerald-300 cursor-pointer hover:bg-emerald-500/25 shadow-[0_0_12px_rgba(16,185,129,0.30)]'
+                        }`}
                     >
-                        <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400/30 animate-pulse" />
-                        {t.lblHermesCoreActive}
+                        <Zap className={`w-3 h-3 ${runtimeUi.pending ? 'text-amber-400' : 'text-emerald-400 fill-emerald-400/30 animate-pulse'}`} />
+                        {runtimeUi.pending ? runtimeUi.label.toUpperCase() : t.lblHermesCoreActive}
                     </button>
                 ) : (
                     <button 
                         onClick={onToggleHermes}
-                        className="w-full border border-cyan-500/50 text-cyan-400 py-2.5 text-[9px] tracking-[0.2em] font-bold cursor-pointer hover:bg-cyan-500/10 transition-colors flex items-center justify-center gap-2"
+                        className={`w-full py-2.5 text-[9px] tracking-[0.2em] font-bold transition-colors flex items-center justify-center gap-2 ${
+                            runtimeUi.tone === 'error'
+                                ? 'border border-red-500/60 text-red-400 hover:bg-red-500/10'
+                                : 'border border-cyan-500/50 text-cyan-400 hover:bg-cyan-500/10'
+                        }`}
                     >
-                        <Power className="w-3 h-3 text-cyan-400 animate-spin" />
-                        {t.lblActivateCognitive}
+                        <Power className={`w-3 h-3 ${runtimeUi.tone === 'error' ? 'text-red-400' : 'text-cyan-400 animate-spin'}`} />
+                        {runtimeUi.tone === 'error' ? runtimeUi.label.toUpperCase() : t.lblActivateCognitive}
                     </button>
                 )}
+
+                <div className={`border px-2.5 py-2 text-[8px] font-mono tracking-wider ${
+                    runtimeUi.tone === 'error'
+                        ? 'border-red-500/30 bg-red-950/10 text-red-300'
+                        : runtimeUi.active
+                            ? 'border-emerald-500/25 bg-emerald-950/10 text-emerald-300'
+                            : 'border-cyan-950/60 bg-black/20 text-cyan-500/80'
+                }`}>
+                    {runtimeUi.detail}
+                </div>
 
                 {stats.secStatus === 'SEC_CLEARED' ? (
                     <div className="border border-green-500/40 bg-green-950/10 text-green-400 text-center py-2.5 text-[9px] font-bold tracking-[0.2em] flex items-center justify-center gap-1.5 opacity-90">

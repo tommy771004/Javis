@@ -5,11 +5,20 @@ import { apiClient, DbSkill, DbCostLog, type DatabaseHealthSnapshot, type FtsSea
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
 import { useI18n } from '../services/i18n';
-import { Server, Radio, Zap, Sparkles, Trash2, Plus, RefreshCw, Key, Shield, Play } from 'lucide-react';
+import { Server, Radio, Zap, Sparkles, Trash2, Plus, RefreshCw, Key, Shield, Play, Download } from 'lucide-react';
 import { DashboardWidget } from './DashboardWidget';
 import { TaskProgressRadial } from './TaskProgressRadial';
 import { emitRebootSequence } from '../services/rebootSequence';
+import { buildPendingTaskExportPayload } from '../services/taskExport';
 import { formatMetricValue, formatTextMetric } from '../services/truthfulUiPolicies';
+
+interface WorkspaceDocsMatch {
+  filePath: string;
+  excerpt: string;
+  score: number;
+  line: number;
+  source: 'workspace-file';
+}
 
 interface HermesDashboardProps {
   cognitiveState: CognitiveState;
@@ -93,7 +102,13 @@ export function HermesDashboard({
   const knownAlertIdsRef = useRef<string[]>([]);
 
   // Docs state
+  const [docsQuery, setDocsQuery] = useState('');
+  const [docsMatches, setDocsMatches] = useState<WorkspaceDocsMatch[]>([]);
+  const [docsMemoryMatches, setDocsMemoryMatches] = useState<FtsSearchResult[]>([]);
+  const [docsSelectedFile, setDocsSelectedFile] = useState<string>('docs/hermes-spec.md');
   const [docsContent, setDocsContent] = useState('');
+  const [isDocsSearching, setIsDocsSearching] = useState(false);
+  const [isDocsLoadingFile, setIsDocsLoadingFile] = useState(false);
 
   // Evolution Skill state
   const [selectedEvolutionSkill, setSelectedEvolutionSkill] = useState<string | null>(null);
@@ -613,7 +628,10 @@ export function HermesDashboard({
     fetch('/api/docs/spec')
       .then(res => res.json())
       .then(data => {
-        if (data.content) setDocsContent(data.content);
+        if (data.content) {
+          setDocsSelectedFile('docs/hermes-spec.md');
+          setDocsContent(data.content);
+        }
       })
       .catch(err => console.warn('Failed to load docs:', err));
 
@@ -764,6 +782,89 @@ export function HermesDashboard({
     }
   };
 
+  const loadWorkspaceDocFile = async (filePath: string) => {
+    setIsDocsLoadingFile(true);
+    setDocsSelectedFile(filePath);
+
+    try {
+      const res = await fetch('/api/workspace/docs/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath })
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      setDocsContent(data.content || '');
+    } catch (err) {
+      console.error('Failed to load workspace doc file', err);
+      setDocsContent(`Unable to load ${filePath}.`);
+    } finally {
+      setIsDocsLoadingFile(false);
+    }
+  };
+
+  const handleDocsSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!docsQuery.trim()) return;
+
+    setIsDocsSearching(true);
+    try {
+      const res = await fetch('/api/workspace/docs/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: docsQuery })
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const nextMatches = (data.matches || []) as WorkspaceDocsMatch[];
+      setDocsMatches(nextMatches);
+      setDocsMemoryMatches(data.memoryMatches || []);
+
+      if (nextMatches.length > 0) {
+        await loadWorkspaceDocFile(nextMatches[0].filePath);
+      }
+
+      setTerminalLogs(prev => [
+        ...prev,
+        `[DOCS SEARCH] Queried workspace docs for "${docsQuery}" -> ${nextMatches.length} file hit(s).`
+      ]);
+    } catch (err) {
+      console.error('Workspace docs search failed', err);
+      setDocsMatches([]);
+      setDocsMemoryMatches([]);
+    } finally {
+      setIsDocsSearching(false);
+    }
+  };
+
+  const handleExportPendingTasks = () => {
+    const payload = buildPendingTaskExportPayload(tasks);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const timestamp = payload.exportedAt.replace(/[:.]/g, '-');
+
+    link.href = url;
+    link.download = `pending-tasks-${timestamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+
+    setTerminalLogs(prev => [
+      ...prev,
+      `[TASK EXPORT] Downloaded ${payload.taskCount} pending task(s) as JSON.`
+    ]);
+  };
+
   const handleResetBudget = async () => {
     try {
       await apiClient.resetBudget();
@@ -853,6 +954,14 @@ export function HermesDashboard({
                   <span className="text-emerald-400 font-bold uppercase tracking-wider text-[10px]">{t.hermesTaskTrackerTitle}</span>
                   <div className="flex gap-2 items-center text-[9px] font-bold uppercase">
                     <span className="text-emerald-600">{t.hermesPendingLabel.replace('{count}', String(tasks.filter(t => t.status === 'Pending').length))}</span>
+                    <span className="text-emerald-800">|</span>
+                    <button
+                      onClick={handleExportPendingTasks}
+                      className="flex items-center gap-1 border border-emerald-800/60 px-2 py-1 text-emerald-400 hover:bg-emerald-900/30 hover:text-emerald-200 transition-colors rounded-sm"
+                    >
+                      <Download className="w-3 h-3" />
+                      Export JSON
+                    </button>
                     <span className="text-emerald-800">|</span>
                     <span className="text-emerald-600 animate-pulse">{t.hermesRightClickTip}</span>
                   </div>
@@ -1813,12 +1922,92 @@ export function HermesDashboard({
               transition={{ duration: 0.2 }}
               className="space-y-4 text-emerald-400/90 leading-relaxed text-[10px] pb-4"
             >
-              <div className="border border-emerald-900/40 p-3 bg-emerald-950/15 space-y-3 font-mono max-h-[380px] overflow-y-auto scrollbar-cyan pr-2 markdown-body custom-markdown">
-                {docsContent ? (
-                  <ReactMarkdown>{docsContent}</ReactMarkdown>
-                ) : (
-                  <div className="text-emerald-700/80 italic text-center py-4">Loading documentation...</div>
-                )}
+              <form onSubmit={handleDocsSearch} className="border border-emerald-900/40 p-3 bg-emerald-950/10 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] text-emerald-300 font-bold uppercase tracking-widest">Docs / Tech Specs</div>
+                    <div className="text-[8px] text-emerald-600">Search real workspace files, then open the selected source or spec in-place.</div>
+                  </div>
+                  <div className="text-[8px] text-emerald-600 uppercase tracking-widest">
+                    Active file: {docsSelectedFile}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={docsQuery}
+                    onChange={(e) => setDocsQuery(e.target.value)}
+                    placeholder="Search workspace docs, components, policies..."
+                    className="flex-1 bg-[#020d06] border border-emerald-900/60 p-2 text-[10px] tracking-wider text-emerald-300 placeholder:text-emerald-800/80 focus:outline-none focus:border-emerald-500/80 rounded-sm font-mono"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isDocsSearching}
+                    className="px-4 py-2 bg-emerald-900/25 hover:bg-emerald-800/40 border border-emerald-700/60 text-emerald-300 text-[9px] font-bold uppercase tracking-widest transition-all disabled:opacity-50 rounded-sm"
+                  >
+                    {isDocsSearching ? 'Scanning...' : 'Search'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-4 min-h-[380px]">
+                <div className="border border-emerald-900/40 bg-[#021008] p-3 flex flex-col">
+                  <div className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest border-b border-emerald-900/40 pb-2 mb-2">
+                    Workspace Hits ({docsMatches.length})
+                  </div>
+                  <div className="space-y-2 overflow-y-auto pr-1 scrollbar-cyan max-h-[200px]">
+                    {docsMatches.length > 0 ? docsMatches.map((match) => (
+                      <button
+                        key={`${match.filePath}:${match.line}`}
+                        onClick={() => loadWorkspaceDocFile(match.filePath)}
+                        className={`w-full text-left border px-2 py-2 transition-colors ${
+                          docsSelectedFile === match.filePath
+                            ? 'border-emerald-500 bg-emerald-900/30 text-emerald-200'
+                            : 'border-emerald-900/40 bg-black/30 text-emerald-400 hover:bg-emerald-900/20'
+                        }`}
+                      >
+                        <div className="text-[8px] font-bold uppercase break-all">{match.filePath}</div>
+                        <div className="text-[7px] text-emerald-600 mt-1">Line {match.line} • Score {match.score}</div>
+                        <div className="text-[8px] text-emerald-500/90 mt-1 leading-relaxed">{match.excerpt}</div>
+                      </button>
+                    )) : (
+                      <div className="text-emerald-700/80 italic text-center py-4">
+                        Search the workspace to populate real file hits.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="text-[9px] text-emerald-400 font-bold uppercase tracking-widest border-b border-emerald-900/40 pb-2 mt-4 mb-2">
+                    Memory Matches ({docsMemoryMatches.length})
+                  </div>
+                  <div className="space-y-2 overflow-y-auto pr-1 scrollbar-cyan max-h-[140px]">
+                    {docsMemoryMatches.length > 0 ? docsMemoryMatches.map((match, index) => (
+                      <div key={`${match.title}-${index}`} className="border border-emerald-900/30 bg-black/20 px-2 py-2">
+                        <div className="text-[8px] text-emerald-300 font-bold uppercase">{match.title}</div>
+                        <div className="text-[8px] text-emerald-600 mt-1">{match.excerpt}</div>
+                      </div>
+                    )) : (
+                      <div className="text-emerald-700/70 italic text-center py-3">
+                        FTS-backed memory hits will appear here after a search.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border border-emerald-900/40 p-3 bg-emerald-950/15 overflow-y-auto scrollbar-cyan pr-2 markdown-body custom-markdown">
+                  {isDocsLoadingFile ? (
+                    <div className="text-emerald-700/80 italic text-center py-4">Loading selected workspace file...</div>
+                  ) : docsContent ? (
+                    docsSelectedFile.endsWith('.md') ? (
+                      <ReactMarkdown>{docsContent}</ReactMarkdown>
+                    ) : (
+                      <pre className="whitespace-pre-wrap text-[9px] leading-relaxed text-emerald-300 font-mono">{docsContent}</pre>
+                    )
+                  ) : (
+                    <div className="text-emerald-700/80 italic text-center py-4">Loading documentation...</div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
