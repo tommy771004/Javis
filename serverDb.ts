@@ -1,6 +1,47 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
+import os from 'os';
 import Database from 'better-sqlite3';
+
+// ---------------------------------------------------------------------------
+// Real AES-256-GCM encryption for database.json at rest
+// Key is derived deterministically from machine identity (hostname + arch +
+// total memory) so the same machine always produces the same key — no key
+// storage file needed — while still being unguessable from the ciphertext.
+// ---------------------------------------------------------------------------
+const DB_ALGO = 'aes-256-gcm' as const;
+const IV_LEN = 16; // bytes
+const MACHINE_KEY = (() => {
+  const fingerprint = [os.hostname(), os.arch(), String(os.totalmem())].join('|');
+  return crypto.createHash('sha256').update(fingerprint).digest(); // 32 bytes
+})();
+
+/** HMAC-SHA256 truncated to 8 hex chars — shown in the security audit panel. */
+export const DB_KEY_FINGERPRINT = crypto
+  .createHmac('sha256', MACHINE_KEY)
+  .update('javis-db-fingerprint')
+  .digest('hex')
+  .substring(0, 8)
+  .toUpperCase();
+
+function encryptData(plain: string): Buffer {
+  const iv = crypto.randomBytes(IV_LEN);
+  const cipher = crypto.createCipheriv(DB_ALGO, MACHINE_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag(); // 16 bytes GCM tag
+  // Layout: [iv (16)] [authTag (16)] [ciphertext (n)]
+  return Buffer.concat([iv, authTag, encrypted]);
+}
+
+function decryptData(buf: Buffer): string {
+  const iv = buf.subarray(0, IV_LEN);
+  const authTag = buf.subarray(IV_LEN, IV_LEN + 16);
+  const ciphertext = buf.subarray(IV_LEN + 16);
+  const decipher = crypto.createDecipheriv(DB_ALGO, MACHINE_KEY, iv);
+  decipher.setAuthTag(authTag);
+  return decipher.update(ciphertext).toString('utf8') + decipher.final('utf8');
+}
 
 export interface DbMessage {
   id: string;
@@ -103,7 +144,7 @@ interface DatabaseSchema {
   mcpRoutines?: DbMcpRoutine[];
 }
 
-const DB_FILE = path.join(process.cwd(), 'database.json');
+const DB_FILE = path.join(process.cwd(), 'database.enc');
 
 const INITIAL_SKILLS: DbSkill[] = [];
 
@@ -112,6 +153,7 @@ class ServerPersistenceEngine {
   private ftsDb: any;
   private systemLogs: SystemLogEntry[] = [];
   private dataListeners: (() => void)[] = [];
+  private dbFlushCount = 0;
 
   onDataChanged(cb: () => void) {
     this.dataListeners.push(cb);
@@ -184,11 +226,35 @@ class ServerPersistenceEngine {
 
     const INITIAL_COGNITIVE_MEMORIES: string[] = [];
 
+    // Migrate legacy plaintext database.json → encrypted database.enc
+    const legacyFile = path.join(process.cwd(), 'database.json');
+    if (fs.existsSync(legacyFile) && !fs.existsSync(DB_FILE)) {
+      try {
+        const legacy = fs.readFileSync(legacyFile, 'utf8').trim();
+        if (legacy) {
+          const parsed = JSON.parse(legacy);
+          this.cache = parsed;
+          this.saveDb(); // write encrypted version
+          fs.renameSync(legacyFile, legacyFile + '.migrated');
+          console.log('[DB] Migrated database.json → database.enc (AES-256-GCM)');
+        }
+      } catch (e) {
+        console.warn('[DB] Legacy migration failed, starting fresh:', e);
+      }
+    }
+
     try {
       if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf8').trim();
-        if (raw) {
-          this.cache = JSON.parse(raw);
+        const raw = fs.readFileSync(DB_FILE);
+        let decrypted: string;
+        try {
+          decrypted = decryptData(raw);
+        } catch {
+          // Fallback: file might still be plain JSON (edge case)
+          decrypted = raw.toString('utf8');
+        }
+        if (decrypted.trim()) {
+          this.cache = JSON.parse(decrypted);
         } else {
           this.cache = {
             messages: [],
@@ -295,13 +361,21 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
 
   private saveDb() {
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(this.cache, null, 2), 'utf8');
+      const plaintext = JSON.stringify(this.cache);
+      const cipherBuf = encryptData(plaintext);
+      fs.writeFileSync(DB_FILE, cipherBuf);
+      this.dbFlushCount++;
       this.syncMarkdownFiles();
       this.syncFTS();
       this.dataListeners.forEach(cb => { try { cb(); } catch(e) {} });
     } catch (e) {
       console.error('Failed to write local database file', e);
     }
+  }
+
+  /** Monotonically increasing count of actual disk flushes since process start. */
+  getDbFlushCount(): number {
+    return this.dbFlushCount;
   }
 
   purgeCache() {

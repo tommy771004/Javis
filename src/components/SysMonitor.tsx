@@ -50,9 +50,14 @@ export function SysMonitor({
         return () => window.removeEventListener('identity-updated', updateSatellite);
     }, [t.lblStarkSat4]);
 
+    const [apiLatency, setApiLatency] = useState(0);
+
     const fetchSystemStats = async () => {
         try {
+            const start = Date.now();
             const res = await fetch('/api/system/stats');
+            const end = Date.now();
+            setApiLatency(end - start);
             if (res.ok) {
                 const data = await res.json();
                 setStats(data);
@@ -181,8 +186,8 @@ export function SysMonitor({
                         <span className="text-cyan-300 font-bold mt-0.5">{bodyTemp} °F</span>
                     </div>
                     <div className="flex flex-col">
-                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">{t.lblNeuralLink}</span>
-                        <span className="text-green-400 font-bold mt-0.5 animate-pulse">{stats.neuralSync}%</span>
+                        <span className="text-cyan-600 text-[8px] uppercase tracking-widest">REST LATENCY</span>
+                        <span className="text-green-400 font-bold mt-0.5 animate-pulse">{apiLatency} ms</span>
                     </div>
                 </div>
             </div>

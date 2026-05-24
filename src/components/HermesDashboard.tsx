@@ -314,6 +314,10 @@ export function HermesDashboard({
   } | null>(null);
   const [editingTask, setEditingTask] = useState<{ id: string; description: string } | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [reportsModalTaskId, setReportsModalTaskId] = useState<string | null>(null);
+  const [taskReportsList, setTaskReportsList] = useState<string[]>([]);
+  const [activeReportFilename, setActiveReportFilename] = useState<string | null>(null);
+  const [activeReportContent, setActiveReportContent] = useState<string | null>(null);
 
   // Close context menu on any outside click or context menu trigger
   useEffect(() => {
@@ -344,6 +348,10 @@ export function HermesDashboard({
   const [cognitiveMemoriesCount, setCognitiveMemoriesCount] = useState(0);
   const [selectedLoopNode, setSelectedLoopNode] = useState<'experience' | 'curation' | 'skills' | 'gepa'>('experience');
   const [systemStats, setSystemStats] = useState<{ freq: string; os: string }>({ freq: '3.6GHz', os: 'HERMES_CORE_OS' });
+  // flowSpeed: animation duration for Matrix data-flow particles, driven by actual DB flush/sec.
+  // Lower value = faster particles (more DB I/O happening). Range: 1.0s (busy) – 5.0s (idle).
+  const [flowSpeed, setFlowSpeed] = useState(4.5);
+  const lastFlushCountRef = useRef(0);
 
   // Autoscroll terminal
   useEffect(() => {
@@ -538,7 +546,8 @@ export function HermesDashboard({
       } catch(e) {}
     };
 
-    // Regular stats polling for footer metrics
+    // Regular stats polling for footer metrics + Matrix flow-speed calibration
+    const POLL_INTERVAL_MS = 5000;
     const statsInterval = setInterval(async () => {
       try {
         const res = await fetch('/api/system/stats');
@@ -548,9 +557,18 @@ export function HermesDashboard({
             freq: data.freq || '3.6GHz',
             os: `HERMES_OS_${data.os || 'GENERIC'}`
           });
+          // Derive real flow speed from DB flush delta
+          if (typeof data.dbFlushCount === 'number') {
+            const delta = data.dbFlushCount - lastFlushCountRef.current;
+            lastFlushCountRef.current = data.dbFlushCount;
+            const flushPerSec = delta / (POLL_INTERVAL_MS / 1000);
+            // Map: 0 flush/s → 5.0s duration (slow); ≥1 flush/s → 1.0s (fast)
+            const speed = Math.max(1.0, 5.0 - flushPerSec * 4.0);
+            setFlowSpeed(speed);
+          }
         }
       } catch (e) {}
-    }, 5000);
+    }, POLL_INTERVAL_MS);
 
     return () => {
       window.removeEventListener('task-list-updated', handleUpdate);
@@ -937,6 +955,28 @@ export function HermesDashboard({
                     {t.hermesEditDesc}
                   </button>
 
+                  <button 
+                    onClick={async () => {
+                      const taskId = contextMenu.taskId;
+                      setContextMenu(null);
+                      if (!taskId) return;
+                      // Fetch reports for this task
+                      setReportsModalTaskId(taskId);
+                      try {
+                        const reports = await apiClient.getTaskReports(taskId);
+                        setTaskReportsList(reports);
+                        setActiveReportFilename(null);
+                        setActiveReportContent(null);
+                      } catch (e) {
+                        console.error('Failed to fetch reports', e);
+                        setTaskReportsList([]);
+                      }
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-sky-400 hover:bg-sky-500/20 hover:text-white transition-all uppercase font-bold"
+                  >
+                    View Task Reports
+                  </button>
+
                   <div className="border-t border-emerald-950/60 my-0.5"></div>
 
                   <button 
@@ -1086,6 +1126,63 @@ export function HermesDashboard({
                   </div>
                 </div>
               )}
+
+              {/* Custom Task Reports Viewer Modal */}
+              {reportsModalTaskId && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setReportsModalTaskId(null)}>
+                  <div className="bg-[#03150a] border border-emerald-500/70 p-0 w-full max-w-5xl h-[80vh] flex flex-col font-mono text-[10px] shadow-[0_0_32px_rgba(16,185,129,0.3)]" onClick={(e) => e.stopPropagation()}>
+                    <div className="bg-[#021008] p-3 border-b border-emerald-900/60 flex justify-between items-center shrink-0">
+                      <span className="text-emerald-400 font-bold tracking-widest uppercase">
+                        AI GENERATED REPORTS FOR TASK: {reportsModalTaskId.substring(0,8)}
+                      </span>
+                      <button onClick={() => setReportsModalTaskId(null)} className="text-emerald-600 hover:text-emerald-400 font-bold px-2 uppercase hover:bg-emerald-900/40 py-1 transition-colors">Close [X]</button>
+                    </div>
+                    
+                    <div className="flex flex-1 overflow-hidden">
+                      {/* Left Sidebar: List of Reports */}
+                      <div className="w-[30%] border-r border-emerald-900/50 p-3 overflow-y-auto bg-[#020d06] flex flex-col gap-2 shrink-0">
+                        <div className="text-emerald-500/70 border-b border-emerald-900/40 pb-2 mb-1 font-bold tracking-widest uppercase">Report Archives</div>
+                        {taskReportsList.length === 0 ? (
+                          <div className="text-emerald-800/60 py-4 text-center italic">No physical reports found for this task.</div>
+                        ) : (
+                          <div className="flex flex-col gap-1.5">
+                            {taskReportsList.map(report => (
+                              <button 
+                                key={report}
+                                onClick={async () => {
+                                  setActiveReportFilename(report);
+                                  try {
+                                    const content = await apiClient.getTaskReportContent(report);
+                                    setActiveReportContent(content);
+                                  } catch(e) {
+                                    setActiveReportContent('[ERROR] Could not load local report content.');
+                                  }
+                                }}
+                                className={`text-left px-3 py-2 border transition-all text-[9.5px] whitespace-normal leading-relaxed overflow-hidden text-emerald-400 ${activeReportFilename === report ? 'bg-emerald-900/60 border-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.2)]' : 'bg-[#03140a] border-emerald-950 hover:bg-emerald-900/30 hover:border-emerald-800'}`}
+                              >
+                                {report}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Right Pane: Report Content Viewer */}
+                      <div className="w-[70%] p-6 overflow-y-auto bg-[#010805] text-emerald-300 font-sans text-[13px] leading-[1.8] flex-1">
+                        {!activeReportFilename ? (
+                          <div className="h-full flex items-center justify-center">
+                            <span className="text-emerald-800/50 uppercase tracking-widest font-mono text-[10px] border border-emerald-900/30 px-4 py-2 rounded-sm bg-emerald-950/10">SELECT A REPORT FROM THE ARCHIVE TO VIEW TELEMETRY</span>
+                          </div>
+                        ) : (
+                          <div className="markdown-body max-w-3xl">
+                            <ReactMarkdown>{activeReportContent || "Retrieving physical report telemetry from host layer..."}</ReactMarkdown>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
           {activeTab === 'matrix' && (
@@ -1153,7 +1250,8 @@ export function HermesDashboard({
                       scale: [0.8, 1.1, 0.9, 0.8]
                     }}
                     transition={{ 
-                      duration: isEvolving ? 0.6 : (cognitiveState === 'speaking' ? 1.4 : (cognitiveState === 'thinking' ? 0.9 : 4.5)), 
+                      // Duration driven by real DB flush rate: lower = more I/O activity
+                      duration: flowSpeed * 0.9, 
                       repeat: Infinity, 
                       repeatDelay: 0.5,
                       ease: 'easeInOut' 
@@ -1169,7 +1267,7 @@ export function HermesDashboard({
                        scale: [0.7, 1.2, 0.8]
                      }}
                      transition={{ 
-                       duration: isEvolving ? 0.7 : (cognitiveState === 'speaking' ? 1.6 : (cognitiveState === 'thinking' ? 1.1 : 5.2)), 
+                       duration: flowSpeed, 
                        repeat: Infinity, 
                        repeatDelay: 1.0,
                        ease: 'linear', 
@@ -1186,7 +1284,7 @@ export function HermesDashboard({
                       scale: [0.9, 1.3, 1, 0.9]
                     }}
                     transition={{ 
-                      duration: isEvolving ? 0.5 : (cognitiveState === 'speaking' ? 1.1 : (cognitiveState === 'thinking' ? 0.7 : 3.8)), 
+                      duration: flowSpeed * 0.8, 
                       repeat: Infinity, 
                       repeatDelay: 0.8,
                       ease: 'circOut', 

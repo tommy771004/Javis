@@ -307,6 +307,20 @@ class ApiClient {
     if (!res.ok) throw new Error('Failed to delete task');
   }
 
+  async getTaskReports(taskId: string): Promise<string[]> {
+    const res = await fetch(`/api/tasks/${taskId}/reports`);
+    if (!res.ok) throw new Error('Failed to fetch task reports');
+    const data = await res.json();
+    return data.reports || [];
+  }
+
+  async getTaskReportContent(filename: string): Promise<string> {
+    const res = await fetch(`/api/reports/${encodeURIComponent(filename)}`);
+    if (!res.ok) throw new Error('Failed to fetch report content');
+    const data = await res.json();
+    return data.content || '';
+  }
+
   // Cost calculator fallback for frontend UI elements
   calculateAPICost(model: string, inputTokens: number, outputTokens: number): number {
     const modelLower = model.toLowerCase();

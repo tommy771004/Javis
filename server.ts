@@ -7,7 +7,7 @@ import crypto from "crypto";
 import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
-import { serverDB } from "./serverDb";
+import { serverDB, DB_KEY_FINGERPRINT } from "./serverDb";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -559,19 +559,9 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     workspaceSandboxed = "Defender-Active";
   }
   
-  // Generate a dynamic session key combined with a deterministic node fingerprint
-  const nodeFingerprint = crypto.createHash("sha256")
-    .update([os.hostname(), os.arch(), os.totalmem(), isDocker].join("|"))
-    .digest("hex").substring(0, 8).toUpperCase();
-    
-  const sessionEntropy = crypto.randomBytes(4).toString('hex').toUpperCase();
-  const dynamicKey = `ID:${nodeFingerprint}-${sessionEntropy}`;
-  
-  const encryption = defenderActive && firewallActive
-    ? `AES-256-GCM / RSA-4096 (Secure) [${dynamicKey}]`
-    : defenderActive || firewallActive
-      ? `AES-128-CBC (Nominal) [${dynamicKey}]`
-      : `PLAINTEXT / UNENCRYPTED [ID:${nodeFingerprint}]`;
+  // Report real encryption state: key fingerprint derived from machine identity,
+  // algorithm is the actual AES-256-GCM used by ServerPersistenceEngine.
+  const encryption = `AES-256-GCM / at-rest [KEY:${DB_KEY_FINGERPRINT}]`;
 
   const port = `WSS-3000`;
 
@@ -2353,6 +2343,39 @@ User: Optimize the skill.`;
     }
   });
 
+  // --- Task Reports API ---
+  app.get("/api/tasks/:id/reports", (req, res) => {
+    try {
+      const { id } = req.params;
+      const reportsDir = path.resolve(process.cwd(), "task_reports");
+      if (!fs.existsSync(reportsDir)) {
+        return res.json({ success: true, reports: [] });
+      }
+      const files = fs.readdirSync(reportsDir);
+      // find files containing the task ID
+      const taskFiles = files.filter(f => f.includes(id));
+      res.json({ success: true, reports: taskFiles });
+    } catch(e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  });
+
+  app.get("/api/reports/:filename", (req, res) => {
+    try {
+      const { filename } = req.params;
+      // Sanitize to prevent path traversal
+      const safeFilename = path.basename(filename);
+      const filePath = path.resolve(process.cwd(), `task_reports/${safeFilename}`);
+      if (!fs.existsSync(filePath)) {
+         return res.status(404).json({ error: "File not found" });
+      }
+      const content = fs.readFileSync(filePath, "utf8");
+      res.json({ content });
+    } catch(e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- Real Physical Auto-Advance Task Engine ---
   async function advanceTaskPhysically(taskId: string, settings: any, apiKey: string): Promise<{ success: boolean; newProgress: number; logMessage: string }> {
     const tasks = serverDB.getTasks();
@@ -2610,7 +2633,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         mem: finalMem,
         net: finalNet,
         diskIo: diskIoString,
-        neuralSync: "100.00",
+        dbFlushCount: serverDB.getDbFlushCount(),
         rxSpeed: currentRxSpeed,
         txSpeed: currentTxSpeed,
         gpu: finalGpu,
