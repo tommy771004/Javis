@@ -116,6 +116,30 @@ function toggleTrueOverdriveWorker(active: boolean) {
     }
   }
 }
+// --- Targeted Webhook Dispatcher ---
+function triggerSpecificWebhooksFromText(text: string) {
+  const webhookRegex = /\[TRIGGER_WEBHOOK\]:\s*([^\n\]]+)/g;
+  let match;
+  while ((match = webhookRegex.exec(text)) !== null) {
+    const webhookName = match[1].trim();
+    const webhooks = serverDB.getMcpWebhooks();
+    const target = webhooks.find(w => w.name.trim().toLowerCase() === webhookName.toLowerCase());
+    
+    if (target && target.active) {
+      serverDB.addSystemLog('NET', 'INFO', `Triggering targeted external Webhook: ${target.name}`);
+      fetch(target.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: 'LLM_TRIGGERED', content: text, timestamp: Date.now() })
+      }).catch((e: any) => {
+        serverDB.addSystemLog('NET', 'ERROR', `Targeted Webhook ${target.name} failed: ${e.message}`);
+      });
+    } else {
+      serverDB.addSystemLog('NET', 'WARN', `Targeted Webhook '${webhookName}' not found or inactive.`);
+    }
+  }
+}
+
 // --- MCP External Webhook Dispatcher ---
 function broadcastMcpEvent(eventType: string, payload: any) {
   try {
@@ -1387,6 +1411,8 @@ INTEGRATION ENGINE DETAILS:
 
       broadcastMcpEvent('CHAT_COMPLETION', { userPrompt: message, botResponse: result.text, model: actualModel, costUsd: calculatedCost });
 
+      triggerSpecificWebhooksFromText(result.text);
+
       // Log transaction details
       serverDB.addCostLog({
         id: Math.random().toString(36).substring(7),
@@ -2365,6 +2391,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
           settings.gatewayRoutingModel || 'auto'
         );
 
+        triggerSpecificWebhooksFromText(result.text);
         const data = parseAndRepairJSON(result.text);
         if (data) {
           if (typeof data.progressIncrement === 'number') {
