@@ -5,13 +5,13 @@ export const CACHE_PURGE_RESET_EVENT = 'jarvis-cache-purged';
 export interface WebRtcStatsSnapshot {
   state: string;
   codec: string;
-  rtt: number;
-  jitter: number;
+  rtt: number | null;
+  jitter: number | null;
   packetsSent: number;
   packetsReceived: number;
   bytesSent: number;
   bytesReceived: number;
-  bitrate: number;
+  bitrate: number | null;
   offerSdp: string;
   answerSdp: string;
 }
@@ -32,14 +32,14 @@ export interface UiResetSnapshot {
 export function createInitialWebRtcStats(): WebRtcStatsSnapshot {
   return {
     state: 'idle',
-    codec: 'Opus @ 48kHz',
-    rtt: 0,
-    jitter: 0,
+    codec: '',
+    rtt: null,
+    jitter: null,
     packetsSent: 0,
     packetsReceived: 0,
     bytesSent: 0,
     bytesReceived: 0,
-    bitrate: 0,
+    bitrate: null,
     offerSdp: '',
     answerSdp: '',
   };

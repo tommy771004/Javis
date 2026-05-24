@@ -103,6 +103,19 @@ export interface FtsSearchResult {
   scoreLabel: string;
 }
 
+export interface CliMapping {
+  id: string;
+  name: string;
+  cmd: string;
+  executionTemplate: string;
+  statusColor: string;
+  iconText: string;
+  iconBg: string;
+  tag?: string;
+  isInstalled?: boolean;
+  version?: string;
+}
+
 export interface DbSettings {
   shellMode: 'manual' | 'safe' | 'auto';
   writeMode: 'manual' | 'auto';
@@ -131,6 +144,8 @@ export interface DbSettings {
   openrouterKey?: string;  // OpenRouter — used as primary LLM gateway
   openaiKey?: string;      // OpenAI — used for Whisper STT
   geminiKey?: string;      // Google Gemini — backup LLM + Gemini STT
+  cliMappings?: CliMapping[]; // Dynamic CLI definitions
+  lastSqliteVacuumAt?: number | null;
 }
 
 export interface DbMcpWebhook {
@@ -428,6 +443,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
         elevenLabsKey: '',
         alwaysOnTop: false,
         launchOnStartup: false,
+        lastSqliteVacuumAt: null,
         cliPackageMap: {
           "claude-code": "@anthropic-ai/claude-code",
           "github-cli": "github-cli",
@@ -456,6 +472,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       if (this.cache.settings.elevenLabsKey === undefined) this.cache.settings.elevenLabsKey = '';
       if (this.cache.settings.alwaysOnTop === undefined) this.cache.settings.alwaysOnTop = false;
       if (this.cache.settings.launchOnStartup === undefined) this.cache.settings.launchOnStartup = false;
+      if (this.cache.settings.lastSqliteVacuumAt === undefined) this.cache.settings.lastSqliteVacuumAt = null;
       if (this.cache.settings.cliPackageMap === undefined) {
         this.cache.settings.cliPackageMap = {
           "claude-code": "@anthropic-ai/claude-code",
@@ -468,7 +485,38 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
           "hermes": "javis-hermes"
         };
       }
+      if (this.cache.settings.cliMappings === undefined) {
+        try {
+          const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+          if (fs.existsSync(mappingPath)) {
+            const fileData = fs.readFileSync(mappingPath, 'utf8');
+            this.cache.settings.cliMappings = JSON.parse(fileData);
+          } else {
+            this.cache.settings.cliMappings = [];
+          }
+        } catch (e) {
+          console.error('[DB] Failed to initialize cliMappings from cli-mapping.json', e);
+          this.cache.settings.cliMappings = [];
+        }
+      }
     }
+    
+    // Also handle the initial case where cache.settings was just created
+    if (this.cache.settings.cliMappings === undefined) {
+       try {
+          const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+          if (fs.existsSync(mappingPath)) {
+            const fileData = fs.readFileSync(mappingPath, 'utf8');
+            this.cache.settings.cliMappings = JSON.parse(fileData);
+          } else {
+            this.cache.settings.cliMappings = [];
+          }
+        } catch (e) {
+          console.error('[DB] Failed to initialize cliMappings from cli-mapping.json', e);
+          this.cache.settings.cliMappings = [];
+        }
+    }
+    
     return this.cache.settings;
   }
 
@@ -477,6 +525,17 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     this.cache.settings = { ...current, ...newSettings };
     this.saveDb();
     this.addSystemLog('SYS', 'SUCCESS', `System configurables updated via manual override.`);
+  }
+
+  getCliMappings(): CliMapping[] {
+    return this.getSettings().cliMappings || [];
+  }
+
+  updateCliMappings(mappings: CliMapping[]) {
+    const current = this.getSettings();
+    this.cache.settings = { ...current, cliMappings: mappings };
+    this.saveDb();
+    this.addSystemLog('SYS', 'SUCCESS', `CLI Mappings updated via UI.`);
   }
 
   // --- Messages API ---
@@ -544,6 +603,48 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
 
   getTasks(): DbTask[] {
     return this.cache.tasks || [];
+  }
+
+  getTask(id: string): DbTask | undefined {
+    return (this.cache.tasks || []).find(task => task.id === id);
+  }
+
+  getSqliteHealth() {
+    const databasePath = path.join(process.cwd(), 'jarvis_fts.sqlite');
+
+    try {
+      const pageCount = Number(this.ftsDb.prepare('PRAGMA page_count').pluck().get() || 0);
+      const pageSize = Number(this.ftsDb.prepare('PRAGMA page_size').pluck().get() || 0);
+      const integrityRaw = String(this.ftsDb.prepare('PRAGMA integrity_check').pluck().get() || 'unknown');
+
+      return {
+        databasePath,
+        fileSizeBytes: fs.existsSync(databasePath) ? fs.statSync(databasePath).size : 0,
+        connectionOk: true,
+        integrity: integrityRaw === 'ok' ? 'ok' as const : 'corrupt' as const,
+        lastVacuumAt: this.getSettings().lastSqliteVacuumAt || null,
+        pageCount,
+        pageSize,
+      };
+    } catch (error) {
+      console.error('Failed to inspect SQLite health', error);
+
+      return {
+        databasePath,
+        fileSizeBytes: fs.existsSync(databasePath) ? fs.statSync(databasePath).size : 0,
+        connectionOk: false,
+        integrity: 'unknown' as const,
+        lastVacuumAt: this.getSettings().lastSqliteVacuumAt || null,
+        pageCount: 0,
+        pageSize: 0,
+      };
+    }
+  }
+
+  recordSqliteVacuum(timestamp = Date.now()) {
+    this.ftsDb.exec('VACUUM');
+    this.updateSettings({ lastSqliteVacuumAt: timestamp });
+    this.addSystemLog('DB', 'SUCCESS', `SQLite maintenance vacuum completed at ${new Date(timestamp).toISOString()}.`);
   }
 
   // --- Overdrive Deep Indexing API ---

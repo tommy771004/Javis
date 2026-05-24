@@ -1,5 +1,6 @@
 // Client-side API wrapper communicating with the Node.js Server
 import type { FtsScoreKind } from './telemetryPresentationPolicies';
+import type { DatabaseHealthSnapshot, MonitoringAlert } from './hermesMonitoring';
 
 export interface DbMessage {
   id: string;
@@ -62,6 +63,15 @@ export interface McpRoutine {
   name: string;
   prompt: string;
 }
+
+export interface McpTemplate {
+  id: string;
+  name: string;
+  icon?: string;
+  config: Record<string, unknown>;
+}
+
+export type { DatabaseHealthSnapshot, MonitoringAlert };
 
 class ApiClient {
   async init(): Promise<void> {
@@ -170,6 +180,12 @@ class ApiClient {
     return res.json();
   }
 
+  async getDatabaseHealth(): Promise<DatabaseHealthSnapshot> {
+    const res = await fetch('/api/system/database-health');
+    if (!res.ok) throw new Error('Failed to fetch database health');
+    return res.json();
+  }
+
   async getSettings(): Promise<any> {
     const res = await fetch('/api/settings');
     if (!res.ok) throw new Error('Failed to fetch settings');
@@ -195,6 +211,14 @@ class ApiClient {
   async getMcpTools(): Promise<any> {
     const res = await fetch('/api/mcp/tools');
     if (!res.ok) throw new Error('Failed to fetch MCP tools');
+    return res.json();
+  }
+
+  async deployMcpTemplate(templateId: string): Promise<any> {
+    const res = await fetch(`/api/mcp/templates/${encodeURIComponent(templateId)}/deploy`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('Failed to deploy MCP template');
     return res.json();
   }
 

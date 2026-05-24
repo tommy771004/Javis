@@ -1,8 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, forwardRef } from 'react';
 import { Play, Mic, Maximize2, Terminal } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 
-export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCommand: (cmd: string) => void, isMicActive: boolean, setIsMicActive: (active: boolean) => void }) {
+interface CommandInputProps {
+    onCommand: (cmd: string) => void;
+    isMicActive: boolean;
+    setIsMicActive: (active: boolean) => void;
+}
+
+export const CommandInput = forwardRef<HTMLTextAreaElement, CommandInputProps>(function CommandInput(
+    { onCommand, isMicActive, setIsMicActive },
+    forwardedRef
+) {
     const { t } = useI18n();
     const [input, setInput] = useState('');
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -74,7 +83,14 @@ export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCom
 
             <form onSubmit={handleSubmit} className="flex gap-2 relative items-end">
                 <textarea
-                    ref={textareaRef}
+                    ref={(node) => {
+                        textareaRef.current = node;
+                        if (typeof forwardedRef === 'function') {
+                            forwardedRef(node);
+                        } else if (forwardedRef) {
+                            forwardedRef.current = node;
+                        }
+                    }}
                     id="chat-input"
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -122,4 +138,4 @@ export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCom
             </div>
         </div>
     );
-}
+});

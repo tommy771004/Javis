@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
-import { apiClient, DbSkill, DbCostLog, type FtsSearchResult } from '../services/apiClient';
+import { apiClient, DbSkill, DbCostLog, type DatabaseHealthSnapshot, type FtsSearchResult, type McpTemplate, type MonitoringAlert } from '../services/apiClient';
 import { CognitiveState } from './CenterVisualizer';
 import { TaskPriorityDonut } from './TaskPriorityDonut';
 import { useI18n } from '../services/i18n';
 import { Server, Radio, Zap, Sparkles, Trash2, Plus, RefreshCw, Key, Shield, Play } from 'lucide-react';
+import { DashboardWidget } from './DashboardWidget';
+import { TaskProgressRadial } from './TaskProgressRadial';
+import { emitRebootSequence } from '../services/rebootSequence';
+import { formatMetricValue, formatTextMetric } from '../services/truthfulUiPolicies';
 
 interface HermesDashboardProps {
   cognitiveState: CognitiveState;
@@ -15,13 +19,13 @@ interface HermesDashboardProps {
   webrtcStats?: {
     state: string;
     codec: string;
-    rtt: number;
-    jitter: number;
+    rtt: number | null;
+    jitter: number | null;
     packetsSent: number;
     packetsReceived: number;
     bytesSent: number;
     bytesReceived: number;
-    bitrate: number;
+    bitrate: number | null;
     offerSdp?: string;
     answerSdp?: string;
   };
@@ -82,6 +86,10 @@ export function HermesDashboard({
   const draggingTaskIdRef = useRef<string | null>(null);
   const lastDragTimeRef = useRef<number>(0);
   const lastDragIdRef = useRef<string | null>(null);
+  const [databaseHealth, setDatabaseHealth] = useState<DatabaseHealthSnapshot | null>(null);
+  const [monitoringAlerts, setMonitoringAlerts] = useState<MonitoringAlert[]>([]);
+  const [isDatabaseHealthLoading, setIsDatabaseHealthLoading] = useState(false);
+  const knownAlertIdsRef = useRef<string[]>([]);
 
   // Docs state
   const [docsContent, setDocsContent] = useState('');
@@ -98,7 +106,7 @@ export function HermesDashboard({
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
   const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
-  const [mcpTemplates, setMcpTemplates] = useState<any[]>([]);
+  const [mcpTemplates, setMcpTemplates] = useState<McpTemplate[]>([]);
   
   // MCP Tool Execution States
   const [mcpToolParams, setMcpToolParams] = useState<{[key: string]: string}>({});
@@ -110,6 +118,10 @@ export function HermesDashboard({
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
   const [newRoutineName, setNewRoutineName] = useState('');
   const [newRoutinePrompt, setNewRoutinePrompt] = useState('');
+  const displayCodec = formatTextMetric(webrtcStats?.codec);
+  const displayRtt = formatMetricValue(webrtcStats?.rtt, 'ms');
+  const displayJitter = formatMetricValue(webrtcStats?.jitter, 'ms');
+  const displayBitrate = formatMetricValue(webrtcStats?.bitrate, 'kbps');
 
   const loadMcpData = async () => {
     try {
@@ -185,6 +197,31 @@ export function HermesDashboard({
       }
     } catch (e: any) {
       setMcpStatus(`[SYS NULL] Payload error.`);
+    } finally {
+      setIsMcpConnecting(false);
+    }
+  };
+
+  const handleDeployMcpTemplate = async (template: McpTemplate) => {
+    setIsMcpConnecting(true);
+    setMcpStatus(`Deploying template '${template.name}'...`);
+    setTerminalLogs(prev => [...prev, `[MCP TEMPLATE] Deploying preset '${template.name}' through control-plane registry...`]);
+    try {
+      const data = await apiClient.deployMcpTemplate(template.id);
+      if (data.success) {
+        const deployedConfig = JSON.stringify(data.template?.config || template.config, null, 2);
+        setMcpServersText(deployedConfig);
+        localStorage.setItem('jarvis_mcp_config', deployedConfig);
+        setMcpStatus(`[SUCCESS] ${template.name} deployed.`);
+        setTerminalLogs(prev => [...prev, `[MCP TEMPLATE] ${template.name} deployed and live connection bootstrap requested.`]);
+        loadMcpData();
+      } else {
+        setMcpStatus(`[FAULT]: ${data.error}`);
+        setTerminalLogs(prev => [...prev, `[MCP TEMPLATE] Deployment fault: ${data.error}`]);
+      }
+    } catch (e: any) {
+      setMcpStatus(`[FAULT]: ${e.message}`);
+      setTerminalLogs(prev => [...prev, `[MCP TEMPLATE] Deployment failed: ${e.message}`]);
     } finally {
       setIsMcpConnecting(false);
     }
@@ -367,9 +404,22 @@ export function HermesDashboard({
     }
   }, [terminalLogs]);
 
+  const loadDatabaseHealth = async () => {
+    setIsDatabaseHealthLoading(true);
+    try {
+      const health = await apiClient.getDatabaseHealth();
+      setDatabaseHealth(health);
+    } catch (error) {
+      console.warn('Failed to load database health telemetry', error);
+    } finally {
+      setIsDatabaseHealthLoading(false);
+    }
+  };
+
   // Load real server database values
   const loadDataFromBackend = async () => {
     try {
+      await loadDatabaseHealth();
       const dbSkills = await apiClient.getSkills();
       setSkills(dbSkills);
       if (dbSkills.length > 0 && !selectedEvolutionSkill) {
@@ -380,7 +430,7 @@ export function HermesDashboard({
       const stats = await apiClient.getGatewayStats();
       setBudget(stats.budget);
       setSpent(stats.spent);
-      setCacheHits(stats.cacheHits);
+      setCacheHits(Number.isFinite(stats.cacheHits) ? stats.cacheHits : 0);
       setCostLogs(stats.costLogs);
       
       let memoriesCount = 0;
@@ -549,6 +599,23 @@ export function HermesDashboard({
         const data = JSON.parse(event.data);
         if (data.type === 'SYNC_PULSE') {
           loadDataFromBackend();
+        } else if (data.type === 'MONITORING_ALERTS') {
+          if (data.database) {
+            setDatabaseHealth(data.database);
+          }
+          if (Array.isArray(data.alerts)) {
+            setMonitoringAlerts(data.alerts);
+            const nextAlertIds = data.alerts.map((alert: MonitoringAlert) => alert.id);
+            const previousAlertIds = new Set(knownAlertIdsRef.current);
+            const newAlerts = data.alerts.filter((alert: MonitoringAlert) => !previousAlertIds.has(alert.id));
+            if (newAlerts.length > 0) {
+              setTerminalLogs(prev => [
+                ...prev,
+                ...newAlerts.map((alert: MonitoringAlert) => `[MONITOR ALERT] ${alert.title}: ${alert.message}`),
+              ]);
+            }
+            knownAlertIdsRef.current = nextAlertIds;
+          }
         }
       } catch(e) {}
     };
@@ -574,6 +641,8 @@ export function HermesDashboard({
             setFlowSpeed(speed);
           }
         }
+        const health = await apiClient.getDatabaseHealth();
+        setDatabaseHealth(health);
       } catch (e) {}
     }, POLL_INTERVAL_MS);
 
@@ -724,6 +793,14 @@ export function HermesDashboard({
             {tab === 'mcp' ? 'MCP' : (tab === 'matrix' ? t.hermesTabLoop : tab === 'memory' ? t.hermesTabFts : tab === 'tasks' ? t.hermesTabTasks : tab === 'gateway' ? t.hermesTabGateway : tab === 'webrtc' ? t.hermesTabVoip : t.hermesTabDocs)}
           </button>
         ))}
+      </div>
+
+      <div className="mb-4">
+        <DashboardWidget
+          health={databaseHealth}
+          alerts={monitoringAlerts}
+          isLoading={isDatabaseHealthLoading}
+        />
       </div>
 
       {/* Tab Panels */}
@@ -883,46 +960,44 @@ export function HermesDashboard({
                               <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">100%</span>
                             </div>
                           ) : (
-                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex flex-col gap-1" onClick={(e) => e.stopPropagation()}>
-                              <div className="flex justify-between items-center mb-1">
-                                <span className="text-[7.5px] text-emerald-500/70 font-bold tracking-widest uppercase">Adaptive Tracking Active</span>
-                                <span className="text-[7.5px] text-emerald-600 animate-pulse font-bold">[ACTIVE_SYNC]</span>
+                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex items-center justify-between gap-3" onClick={(e) => e.stopPropagation()}>
+                              <div className="space-y-1.5">
+                                <div className="text-[7.5px] text-emerald-500/70 font-bold tracking-widest uppercase">Adaptive Tracking Active</div>
+                                <div className="text-[7.5px] text-emerald-600 animate-pulse font-bold">[RADIAL_SYNC]</div>
+                                <div className="text-[8px] text-emerald-700 leading-relaxed max-w-[180px]">
+                                  Drag the ring to update live completion status without leaving the list.
+                                </div>
                               </div>
-                              <div className="flex items-center gap-3">
-                                <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">SYNC:</span>
-                                <input 
-                                  type="range" 
-                                  min="0" 
-                                  max="100" 
-                                  step="5"
-                                  value={task.progress || 0}
-                                  onPointerDown={() => {
-                                    draggingTaskIdRef.current = task.id;
-                                    lastDragIdRef.current = task.id;
-                                    lastDragTimeRef.current = Date.now();
-                                  }}
-                                  onPointerUp={() => {
-                                    draggingTaskIdRef.current = null;
-                                    lastDragTimeRef.current = Date.now();
-                                  }}
-                                  onChange={async (e) => {
-                                    const newProgress = parseInt(e.target.value);
-                                    lastDragIdRef.current = task.id;
-                                    lastDragTimeRef.current = Date.now();
-                                    // Live optimistic update for seamless experience
-                                    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: newProgress, status: newProgress === 100 ? 'Completed' : t.status } : t));
-                                    await fetch(`/api/tasks/${task.id}`, {
-                                      method: 'PUT',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ progress: newProgress })
-                                    });
-                                  }}
-                                  className="flex-1 h-1 bg-emerald-950 accent-emerald-400 border border-emerald-900/60 rounded-sm cursor-pointer"
-                                />
-                                <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">
-                                  {task.progress || 0}%
-                                </span>
-                              </div>
+                              <TaskProgressRadial
+                                progress={task.progress || 0}
+                                onDragStart={() => {
+                                  draggingTaskIdRef.current = task.id;
+                                  lastDragIdRef.current = task.id;
+                                  lastDragTimeRef.current = Date.now();
+                                }}
+                                onChange={(nextProgress) => {
+                                  lastDragIdRef.current = task.id;
+                                  lastDragTimeRef.current = Date.now();
+                                  setTasks(prev => prev.map(t => (
+                                    t.id === task.id
+                                      ? {
+                                          ...t,
+                                          progress: nextProgress,
+                                          status: nextProgress === 100 ? 'Completed' : 'Pending',
+                                        }
+                                      : t
+                                  )));
+                                }}
+                                onDragEnd={async (nextProgress) => {
+                                  draggingTaskIdRef.current = null;
+                                  lastDragTimeRef.current = Date.now();
+                                  await fetch(`/api/tasks/${task.id}`, {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ progress: nextProgress })
+                                  });
+                                }}
+                              />
                             </div>
                           )}
                         </div>
@@ -1638,18 +1713,18 @@ export function HermesDashboard({
                 </div>
                 <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
                   <div className="text-[8px] opacity-60 text-emerald-500">AUDIO CODEC</div>
-                  <div className="text-[9px] xl:text-[10px] font-bold text-emerald-300 text-center leading-tight">{webrtcStats?.codec || 'OPUS Mono'}</div>
+                  <div className="text-[9px] xl:text-[10px] font-bold text-emerald-300 text-center leading-tight">{displayCodec}</div>
                 </div>
                 <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
                   <div className="text-[8px] opacity-60 text-emerald-500">RTT LATENCY</div>
                   <div className="text-[9px] xl:text-[10px] font-bold text-amber-400">
-                    {isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.rtt}ms` : '0ms'}
+                    {isMicActive && webrtcStats?.state === 'connected' ? displayRtt : 'N/A'}
                   </div>
                 </div>
                 <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
                   <div className="text-[8px] opacity-60 text-emerald-500">JITTER</div>
                   <div className="text-[9px] xl:text-[10px] font-bold text-green-300">
-                    {isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.jitter}ms` : '0.00ms'}
+                    {isMicActive && webrtcStats?.state === 'connected' ? displayJitter : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -1658,7 +1733,7 @@ export function HermesDashboard({
               <div className="border border-emerald-900/40 p-3 bg-emerald-950/10 grid grid-cols-3 gap-4 text-center text-[10px] font-mono leading-relaxed">
                 <div>
                   <span className="text-emerald-500 font-bold block uppercase text-[8px]">Transit Bitrate</span>
-                  <span className="text-emerald-300 font-bold">{isMicActive && webrtcStats?.state === 'connected' ? `${webrtcStats.bitrate} kbps` : '0 kbps'}</span>
+                  <span className="text-emerald-300 font-bold">{isMicActive && webrtcStats?.state === 'connected' ? displayBitrate : 'N/A'}</span>
                 </div>
                 <div>
                   <span className="text-emerald-500 font-bold block uppercase text-[8px]">Packets Received</span>
@@ -1758,11 +1833,15 @@ export function HermesDashboard({
                 </div>
                 <button
                   onClick={async () => {
-                    window.dispatchEvent(new CustomEvent('skin-updated'));
                     try {
-                      await fetch('/api/system/reboot', { method: 'POST' });
+                      const res = await fetch('/api/system/reboot', { method: 'POST' });
+                      if (!res.ok) {
+                        throw new Error(`HTTP ${res.status}`);
+                      }
+                      const rebootData = await res.json();
+                      emitRebootSequence(rebootData);
                     } catch (e) {
-                      console.error("Reboot post-fire trigger expected process termination.", e);
+                      console.error("Reboot request failed before process handoff.", e);
                     }
                   }}
                   className="px-3 py-1 bg-emerald-950/45 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-[9px] uppercase font-bold tracking-wider transition-all flex items-center gap-1.5 shrink-0 self-start md:self-auto"
@@ -1802,11 +1881,11 @@ export function HermesDashboard({
                         {mcpTemplates.map(tpl => (
                           <button
                             key={tpl.id}
-                            onClick={() => handleMcpConnect(JSON.stringify(tpl.config, null, 2))}
+                            onClick={() => handleDeployMcpTemplate(tpl)}
                             className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
-                            title={`Instantly deploy ${tpl.name} protocol server`}
+                            title={`Deploy ${tpl.name} through the backend template registry`}
                           >
-                            {tpl.icon} + {tpl.name}
+                            {tpl.icon} Deploy {tpl.name}
                           </button>
                         ))}
                       </div>

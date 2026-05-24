@@ -14,6 +14,8 @@ import { SettingsModal, SecuritySettings } from './components/SettingsModal';
 import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
 import { startCommsChannel, stopCommsChannel, playTactileClick, getMasterAnalyser, modulateSynthVolumeForSpeech } from './services/audioSynth';
 import { CACHE_PURGE_RESET_EVENT, createInitialWebRtcStats, createUiResetSnapshot } from './services/uiResetPolicies';
+import { resolveGlobalShortcutAction } from './services/hermesDashboardInteractions';
+import { buildOperationalSpeechFallback } from './services/truthfulUiPolicies';
 
 interface PlannedAction {
   type: 'write' | 'execute' | 'create_task';
@@ -62,6 +64,35 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
+  const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const handleGlobalShortcut = (event: KeyboardEvent) => {
+      const action = resolveGlobalShortcutAction(event);
+      if (!action) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (action === 'open-settings') {
+        setIsSettingsOpen(true);
+        return;
+      }
+
+      commandInputRef.current?.focus();
+      commandInputRef.current?.setSelectionRange(
+        commandInputRef.current.value.length,
+        commandInputRef.current.value.length
+      );
+    };
+
+    window.addEventListener('keydown', handleGlobalShortcut);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalShortcut);
     };
   }, []);
 
@@ -382,21 +413,27 @@ export default function App() {
         if (!pc2Ref.current) return;
         try {
           const stats = await pc2Ref.current.getStats();
-          let rtt = 0;
-          let jitter = 0;
+          let rtt: number | null = null;
+          let jitter: number | null = null;
           let packetsReceived = 0;
           let bytesReceived = 0;
           let packetsSent = 0;
           let bytesSent = 0;
           let activeCodecId = '';
-          let codecString = 'Unknown Codec / Negotiation Pending';
+          let codecString = '';
+          let hasInboundAudio = false;
 
           stats.forEach(report => {
             if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-              rtt = Math.round((report.currentRoundTripTime || 0) * 1000);
+              if (typeof report.currentRoundTripTime === 'number') {
+                rtt = Math.round(report.currentRoundTripTime * 1000);
+              }
             }
             if (report.type === 'inbound-rtp' && report.mediaType === 'audio') {
-              jitter = report.jitter || 0;
+              hasInboundAudio = true;
+              if (typeof report.jitter === 'number') {
+                jitter = parseFloat((report.jitter * 1000).toFixed(4));
+              }
               packetsReceived = report.packetsReceived || 0;
               bytesReceived = report.bytesReceived || 0;
               if (report.codecId) activeCodecId = report.codecId;
@@ -420,7 +457,9 @@ export default function App() {
           const now = Date.now();
           const timeDelta = (now - prevTimestampRef.current) / 1000;
           const bytesDelta = bytesReceived - prevBytesReceivedRef.current;
-          const bitrate = timeDelta > 0 ? Math.round(((bytesDelta * 8) / timeDelta) / 1000) : 0;
+          const bitrate = hasInboundAudio && timeDelta > 0
+            ? Math.max(0, Math.round(((bytesDelta * 8) / timeDelta) / 1000))
+            : null;
 
           prevBytesReceivedRef.current = bytesReceived;
           prevTimestampRef.current = now;
@@ -428,13 +467,13 @@ export default function App() {
           setWebrtcStats(prev => ({
             ...prev,
             codec: codecString,
-            rtt: rtt,
-            jitter: parseFloat((jitter * 1000).toFixed(4)), // convert to ms
+            rtt,
+            jitter,
             packetsSent,
             packetsReceived,
             bytesSent,
             bytesReceived,
-            bitrate: bitrate
+            bitrate,
           }));
         } catch (statsErr) {
           console.error("Failed to query WebRTC statistics", statsErr);
@@ -569,9 +608,9 @@ export default function App() {
     setWebrtcStats(prev => ({
       ...prev,
       state: 'closed',
-      bitrate: 0,
-      rtt: 0,
-      jitter: 0
+      bitrate: null,
+      rtt: null,
+      jitter: null
     }));
     setWebrtcLogs(prev => [...prev, "[WebRTC] VoIP loopback closed. Hardware standby."]);
     setCognitiveState('idle');
@@ -618,32 +657,9 @@ export default function App() {
     // 8. Clean up excessive whitespace
     clean = clean.replace(/\s+/g, ' ').trim();
 
-    // 9. JARVIS dynamic fallback response if output is purely operational
+    // 9. Truthful fallback response if output is purely operational
     if (!clean || clean.length < 8) {
-      if (rawText.includes('[WRITE_FILE]')) {
-        const fileMatch = rawText.match(/\[WRITE_FILE\]:([^\s\n]+)/i);
-        const fileName = fileMatch ? fileMatch[1].split(/[\\/]/).pop() : '';
-        return fileName 
-          ? `I've prepared the updates for ${fileName}, sir. Workspace protocols active.`
-          : "FileSystem patch sequence initialized. Applying the requested modifications now.";
-      }
-      if (rawText.includes('[EXECUTE_COMMAND]') || rawText.includes('[RUN_COMMAND]')) {
-        return "Command sequence synchronized. Initiating local system execution protocols.";
-      }
-      if (rawText.includes('[CREATE_TASK]')) {
-        return "Milestone logged. Persistent database tracking is now active, sir.";
-      }
-      
-      const generalFallbacks = [
-        "The operation has been completed, sir. All systems nominal.",
-        "System metrics are stable. Protocol executed as requested.",
-        "Transaction complete, sir. Standing by for further instructions.",
-        "Task verified. All neural arrays reporting peak performance.",
-        "Workspace synchronized. I'm ready for the next sequence, sir.",
-        "Recalibration complete. Everything appears to be in order.",
-        "Data processed and synchronized. What is our next move?"
-      ];
-      return generalFallbacks[Math.floor(Math.random() * generalFallbacks.length)];
+      return buildOperationalSpeechFallback(rawText);
     }
 
     // 10. Limit length — JARVIS is concise and precise
@@ -1573,6 +1589,7 @@ export default function App() {
             <ActivityLog logs={logs} />
             <FileUpload />
             <CommandInput 
+                ref={commandInputRef}
                 onCommand={handleCommand} 
                 isMicActive={isMicActive} 
                 setIsMicActive={setIsMicActive} 

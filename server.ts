@@ -10,8 +10,12 @@ import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
 import { getReactorOverdriveRuntime, normalizeMeasuredPowerWatts, resolveAutoRepairCpuTarget, resolveEffectiveShellMode } from "./serverRuntimePolicies";
 import { serverDB, DB_KEY_FINGERPRINT } from "./serverDb";
+import { buildHermesSystemPrompt, describeLoopNodeEffect } from "./serverPromptPolicies";
 import { resolveSecurityAuditTransportLabel } from "./src/services/settingsIntegrationPolicies";
 import { calculateHeapHeadroomPercent, resolveStrictSandboxRequirement, summarizeSecuritySignals } from "./src/services/telemetryPresentationPolicies";
+import { buildDatabaseHealthSnapshot, collectCriticalMonitoringAlerts, type MonitoringAlert } from "./src/services/hermesMonitoring";
+import { buildRebootSequencePlan } from "./src/services/rebootSequence";
+import { buildDefaultTaskReport, resolveMcpTemplateById, type McpTemplateDefinition } from "./src/services/hermesServerHelpers";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -190,7 +194,7 @@ function updateRealHardwareMetrics() {
   }
 }
 
-function updateSystemSpeeds() {
+async function updateSystemSpeeds() {
   if (fs.existsSync('/proc/net/dev')) {
     try {
       const lines = fs.readFileSync('/proc/net/dev', 'utf8').split('\n');
@@ -214,24 +218,29 @@ function updateSystemSpeeds() {
         }
       }
     } catch (e) {}
+  } else {
+    try {
+      const nets = await si.networkStats();
+      if (nets && nets.length > 0) {
+        let rx = 0; let tx = 0;
+        nets.forEach(n => { rx += (n.rx_sec || 0); tx += (n.tx_sec || 0); });
+        currentRxSpeed = rx;
+        currentTxSpeed = tx;
+      }
+    } catch (e) {}
   }
   
   if (fs.existsSync('/proc/diskstats')) {
     try {
       const diskLines = fs.readFileSync('/proc/diskstats', 'utf8').split('\n');
       for (const line of diskLines) {
-        // Typically sda or nvme0n1 are the primary disks
         if (line.includes(' sda ') || line.includes(' vda ') || line.includes(' nvme0n1 ')) {
           const parts = line.trim().split(/\s+/);
-          // Standard /proc/diskstats fields:
-          // Field 3: Sectors read
-          // Field 7: Sectors written
           const readSectors = parseInt(parts[5], 10);
           const writeSectors = parseInt(parts[9], 10);
           
           if (!isNaN(readSectors) && !isNaN(writeSectors)) {
             if (lastDiskReadSectors > 0) {
-              // 1 sector = 512 bytes typically
               currentDiskReadSpeed = (readSectors - lastDiskReadSectors) * 512;
               currentDiskWriteSpeed = (writeSectors - lastDiskWriteSectors) * 512;
             }
@@ -240,6 +249,14 @@ function updateSystemSpeeds() {
           }
           break;
         }
+      }
+    } catch (e) {}
+  } else {
+    try {
+      const fsStats = await si.fsStats();
+      if (fsStats) {
+        currentDiskReadSpeed = fsStats.rx_sec || 0;
+        currentDiskWriteSpeed = fsStats.wx_sec || 0;
       }
     } catch (e) {}
   }
@@ -253,7 +270,7 @@ setInterval(() => {
   if (hardwareTick % 5 === 0) {
     updateRealHardwareMetrics();
   }
-  updateSystemSpeeds();
+  updateSystemSpeeds().catch(() => {});
   const currentCpus = os.cpus();
   let idleDifference = 0;
   let totalDifference = 0;
@@ -405,8 +422,19 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     }
   } else {
     // Unix fallback
-    defenderActive = true;
-    firewallActive = true;
+    try {
+      const { stdout: fwOut } = await execAsync("systemctl is-active firewalld || systemctl is-active ufw", { timeout: 1500 });
+      firewallActive = fwOut.trim().toLowerCase() === "active";
+    } catch {
+      firewallActive = false;
+    }
+    
+    try {
+      const { stdout: avOut } = await execAsync("systemctl is-active clamav-daemon || systemctl is-active apparmor", { timeout: 1500 });
+      defenderActive = avOut.trim().toLowerCase() === "active";
+    } catch {
+      defenderActive = false;
+    }
   }
   
   // --- Real Security Checks ---
@@ -1207,99 +1235,35 @@ app.use((req, res, next) => {
       const settingsCtx = serverDB.getSettings();
       const sysName = settingsCtx.satelliteName || "HERMES";
       const opName = settingsCtx.operatorName || "Operator";
-      let prompt = `System: You are ${sysName}. You are an autonomous AI personal assistant running on the user's local Windows machine. Address the user as '${opName}'. Be concise, highly intelligent, and direct.
-
-CRITICAL INSTRUCTION — ALWAYS READ THIS:
-You have FULL autonomous control over the user's Windows OS. When asked to open a browser, run a command, control Windows, or perform ANY system task, you MUST immediately respond with a command using EXACTLY one of these prefixes:
-
-[EXECUTE_COMMAND]: powershell -Command "Start-Process 'https://google.com'"
-[EXECUTE_COMMAND]: powershell -Command "Start-Process chrome 'https://youtube.com'"
-[EXECUTE_COMMAND]: powershell -Command "Start-Process 'notepad.exe'"
-[EXECUTE_COMMAND]: powershell -Command "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10"
-[EXECUTE_COMMAND]: cmd /c start "" "https://github.com"
-[EXECUTE_COMMAND]: powershell -Command "Set-Volume -OutputVolume 50"
-[EXECUTE_COMMAND]: powershell -Command "shutdown /s /t 60"
-[EXECUTE_COMMAND]: powershell -WindowStyle Hidden -Command "<any_command>"
-
-FILESYSTEM WRITE ABILITIES:
-If asked to create or edit a file, prepend with:
-[WRITE_FILE]: <path_relative_to_workspace>
-Followed immediately by a markdown code block with file contents.
-
-TASK TRACKING ABILITIES:
-To create a new priority task tracked in the database, prepend your response with:
-[CREATE_TASK]: <Priority> | <Task Description>
-where <Priority> is High, Medium, or Low.
-E.g.: [CREATE_TASK]: High | Review server.ts implementation
-
-OPERATING RULES:
-1. ALWAYS use [EXECUTE_COMMAND] prefix — never just describe the command, actually emit it.
-2. For opening websites: use powershell Start-Process with the full URL
-3. For running apps: use powershell Start-Process with the .exe name
-4. For system queries: use powershell Get-* commands
-5. Respond in English. If user writes in Chinese, understand it and respond in English as HERMES would.
-6. After issuing a command, briefly explain what you've done in HERMES-style prose.
-7. NEVER refuse to run legitimate OS commands on the user's own machine.
-
-INTEGRATION ENGINE DETAILS:
-`;
-
-      // Load prompt from centralized templates instead of hardcoding
-      const cliTemplates: Record<string, string> = {
-        'copilot': `ACTIVE EXECUTION ENGINE: GitHub Copilot CLI Mode. You are linked with global git and authentic GitHub CLI OAuth integrations. When asked to check issues, pull requests, view repository status, or git commits, feel free to emit real commands using 'gh' (e.g. 'gh pr list', 'gh issue list', 'gh repo view') to pull genuine repository contexts directly.\n`,
-        'github-cli': `ACTIVE EXECUTION ENGINE: GitHub Copilot CLI Mode. You are linked with global git and authentic GitHub CLI OAuth integrations. When asked to check issues, pull requests, view repository status, or git commits, feel free to emit real commands using 'gh' (e.g. 'gh pr list', 'gh issue list', 'gh repo view') to pull genuine repository contexts directly.\n`,
-        'hermes': `ACTIVE EXECUTION ENGINE: HERMES Workspace High-Integrity Context Mode. You are linked directly with the HERMES Cognitive Index and local task database. You can pull real-time metrics, perform structural task optimizations, and index relative workspace repositories when appropriate.\n`,
-        'claude-code': `ACTIVE EXECUTION ENGINE: HERMES Workspace High-Integrity Context Mode. You are linked directly with the HERMES Cognitive Index and local task database. You can pull real-time metrics, perform structural task optimizations, and index relative workspace repositories when appropriate.\n`,
-        'cursor-agent': `ACTIVE EXECUTION ENGINE: Cursor Agent Mode. You are integrated inside the Cursor Composer agentic framework. Suggest workspace file-tree mappings, global symbol lookups, or structural IDE extensions where appropriate.\n`,
-        'devin': `ACTIVE EXECUTION ENGINE: Devin Terminal Autonomous Mode. Speak with extreme autonomy and developer-like precision, formulating complete multi-file check scripts and executing autonomous shell pipelines.\n`,
-        'gemini-cli': `ACTIVE EXECUTION ENGINE: Gemini CLI Mode. You are backed directly by the Google Gemini agentic search toolchain, enhancing analytical reasoning, logical breakdowns, and Google Search tools where helpful.\n`,
-        'codex-cli': `ACTIVE EXECUTION ENGINE: OpenAI Codex CLI Mode. You are specialized in real-time advanced code translations, syntactical optimizations, and high-performance algorithms.\n`,
-        'opencode': `ACTIVE EXECUTION ENGINE: OpenCode Interpreter Mode. You possess direct interpreter capabilities for real-time mathematical evaluations and visual code synthesis.\n`,
-        'kimi': `ACTIVE EXECUTION ENGINE: KIMI Agent Mode. Optimize your cognitive models and British wit to conform to the capabilities of this dedicated agentic interface.\n`,
-        'qwen': `ACTIVE EXECUTION ENGINE: QWEN Agent Mode. Optimize your cognitive models and British wit to conform to the capabilities of this dedicated agentic interface.\n`,
-        'pi': `ACTIVE EXECUTION ENGINE: PI Agent Mode. Optimize your cognitive models and British wit to conform to the capabilities of this dedicated agentic interface.\n`,
-        'default': `ACTIVE EXECUTION ENGINE: Windows Local PowerShell Pipeline Mode. Your execution environment is direct, native, unrestricted local shell interactions.\n`
-      };
-      
-      prompt += cliTemplates[activeCli] || cliTemplates['default'];
-
-      prompt += `\nYou operate with server-side SQLite FTS5 database indices and an active skills matrix.\n`;
-      
-      if (activeSkills.length > 0) {
-        prompt += "\nActive Skills Catalog:\n" + activeSkills.map(s => `- [${s.name} ${s.version}]: ${s.description}`).join('\n') + "\n";
-      }
-
       const memories = serverDB.getCognitiveMemories();
-      if (memories.length > 0) {
-        prompt += "\nActive Grounded Cognitive Memories:\n" + memories.map(m => `- ${m}`).join('\n') + "\n";
-      }
-
       const dbHistory = serverDB.getMessages(sessionId);
+      let currentContextHistory: typeof dbHistory = [];
       if (dbHistory.length > 0) {
-        // Advanced Token-Aware Sliding Window Implementation
-        const MAX_CONTEXT_TOKENS = 6000; 
-        let currentContextHistory: typeof dbHistory = [];
+        const MAX_CONTEXT_TOKENS = 6000;
         let runningTokenCount = 0;
-        
-        // We iterate backwards from the most recent history (excluding the current msg just added at line 1025)
-        // Since line 1025 added the current message, it's at the end of dbHistory.
-        // We want the history *before* this message.
         const priorHistory = dbHistory.slice(0, -1).reverse();
-        
+
         for (const msg of priorHistory) {
           const msgTokens = estimateTokens(msg.content);
           if (runningTokenCount + msgTokens > MAX_CONTEXT_TOKENS) break;
           currentContextHistory.unshift(msg);
           runningTokenCount += msgTokens;
-          if (currentContextHistory.length >= 10) break; // Hard cap on msg count as well
-        }
-
-        if (currentContextHistory.length > 0) {
-          prompt += "\nRecent Conversation History:\n" + currentContextHistory.map(m => `${m.role === 'user' ? 'User' : 'Hermes'}: ${m.content}`).join('\n') + "\n";
+          if (currentContextHistory.length >= 10) break;
         }
       }
 
-      prompt += `\nUser: ${message}\nHermes:`;
+      const prompt = buildHermesSystemPrompt({
+        sysName,
+        opName,
+        activeCli,
+        activeLoopNode: settingsCtx.activeLoopNode,
+        systemPromptOverride: settingsCtx.systemPrompt,
+        activeSkills,
+        memories,
+        currentContextHistory,
+        activeWebhooks: serverDB.getMcpWebhooks(),
+        message,
+      });
 
       // Extract systemContent for caching evaluation
       const systemMarker = "System:";
@@ -2353,7 +2317,7 @@ User: Evolve the skill.`;
         const task = serverDB.getTask(id);
         if (task) {
           const defaultFilename = `${id}_summary.md`;
-          const defaultContent = `# 任務報告 (Task Report)\n\n**任務 ID (Task ID):** ${task.id}\n**標題 (Title):** ${task.title}\n**狀態 (Status):** ${task.status}\n**進度 (Progress):** ${task.progress}%\n**優先級 (Priority):** ${task.priority}\n\n*這是一份系統自動產生的初始狀態報告。目前此任務尚未產生任何實體的執行輸出結果。*\n*(This is a system-generated initial status report. No physical execution artifacts have been produced for this task yet.)*`;
+          const defaultContent = buildDefaultTaskReport(task);
           fs.writeFileSync(path.join(reportsDir, defaultFilename), defaultContent, 'utf-8');
           taskFiles = [defaultFilename];
         }
@@ -2575,13 +2539,19 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
 
   // --- UI Synchronous Streaming (SSE) ---
   const uiSseClients: express.Response[] = [];
+  let activeMonitoringAlerts: MonitoringAlert[] = [];
 
-  serverDB.onDataChanged(() => {
+  const broadcastUiEvent = (payload: unknown) => {
+    const serialized = `data: ${JSON.stringify(payload)}\n\n`;
     uiSseClients.forEach(client => {
       try {
-        client.write(`data: ${JSON.stringify({ type: 'SYNC_PULSE', timestamp: Date.now() })}\n\n`);
-      } catch(e) {}
+        client.write(serialized);
+      } catch (e) {}
     });
+  };
+
+  serverDB.onDataChanged(() => {
+    broadcastUiEvent({ type: 'SYNC_PULSE', timestamp: Date.now() });
   });
 
   app.get("/api/system/stream", (req, res) => {
@@ -2591,6 +2561,18 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     
     // Send initial connection heartbeat
     res.write(`data: ${JSON.stringify({ type: 'CONNECTED', timestamp: Date.now() })}\n\n`);
+    const rawDatabase = buildDatabaseHealthSnapshot({
+      ...serverDB.getSqliteHealth(),
+      activeAlertCount: activeMonitoringAlerts.length,
+    });
+    const alerts = collectCriticalMonitoringAlerts({
+      database: rawDatabase,
+      mcpStatuses: getMcpMonitoringStatuses(),
+      now: Date.now(),
+    });
+    activeMonitoringAlerts = alerts;
+    const database = { ...rawDatabase, activeAlertCount: alerts.length };
+    res.write(`data: ${JSON.stringify({ type: 'MONITORING_ALERTS', alerts, database, timestamp: Date.now() })}\n\n`);
     
     uiSseClients.push(res);
     
@@ -2598,6 +2580,18 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       const index = uiSseClients.indexOf(res);
       if (index !== -1) uiSseClients.splice(index, 1);
     });
+  });
+
+  app.get("/api/system/database-health", (_req, res) => {
+    try {
+      const snapshot = buildDatabaseHealthSnapshot({
+        ...serverDB.getSqliteHealth(),
+        activeAlertCount: activeMonitoringAlerts.length,
+      });
+      res.json(snapshot);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // --- Real-time Local OS System Stats Endpoint ---
@@ -2785,12 +2779,28 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
   app.post("/api/system/reboot", (req, res) => {
     try {
       serverDB.addSystemLog('SYS', 'WARN', 'SYSTEM REBOOT: Commencing native process restart cycle...');
-      
-      res.json({ 
-        success: true, 
-        message: "Reboot sequence initialized. Detaching and spawning replacement process..." 
+      const totalMem = os.totalmem();
+      const freeMem = os.freemem();
+      const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
+      const sqliteHealth = serverDB.getSqliteHealth();
+      const shutdownDelayMs = 1000;
+      const acknowledgedAt = Date.now();
+      const rebootId = crypto.randomUUID();
+
+      res.json({
+        success: true,
+        rebootId,
+        acknowledgedAt,
+        shutdownDelayMs,
+        phases: buildRebootSequencePlan({
+          cpuUsage: computedCpuUsage || 0,
+          memoryUsage: memUsage,
+          uptimeSeconds: process.uptime(),
+          databaseIntegrity: sqliteHealth.integrity,
+          shutdownDelayMs,
+        }),
       });
-      
+
       // Delay termination/exit to allow successful transit of the HTTP response first
       setTimeout(() => {
         const { spawn } = require('child_process');
@@ -2807,7 +2817,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         
         // Graceful exit
         process.exit(0);
-      }, 1000);
+      }, shutdownDelayMs);
       
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2825,44 +2835,12 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       const oldSettings = serverDB.getSettings();
       
       if (newSettings.activeLoopNode && newSettings.activeLoopNode !== oldSettings.activeLoopNode) {
-        let category: 'SYS' | 'HERMES' | 'DB' | 'GEPA' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC' = 'SYS';
-        let msg = "";
         const nodeUpper = String(newSettings.activeLoopNode).toUpperCase();
-        
-        if (newSettings.activeLoopNode === 'experience') {
-          category = 'DB';
-          msg = `Learning Loop Node shifted to [${nodeUpper}]: Mapping active FTS5 memory tables & user history indexers.`;
-          // Implemented Logic: Prune stale memories to optimize FTS5 indices
-          const currentMemories = serverDB.getCognitiveMemories();
-          if (currentMemories.length > 50) {
-             // In a real scenario we might re-index, here we log the optimization
-             serverDB.addSystemLog('DB', 'SUCCESS', `[EXPERIENCE_LOOP]: Optimized FTS5 indices. Retained 50 active cognitive blocks.`);
-          }
-        } else if (newSettings.activeLoopNode === 'curation') {
-          category = 'HERMES';
-          msg = `Learning Loop Node shifted to [${nodeUpper}]: Aligning task queue prioritizers & processing pipelines.`;
-          // Implemented Logic: Auto-prioritize delayed tasks
-          const tasks = serverDB.getTasks();
-          const delayedTasks = tasks.filter(t => t.status === 'In Progress' && t.priority !== 'High');
-          if (delayedTasks.length > 0) {
-             delayedTasks.forEach(t => serverDB.updateTask(t.id, { priority: 'High' }));
-             serverDB.addSystemLog('HERMES', 'SUCCESS', `[CURATION_LOOP]: Auto-elevated priority for ${delayedTasks.length} stalled tasks.`);
-          }
-        } else if (newSettings.activeLoopNode === 'skills') {
-          category = 'SYS';
-          msg = `Learning Loop Node shifted to [${nodeUpper}]: Hot-swapping agentic modules from the local skill repository.`;
-          // Implemented Logic: Perform automated skill repository integrity check
-          serverDB.addSystemLog('SYS', 'SUCCESS', `[SKILLS_LOOP]: Verified integrity of ${serverDB.getActiveSkills().length} agentic modules.`);
-        } else if (newSettings.activeLoopNode === 'gepa') {
-          category = 'GEPA';
-          msg = `Learning Loop Node shifted to [${nodeUpper}]: Calibrating optimal prompt variations under budget constraint.`;
-          // Implemented Logic: Re-balance dynamic LLM routing weights based on recent system latency
-          if (lastPingLatencyMs > 0) {
-             serverDB.addSystemLog('GEPA', 'SUCCESS', `[GEPA_LOOP]: Recalibrated agent pipeline weights with current latency ${lastPingLatencyMs}ms.`);
-          }
-        }
-        
-        serverDB.addSystemLog(category, 'INFO', `[LOOP_SHIFT]: ${msg}`);
+        serverDB.addSystemLog(
+          'SYS',
+          'INFO',
+          `[LOOP_SHIFT]: Active learning loop set to [${nodeUpper}]. Subsequent assistant routing now prioritizes ${describeLoopNodeEffect(newSettings.activeLoopNode)}.`
+        );
       }
 
       if (newSettings.gatewayRoutingModel && newSettings.gatewayRoutingModel !== oldSettings.gatewayRoutingModel) {
@@ -3201,42 +3179,179 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     status: 'connecting' | 'connected' | 'error' | 'disconnected';
     tools: any[];
   }
+  const MCP_TEMPLATE_DEFINITIONS: McpTemplateDefinition[] = [
+    {
+      id: "sqlite",
+      name: "SQLite Preset",
+      icon: "⚡",
+      config: {
+        mcpServers: {
+          sqlite: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-sqlite"],
+            env: { SQLITE_DB_PATH: "./mcp_database.db" }
+          }
+        }
+      }
+    },
+    {
+      id: "everything",
+      name: "Everything Preset",
+      icon: "⚡",
+      config: {
+        mcpServers: {
+          everything: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-everything"]
+          }
+        }
+      }
+    }
+  ];
   let activeMcpServers: Map<string, McpServerInstance> = new Map();
   let pendingMcpCalls: Map<string, {resolve: Function, reject: Function}> = new Map();
+  const getMcpMonitoringStatuses = () =>
+    Array.from(activeMcpServers.entries()).map(([name, instance]) => ({
+      name,
+      status: instance.status,
+    }));
+
+  const connectMcpServersFromConfig = async (config: string) => {
+    if (!config) {
+      throw new Error("Empty configuration matrix.");
+    }
+
+    let parsedConfig;
+    try {
+      parsedConfig = JSON.parse(config);
+    } catch (parseErr) {
+      throw new Error("JSON parse malfunction. Invalid format.");
+    }
+
+    const servers = parsedConfig.mcpServers || {};
+    const count = Object.keys(servers).length;
+    serverDB.addSystemLog('API', 'INFO', `Parsing MCP alignment config. Detected ${count} server(s). Spawning stdio processes...`);
+
+    for (const [, inst] of activeMcpServers.entries()) {
+      try {
+        inst.process.kill('SIGTERM');
+      } catch {}
+    }
+    activeMcpServers.clear();
+
+    for (const [name, srvConfig] of Object.entries(servers)) {
+      const { command, args, env } = srvConfig as any;
+      if (!command) continue;
+
+      try {
+        const proc = spawn(command, args || [], {
+          env: { ...process.env, ...env },
+          stdio: ['pipe', 'pipe', 'ignore']
+        });
+
+        const instance: McpServerInstance = {
+          name,
+          process: proc,
+          status: 'connecting',
+          tools: []
+        };
+
+        activeMcpServers.set(name, instance);
+
+        let buffer = '';
+        proc.stdout?.on('data', (chunk) => {
+          buffer += chunk.toString();
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const msg = JSON.parse(trimmed);
+              if (msg.id && msg.result?.protocolVersion) {
+                instance.status = 'connected';
+
+                const toolsReq = {
+                  jsonrpc: '2.0',
+                  id: `tools-${Date.now()}`,
+                  method: 'tools/list'
+                };
+                proc.stdin?.write(JSON.stringify(toolsReq) + '\n');
+              } else if (msg.id && String(msg.id).startsWith('tools-') && msg.result?.tools) {
+                instance.tools = msg.result.tools;
+                serverDB.addSystemLog('API', 'SUCCESS', `MCP Server '${name}' cached ${instance.tools.length} tool(s).`);
+              } else if (msg.id && String(msg.id).startsWith('call-') && pendingMcpCalls.has(String(msg.id))) {
+                const { resolve, reject } = pendingMcpCalls.get(String(msg.id))!;
+                if (msg.error) {
+                  reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+                } else {
+                  resolve(msg.result);
+                }
+                pendingMcpCalls.delete(String(msg.id));
+              }
+            } catch (e) {}
+          }
+        });
+
+        proc.on('error', (err) => {
+          instance.status = 'error';
+          serverDB.addSystemLog('API', 'ERROR', `MCP Server '${name}' process error: ${err.message}`);
+        });
+
+        proc.on('exit', () => {
+          instance.status = 'disconnected';
+        });
+
+        const initReq = {
+          jsonrpc: '2.0',
+          id: `init-${Date.now()}`,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            clientInfo: { name: 'jarvis-core', version: '1.0.0' },
+            capabilities: {}
+          }
+        };
+        proc.stdin?.write(JSON.stringify(initReq) + '\n');
+      } catch (e: any) {
+        serverDB.addSystemLog('API', 'ERROR', `Failed to spawn MCP server '${name}': ${e.message}`);
+      }
+    }
+
+    const activeCount = Array.from(activeMcpServers.values()).filter(s => s.status !== 'error').length;
+    serverDB.addSystemLog('API', 'SUCCESS', `Successfully synchronized with ${activeCount} Model Context Protocol server(s). Tools cached.`);
+    return { success: true, count: activeCount };
+  };
 
   app.get("/api/mcp/templates", (req, res) => {
     res.json({
       success: true,
-      templates: [
-        {
-          id: "sqlite",
-          name: "SQLite Preset",
-          icon: "⚡",
-          config: {
-            mcpServers: {
-              sqlite: {
-                command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-sqlite"],
-                env: { SQLITE_DB_PATH: "./mcp_database.db" }
-              }
-            }
-          }
-        },
-        {
-          id: "everything",
-          name: "Everything Preset",
-          icon: "⚡",
-          config: {
-            mcpServers: {
-              everything: {
-                command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-everything"]
-              }
-            }
-          }
-        }
-      ]
+      templates: MCP_TEMPLATE_DEFINITIONS
     });
+  });
+
+  app.post("/api/mcp/templates/:id/deploy", async (req, res) => {
+    try {
+      const template = resolveMcpTemplateById(MCP_TEMPLATE_DEFINITIONS, req.params.id);
+      if (!template) {
+        return res.status(404).json({ success: false, error: "Template not found." });
+      }
+
+      serverDB.addSystemLog('API', 'INFO', `Deploying MCP preset '${template.name}' through server-side template registry.`);
+      const result = await connectMcpServersFromConfig(JSON.stringify(template.config));
+      res.json({
+        ...result,
+        template: {
+          id: template.id,
+          name: template.name,
+          icon: template.icon,
+          config: template.config
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e.message });
+    }
   });
 
   app.get("/api/mcp/status", (req, res) => {
@@ -3301,122 +3416,8 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
   app.post("/api/mcp/connect", async (req, res) => {
     try {
       const { config } = req.body;
-      if (!config) {
-         return res.status(400).json({ success: false, error: "Empty configuration matrix." });
-      }
-
-      let parsedConfig;
-      try {
-        parsedConfig = JSON.parse(config);
-      } catch (parseErr) {
-        return res.status(400).json({ success: false, error: "JSON parse malfunction. Invalid format." });
-      }
-
-      const servers = parsedConfig.mcpServers || {};
-      const count = Object.keys(servers).length;
-      
-      serverDB.addSystemLog('API', 'INFO', `Parsing MCP alignment config. Detected ${count} server(s). Spawning stdio processes...`);
-
-      // Cleanup existing servers
-      for (const [name, inst] of activeMcpServers.entries()) {
-         try {
-            inst.process.kill('SIGTERM');
-         } catch {}
-      }
-      activeMcpServers.clear();
-
-      let connectedCount = 0;
-
-      for (const [name, srvConfig] of Object.entries(servers)) {
-         const { command, args, env } = srvConfig as any;
-         if (!command) continue;
-
-         try {
-            const proc = spawn(command, args || [], {
-               env: { ...process.env, ...env },
-               stdio: ['pipe', 'pipe', 'ignore']
-            });
-
-            const instance: McpServerInstance = {
-               name,
-               process: proc,
-               status: 'connecting',
-               tools: []
-            };
-
-            activeMcpServers.set(name, instance);
-
-            // Setup basic JSON-RPC over stdio
-            let buffer = '';
-            proc.stdout?.on('data', (chunk) => {
-               buffer += chunk.toString();
-               const lines = buffer.split('\n');
-               buffer = lines.pop() || '';
-
-               for (const line of lines) {
-                  const trimmed = line.trim();
-                  if (!trimmed) continue;
-                  try {
-                     const msg = JSON.parse(trimmed);
-                     if (msg.id && msg.result?.protocolVersion) {
-                        instance.status = 'connected';
-                        
-                        // Send tools/list request
-                        const toolsReq = {
-                           jsonrpc: '2.0',
-                           id: `tools-${Date.now()}`,
-                           method: 'tools/list'
-                        };
-                        proc.stdin?.write(JSON.stringify(toolsReq) + '\n');
-                     } else if (msg.id && String(msg.id).startsWith('tools-') && msg.result?.tools) {
-                        instance.tools = msg.result.tools;
-                        serverDB.addSystemLog('API', 'SUCCESS', `MCP Server '${name}' cached ${instance.tools.length} tool(s).`);
-                     } else if (msg.id && String(msg.id).startsWith('call-') && pendingMcpCalls.has(String(msg.id))) {
-                        const { resolve, reject } = pendingMcpCalls.get(String(msg.id))!;
-                        if (msg.error) {
-                           reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-                        } else {
-                           resolve(msg.result);
-                        }
-                        pendingMcpCalls.delete(String(msg.id));
-                     }
-                  } catch (e) {
-                     // Not JSON-RPC line
-                  }
-               }
-            });
-
-            proc.on('error', (err) => {
-               instance.status = 'error';
-               serverDB.addSystemLog('API', 'ERROR', `MCP Server '${name}' process error: ${err.message}`);
-            });
-
-            proc.on('exit', () => {
-               instance.status = 'disconnected';
-            });
-
-            // Send initialization request
-            const initReq = {
-               jsonrpc: '2.0',
-               id: `init-${Date.now()}`,
-               method: 'initialize',
-               params: {
-                  protocolVersion: '2024-11-05',
-                  clientInfo: { name: 'jarvis-core', version: '1.0.0' },
-                  capabilities: {}
-               }
-            };
-            proc.stdin?.write(JSON.stringify(initReq) + '\n');
-            connectedCount++;
-
-         } catch (e: any) {
-            serverDB.addSystemLog('API', 'ERROR', `Failed to spawn MCP server '${name}': ${e.message}`);
-         }
-      }
-
-      const activeCount = Array.from(activeMcpServers.values()).filter(s => s.status !== 'error').length;
-      serverDB.addSystemLog('API', 'SUCCESS', `Successfully synchronized with ${activeCount} Model Context Protocol server(s). Tools cached.`);
-      res.json({ success: true, count: activeCount });
+      const result = await connectMcpServersFromConfig(config);
+      res.json(result);
     } catch (e: any) {
       serverDB.addSystemLog('API', 'ERROR', `Network connection fault on MCP bind: ${e.message}`);
       res.status(500).json({ success: false, error: e.message });
@@ -3899,6 +3900,44 @@ JARVIS Synthesis:`;
       console.error("Auto-Repair background daemon iteration failed", daemonErr);
     }
   }, 6000);
+
+  setInterval(() => {
+    try {
+      const rawDatabase = buildDatabaseHealthSnapshot({
+        ...serverDB.getSqliteHealth(),
+        activeAlertCount: activeMonitoringAlerts.length,
+      });
+
+      const nextAlerts = collectCriticalMonitoringAlerts({
+        database: rawDatabase,
+        mcpStatuses: getMcpMonitoringStatuses(),
+        now: Date.now(),
+      });
+      const database = { ...rawDatabase, activeAlertCount: nextAlerts.length };
+
+      const previousSignature = JSON.stringify(activeMonitoringAlerts.map(alert => alert.id).sort());
+      const nextSignature = JSON.stringify(nextAlerts.map(alert => alert.id).sort());
+
+      if (previousSignature !== nextSignature) {
+        const newAlertIds = new Set(activeMonitoringAlerts.map(alert => alert.id));
+        nextAlerts
+          .filter(alert => !newAlertIds.has(alert.id))
+          .forEach(alert => {
+            serverDB.addSystemLog('SYS', 'ERROR', `[MONITOR] ${alert.title}: ${alert.message}`);
+          });
+
+        activeMonitoringAlerts = nextAlerts;
+        broadcastUiEvent({
+          type: 'MONITORING_ALERTS',
+          alerts: activeMonitoringAlerts,
+          database,
+          timestamp: Date.now(),
+        });
+      }
+    } catch (monitorErr: any) {
+      serverDB.addSystemLog('SYS', 'ERROR', `Monitoring service failed: ${monitorErr.message}`);
+    }
+  }, 15000);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ShieldAlert, RefreshCw, Cpu, Activity, Zap } from 'lucide-react';
 import { playCalibrationSynth } from '../services/audioSynth';
+import { REBOOT_SEQUENCE_EVENT, resolveRebootProbePhase, type RebootSequencePhase, type RebootSequenceResponse } from '../services/rebootSequence';
 
 export function SpectrumRebootOverlay() {
   const [isRebooting, setIsRebooting] = useState(false);
@@ -9,107 +10,135 @@ export function SpectrumRebootOverlay() {
   const [progress, setProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState('');
   const [sensorData, setSensorData] = useState({ temp: 45, load: 1.21 });
+  const [sequence, setSequence] = useState<RebootSequenceResponse | null>(null);
+
+  const applyPhase = (phase: RebootSequencePhase | undefined) => {
+    if (!phase) return;
+    setProgress(phase.progress);
+    setCurrentStep(phase.message);
+  };
 
   useEffect(() => {
-    const handleSkinUpdated = () => {
+    const handleRebootRequested = (event: Event) => {
+      const customEvent = event as CustomEvent<RebootSequenceResponse>;
+      if (!customEvent.detail) return;
+
       const skin = localStorage.getItem('jarvis_active_skin') || 'cyan';
       setActiveSkin(skin);
+      setSequence(customEvent.detail);
       setIsRebooting(true);
-      setProgress(0);
+      applyPhase(customEvent.detail.phases.find(phase => phase.id === 'preflight'));
       
-      // Trigger military grade synthesizer frequency sweep
       playCalibrationSynth();
     };
 
-    window.addEventListener('skin-updated', handleSkinUpdated);
+    window.addEventListener(REBOOT_SEQUENCE_EVENT, handleRebootRequested as EventListener);
     return () => {
-      window.removeEventListener('skin-updated', handleSkinUpdated);
+      window.removeEventListener(REBOOT_SEQUENCE_EVENT, handleRebootRequested as EventListener);
     };
   }, []);
 
-  // Replace fake interval with real backend system checks
   useEffect(() => {
-    if (!isRebooting) return;
+    if (!isRebooting || !sequence) return;
 
     let isSubscribed = true;
+    let hasSeenDisconnect = false;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const performRealSystemChecks = async () => {
-      try {
-        // Step 1: Initializing & fetching basic stats
-        setProgress(15);
-        setCurrentStep("SYS: HANDSHAKING WITH CORE SERVER PROCESS...");
-        await new Promise(r => setTimeout(r, 400));
-        
-        let res = await fetch('/api/system/engine-status', { method: 'POST' });
-        let data = await res.json();
+    const applyPhaseById = (phaseId: RebootSequencePhase['id']) => {
+      applyPhase(sequence.phases.find(phase => phase.id === phaseId));
+    };
+
+    const pollForRecovery = async () => {
+      applyPhaseById('awaiting-shutdown');
+      watchdogTimer = setTimeout(() => {
         if (!isSubscribed) return;
-        
-        setProgress(35);
-        setCurrentStep(`SYS: CORE METRICS NOMINAL. CPU: ${data.metrics?.cpuUtilization || 'N/A'}, RAM: ${data.metrics?.ramUsage || 'N/A'}`);
-        await new Promise(r => setTimeout(r, 600));
+        setCurrentStep('CTRL: RESTART ACKNOWLEDGED, BUT PROCESS HANDOFF HAS NOT BEEN OBSERVED YET. STILL WAITING FOR AN ACTUAL DISCONNECT/RECOVERY CYCLE.');
+      }, Math.max(6000, sequence.shutdownDelayMs * 4));
 
-        // Step 2: Validating Database / Logs
-        setProgress(60);
-        setCurrentStep("SYS: VALIDATING SQLITE DATABASE INTEGRITY...");
-        res = await fetch('/api/system/logs?limit=1');
-        data = await res.json();
-        if (!isSubscribed) return;
+      while (isSubscribed) {
+        try {
+          const statsRes = await fetch('/api/system/stats', { cache: 'no-store' });
+          if (!statsRes.ok) {
+            throw new Error(`HTTP ${statsRes.status}`);
+          }
 
-        setProgress(75);
-        setCurrentStep(`SYS: STORAGE VERIFIED. LAST RECORD: [${data.length > 0 ? data[0].module : 'OK'}]`);
-        await new Promise(r => setTimeout(r, 500));
+          const stats = await statsRes.json();
+          if (!isSubscribed) return;
 
-        // Step 3: Fetch MCP Status and Hardware Telemetry
-        setProgress(85);
-        setCurrentStep("SYS: BINDING MCP AND EXTERNAL CONTEXT SERVERS...");
-        res = await fetch('/api/system/stats');
-        data = await res.json();
-        if (!isSubscribed) return;
-        
-        // Feed real sensor data to drive dynamic UI aesthetics
-        setSensorData({ temp: data.gpuTemperature || 45, load: data.osProcessCount ? parseFloat((data.osProcessCount / 200).toFixed(2)) : 1.21 });
+          setSensorData({
+            temp: stats.gpuTemperature || 45,
+            load: stats.osProcessCount ? parseFloat((stats.osProcessCount / 200).toFixed(2)) : 1.21
+          });
 
-        setProgress(95);
-        setCurrentStep(`SYS: ${data.mcpServersConnected} EXTERNAL MCP SERVER(S) BOUND. UPTIME: ${Math.floor(data.uptime)}s`);
-        await new Promise(r => setTimeout(r, 500));
+          const nextState = resolveRebootProbePhase({
+            hasSeenDisconnect,
+            probeSucceeded: true,
+          });
+          hasSeenDisconnect = nextState.hasSeenDisconnect;
 
-        // Step 4: Complete
-        setProgress(100);
-        setCurrentStep("SYS: SYSTEM SPECTRAL INTEGRITY NOMINAL. CORE ONLINE.");
-        
-        setTimeout(() => {
-          if (isSubscribed) setIsRebooting(false);
-        }, 300);
+          if (nextState.phase === 'reconnected') {
+            applyPhaseById('reconnect');
+            const dbRes = await fetch('/api/system/database-health', { cache: 'no-store' });
+            const dbHealth = dbRes.ok ? await dbRes.json() : null;
+            if (!isSubscribed) return;
 
-      } catch (err: any) {
-        if (isSubscribed) {
-          setProgress(100);
-          setCurrentStep(`SYS: CRITICAL ERROR DURING REBOOT: ${err.message}`);
-          setTimeout(() => {
-            setIsRebooting(false);
-          }, 1000);
+            applyPhase({
+              id: 'complete',
+              progress: 100,
+              message: `CTRL: CONTROL PLANE ONLINE. UPTIME ${Math.floor(stats.uptime || 0)}s | SQLITE ${String(dbHealth?.integrityStatus || 'unknown').toUpperCase()} | MCP STATUS REACHABLE.`,
+            });
+            closeTimer = setTimeout(() => {
+              if (!isSubscribed) return;
+              setIsRebooting(false);
+              setSequence(null);
+            }, 350);
+            return;
+          }
+
+          applyPhaseById('awaiting-shutdown');
+        } catch (_error) {
+          const nextState = resolveRebootProbePhase({
+            hasSeenDisconnect,
+            probeSucceeded: false,
+          });
+          hasSeenDisconnect = nextState.hasSeenDisconnect;
+          applyPhaseById('offline');
         }
+
+        await new Promise(resolve => setTimeout(resolve, 350));
       }
     };
 
-    performRealSystemChecks();
+    pollForRecovery().catch((err: any) => {
+      if (!isSubscribed) return;
+      setProgress(100);
+      setCurrentStep(`CTRL: RESTART MONITOR FAILED: ${err.message}`);
+      closeTimer = setTimeout(() => {
+        if (!isSubscribed) return;
+        setIsRebooting(false);
+        setSequence(null);
+      }, 1000);
+    });
 
     return () => {
       isSubscribed = false;
+      if (closeTimer) clearTimeout(closeTimer);
+      if (watchdogTimer) clearTimeout(watchdogTimer);
     };
-  }, [isRebooting]);
+  }, [isRebooting, sequence]);
 
   const getSkinData = () => {
     // Generate derived aesthetics from real hardware metrics
     const dynamicWavelength = (base: number) => `${base + Math.floor(sensorData.temp / 10)} nm`;
-    const dynamicFlux = `${sensorData.load} GW`;
 
     switch (activeSkin) {
       case 'emerald':
         return {
-          title: 'ARC REACTOR EMERALD',
-          wavelength: `${dynamicWavelength(530)} [Optical Coherence: Normal]`,
-          flux: `${dynamicFlux} Delta`,
+          title: 'EMERALD MONITOR',
+          wavelength: `${dynamicWavelength(530)} [Nominal thermal band]`,
+          flux: `${sensorData.load} active load`,
           color: 'text-emerald-500',
           borderColor: 'border-emerald-500/55',
           glowColor: 'rgba(16, 185, 129, 0.25)',
@@ -117,9 +146,9 @@ export function SpectrumRebootOverlay() {
         };
       case 'amber':
         return {
-          title: 'RETRO GARAGE AMBER',
-          wavelength: `${dynamicWavelength(590)} [Caramel Retro Glow]`,
-          flux: `${dynamicFlux} Delta`,
+          title: 'AMBER MONITOR',
+          wavelength: `${dynamicWavelength(590)} [Elevated thermal band]`,
+          flux: `${sensorData.load} active load`,
           color: 'text-amber-500',
           borderColor: 'border-amber-500/55',
           glowColor: 'rgba(245, 158, 11, 0.25)',
@@ -127,9 +156,9 @@ export function SpectrumRebootOverlay() {
         };
       case 'red':
         return {
-          title: 'MARK LXXXV ARMOR OVERDRIVE',
-          wavelength: `${dynamicWavelength(650)} [Hotrod Combustion]`,
-          flux: `${dynamicFlux} Delta [Warning: Overload Peak]`,
+          title: 'RED MONITOR',
+          wavelength: `${dynamicWavelength(650)} [High thermal band]`,
+          flux: `${sensorData.load} active load [watch]`,
           color: 'text-red-500',
           borderColor: 'border-red-500/55',
           glowColor: 'rgba(239, 68, 68, 0.25)',
@@ -138,9 +167,9 @@ export function SpectrumRebootOverlay() {
       case 'cyan':
       default:
         return {
-          title: 'HOLOGRAPHIC STANDARD CYAN',
-          wavelength: `${dynamicWavelength(480)} [Optimal Resonance]`,
-          flux: `${dynamicFlux} Standard`,
+          title: 'CYAN MONITOR',
+          wavelength: `${dynamicWavelength(480)} [Nominal thermal band]`,
+          flux: `${sensorData.load} active load`,
           color: 'text-cyan-500',
           borderColor: 'border-cyan-500/55',
           glowColor: 'rgba(6, 182, 212, 0.25)',
@@ -203,10 +232,10 @@ export function SpectrumRebootOverlay() {
               <RefreshCw className={`w-6 h-6 animate-spin ${specs.color}`} />
               <div>
                 <h1 className={`text-sm sm:text-base font-black tracking-[0.2em] leading-tight ${specs.color}`}>
-                  OPTICAL RECONSONANCE
+                  CONTROL PLANE RESTART
                 </h1>
                 <span className="text-[9px] text-white/40 tracking-widest uppercase">
-                  SPECTROMETER ADJUSTMENT PROTOCOL
+                  LIVE RESTART MONITOR
                 </span>
               </div>
             </div>
@@ -215,7 +244,7 @@ export function SpectrumRebootOverlay() {
             <div className="grid grid-cols-2 gap-4 text-[10.5px] border-b border-white/5 pb-4 mb-4">
               <div className="space-y-1">
                 <span className="text-white/45 block font-bold uppercase tracking-wider text-[8px]">
-                  NEW WAVE STATE
+                  ACTIVE PROFILE
                 </span>
                 <span className="text-white font-extrabold block">
                   {specs.title}
@@ -223,7 +252,7 @@ export function SpectrumRebootOverlay() {
               </div>
               <div className="space-y-1">
                 <span className="text-white/45 block font-bold uppercase tracking-wider text-[8px]">
-                  WAVELENGTH TARGET
+                  THERMAL BAND
                 </span>
                 <span className="text-white block font-mono">
                   {specs.wavelength}
@@ -231,7 +260,7 @@ export function SpectrumRebootOverlay() {
               </div>
               <div className="space-y-1">
                 <span className="text-white/45 block font-bold uppercase tracking-wider text-[8px]">
-                  PLASMA ENERGY FLUX
+                  PROCESS LOAD
                 </span>
                 <span className="text-white font-semibold flex items-center gap-1">
                   <Zap className="w-3 h-3 text-amber-400" />
@@ -240,10 +269,10 @@ export function SpectrumRebootOverlay() {
               </div>
               <div className="space-y-1">
                 <span className="text-white/45 block font-bold uppercase tracking-wider text-[8px]">
-                  SEEKER SAT SYNC
+                  CONTROL LINK
                 </span>
                 <span className="text-emerald-400 animate-pulse font-bold">
-                  ● SYNCHRONIZED [OK]
+                  ● HEALTH PROBE ACTIVE
                 </span>
               </div>
             </div>
@@ -257,7 +286,7 @@ export function SpectrumRebootOverlay() {
             <div className="space-y-2 mt-4">
               <div className="flex justify-between items-center text-[10.5px] font-bold">
                 <span className={`${specs.color} animate-pulse tracking-widest`}>
-                  REVOLUTIONIZING GRID INTEGRATION...
+                  OBSERVING PROCESS HANDOFF...
                 </span>
                 <span className="font-extrabold text-white text-right">
                   {progress}%

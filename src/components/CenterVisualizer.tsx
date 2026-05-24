@@ -1,5 +1,11 @@
 import React from 'react';
 import { motion } from 'motion/react';
+import {
+  buildTelemetryWaveHeights,
+  formatMetricValue,
+  formatPercentMetric,
+  formatTextMetric,
+} from '../services/truthfulUiPolicies';
 
 export type CognitiveState = 'idle' | 'thinking' | 'searching' | 'speaking';
 
@@ -10,13 +16,13 @@ interface CenterVisualizerProps {
   webrtcStats?: {
     state: string;
     codec: string;
-    rtt: number;
-    jitter: number;
+    rtt: number | null;
+    jitter: number | null;
     packetsSent: number;
     packetsReceived: number;
     bytesSent: number;
     bytesReceived: number;
-    bitrate: number;
+    bitrate: number | null;
   };
 }
 
@@ -205,11 +211,19 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
 
   const hudColor = getStrokeColor();
 
-  const displayBitrate = webrtcStats ? `${webrtcStats.bitrate} kbps` : '128 kbps';
-  const displayRtt = webrtcStats ? `${webrtcStats.rtt} ms` : '15 ms';
-  const displayCodec = webrtcStats ? webrtcStats.codec.toUpperCase() : 'OPUS/16K';
+  const displayBitrate = formatMetricValue(webrtcStats?.bitrate, 'kbps');
+  const displayRtt = formatMetricValue(webrtcStats?.rtt, 'ms');
+  const displayCodec = formatTextMetric(webrtcStats?.codec).toUpperCase();
   const vadStatus = isMicActive ? 'ACTIVE' : 'STANDBY';
   const ampState = voiceAmplitude.toFixed(1);
+  const waveHeights = buildTelemetryWaveHeights({
+    count: 42,
+    timestampMs: Date.now(),
+    rxSpeed: stats?.rxSpeed,
+    txSpeed: stats?.txSpeed,
+    voiceAmplitude,
+    cognitiveState,
+  });
 
   return (
     <div className="flex-1 relative flex flex-col items-center justify-center border-l border-r border-cyan-950/60 px-6 mx-2 select-none h-full overflow-hidden transition-all duration-500">
@@ -339,7 +353,7 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           <div className="flex justify-between text-cyan-400/70">
             <span>SIP PROTOCOL:</span>
             <span style={{ color: hudColor }} className="font-bold truncate max-w-[80px] inline-block text-right">
-              {isMicActive ? (webrtcStats?.codec.toUpperCase() || 'OPUS @ 48KHZ') : 'OPUS @ 16KHZ'}
+              {displayCodec}
             </span>
           </div>
         </div>
@@ -375,20 +389,20 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
           <div className="flex justify-between text-cyan-400/70">
             <span>DOCKER CLIENT:</span>
             <span style={{ color: hudColor }} className="font-bold">
-              {stats?.nodeVersion ? `NODE_` + stats.nodeVersion.split('.')[0].toUpperCase() : 'NODE_V18'}
+              {stats?.nodeVersion ? `NODE_${stats.nodeVersion.split('.')[0].toUpperCase()}` : 'N/A'}
             </span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>ACCUM COST:</span>
-            <span style={{ color: hudColor }} className="font-bold">${gateway ? gateway.spent.toFixed(5) : '0.01331'} USD</span>
+            <span style={{ color: hudColor }} className="font-bold">{gateway ? `$${gateway.spent.toFixed(5)} USD` : 'N/A'}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>CACHE HITS:</span>
-            <span style={{ color: hudColor }} className="font-bold">{gateway ? `${gateway.cacheHits}%` : '84%'} CACHED</span>
+            <span style={{ color: hudColor }} className="font-bold">{gateway ? `${formatPercentMetric(gateway.cacheHits)} CACHED` : 'N/A'}</span>
           </div>
           <div className="flex justify-between text-cyan-400/70">
             <span>AUTH METRIC:</span>
-            <span className="text-emerald-400 font-bold">{stats?.secStatus || 'SEC_CLEARED'}</span>
+            <span className="text-emerald-400 font-bold">{stats?.secStatus || 'N/A'}</span>
           </div>
         </div>
 
@@ -513,28 +527,7 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
          
         {/* Real Network RX/TX Traffic Visualizer */}
         <div className="flex items-end justify-center gap-[3px] h-4 w-48 opacity-80" title="Network RX/TX Telemetry Waveform">
-          {Array.from({ length: 42 }).map((_, i) => {
-            let animateHeight = 2;
-            
-            // Generate visual traffic based on actual RX/TX bytes and ping
-            const rxBase = stats?.rxSpeed ? Math.min(10, (stats.rxSpeed / 2048)) : 0;
-            const txBase = stats?.txSpeed ? Math.min(10, (stats.txSpeed / 2048)) : 0;
-            const flowBase = Math.max(rxBase, txBase);
-
-            if (flowBase > 0.5) {
-              // High traffic peak wave
-              animateHeight = Math.random() * (flowBase * 3) + 2;
-            } else if (cognitiveState === 'thinking') {
-              animateHeight = Math.random() * 8 + 2;
-            } else if (cognitiveState === 'searching') {
-              const waveVal = Math.sin((Date.now() / 150) - (i * 0.45)) * 6 + 8;
-              animateHeight = Math.max(2, waveVal);
-            } else {
-              // Idling small network pings
-              const idleSine = Math.sin((Date.now() / 500) - (i * 0.2)) * 1.5 + 2.5;
-              animateHeight = Math.max(2, idleSine);
-            }
-
+          {waveHeights.map((animateHeight, i) => {
             return (
               <motion.div 
                 key={i}
@@ -553,7 +546,7 @@ export function CenterVisualizer({ cognitiveState, voiceAmplitude, isMicActive, 
             animate={{ opacity: 1, y: 0 }}
             className="text-[9px] text-green-400 font-mono tracking-widest uppercase text-center mt-1 border border-green-800/30 px-3 py-1 bg-green-950/20 shadow-[inset_0_0_8px_rgba(34,197,94,0.1)] rounded-sm"
           >
-            RTT: {webrtcStats.rtt}ms | Jitter: {webrtcStats.jitter}ms | Bitrate: {webrtcStats.bitrate}kbps
+            RTT: {displayRtt} | Jitter: {formatMetricValue(webrtcStats.jitter, 'ms')} | Bitrate: {displayBitrate}
           </motion.div>
         )}
       </div>
