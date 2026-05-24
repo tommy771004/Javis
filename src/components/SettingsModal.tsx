@@ -135,10 +135,10 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           if (auditRes.sandboxControl) setSandboxControl(auditRes.sandboxControl);
         }
 
-        if (statsRes && statsRes.pingLatencyMs !== undefined) {
+        if (statsRes && statsRes.pingLatencyMs !== undefined && statsRes.pingLatencyMs > 0) {
           setSynapseLatency(`${statsRes.pingLatencyMs} ms`);
         } else {
-          setSynapseLatency('18 ms');
+          setSynapseLatency('N/A (Untested)');
         }
       } catch (err) {
         console.warn("Failed to fetch security audit or stats in SettingsModal", err);

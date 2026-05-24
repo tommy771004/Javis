@@ -428,13 +428,13 @@ export default function App() {
           setWebrtcStats(prev => ({
             ...prev,
             codec: codecString,
-            rtt: rtt || 1, // local RTT shows as ~1ms
+            rtt: rtt,
             jitter: parseFloat((jitter * 1000).toFixed(4)), // convert to ms
             packetsSent,
             packetsReceived,
             bytesSent,
             bytesReceived,
-            bitrate: bitrate || (packetsReceived > 0 ? 32 : 0)
+            bitrate: bitrate
           }));
         } catch (statsErr) {
           console.error("Failed to query WebRTC statistics", statsErr);

@@ -98,6 +98,7 @@ export function HermesDashboard({
   const [mcpToolsLoading, setMcpToolsLoading] = useState(false);
   const [mcpWebhooks, setMcpWebhooks] = useState<any[]>([]);
   const [mcpRoutines, setMcpRoutines] = useState<any[]>([]);
+  const [mcpTemplates, setMcpTemplates] = useState<any[]>([]);
   
   // MCP Tool Execution States
   const [mcpToolParams, setMcpToolParams] = useState<{[key: string]: string}>({});
@@ -112,6 +113,12 @@ export function HermesDashboard({
 
   const loadMcpData = async () => {
     try {
+      const templatesRes = await fetch('/api/mcp/templates');
+      if (templatesRes.ok) {
+        const data = await templatesRes.json();
+        if (data.success) setMcpTemplates(data.templates || []);
+      }
+
       const statusRes = await fetch('/api/mcp/status');
       if (statusRes.ok) {
         const data = await statusRes.json();
@@ -340,7 +347,7 @@ export function HermesDashboard({
   // Cost-Aware Gateway states
   const [budget, setBudget] = useState(2.00);
   const [spent, setSpent] = useState(0.00);
-  const [cacheHits, setCacheHits] = useState(84);
+  const [cacheHits, setCacheHits] = useState(0);
   const [selectedModel, setSelectedModel] = useState<'haiku' | 'sonnet' | 'auto'>('auto');
   const [newTaskText, setNewTaskText] = useState('');
   const [newTaskPriority, setNewTaskPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
@@ -1792,35 +1799,16 @@ export function HermesDashboard({
 
                     <div className="flex flex-wrap gap-2 justify-between items-center">
                       <div className="flex gap-2">
-                        <button
-                          onClick={() => handleMcpConnect(JSON.stringify({
-                            mcpServers: {
-                              "sqlite": {
-                                "command": "npx",
-                                "args": ["-y", "@modelcontextprotocol/server-sqlite"],
-                                "env": { "SQLITE_DB_PATH": "./mcp_database.db" }
-                              }
-                            }
-                          }, null, 2))}
-                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
-                          title="Instantly deploy SQLite MCP protocol server"
-                        >
-                          ⚡ + SQLite Preset
-                        </button>
-                        <button
-                          onClick={() => handleMcpConnect(JSON.stringify({
-                            mcpServers: {
-                              "everything": {
-                                "command": "npx",
-                                "args": ["-y", "@modelcontextprotocol/server-everything"]
-                              }
-                            }
-                          }, null, 2))}
-                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
-                          title="Instantly deploy Everything MCP protocol server"
-                        >
-                          ⚡ + Everything Preset
-                        </button>
+                        {mcpTemplates.map(tpl => (
+                          <button
+                            key={tpl.id}
+                            onClick={() => handleMcpConnect(JSON.stringify(tpl.config, null, 2))}
+                            className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
+                            title={`Instantly deploy ${tpl.name} protocol server`}
+                          >
+                            {tpl.icon} + {tpl.name}
+                          </button>
+                        ))}
                       </div>
 
                       <button
