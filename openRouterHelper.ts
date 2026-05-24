@@ -152,9 +152,11 @@ export async function fetchOpenRouterWithFallback(
 
   if (prompt.includes(systemMarker) && prompt.includes(userMarker)) {
     const sysStart = prompt.indexOf(systemMarker) + systemMarker.length;
-    const userStart = prompt.indexOf(userMarker);
+    const userStart = prompt.lastIndexOf(userMarker);
     
+    // Everything between first System: and last User: is the system instruction / context
     const systemContent = prompt.substring(sysStart, userStart).trim();
+    // Everything after the last User: is the actual user query
     const userContent = prompt.substring(userStart + userMarker.length).trim();
 
     messagesPayload = [

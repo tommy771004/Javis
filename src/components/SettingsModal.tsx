@@ -134,9 +134,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         console.warn("Failed to fetch security audit or stats in SettingsModal", err);
       } finally {
         if (active) {
-          setTimeout(() => {
-            if (active) setIsAuditing(false);
-          }, 600);
+          // Immediately terminate audit state once requests complete - removing artificial delays
+          setIsAuditing(false);
         }
       }
     }
@@ -357,15 +356,15 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
   if (!isOpen) return null;
 
-  const handleShellChange = (mode: 'manual' | 'safe' | 'auto') => {
+    const handleShellChange = (mode: 'manual' | 'safe' | 'auto') => {
     const updated = { ...settings, shellMode: mode };
     saveSettings(updated);
 
-    let feedback = "Authorization protocol shift complete, Tommy.";
+    let feedback = "Authorization protocol shift complete.";
     if (mode === 'auto') {
-      feedback = "Full system automated intervention code is now active, Tommy. Maximum authorization cleared.";
+      feedback = "Full system automated intervention code is now active. Maximum authorization cleared.";
     } else if (mode === 'safe') {
-      feedback = "I will run system diagnosis of informational statements autonomously, Tommy.";
+      feedback = "I will run system diagnosis of informational statements autonomously.";
     }
 
     triggerLog(`SYS: SHELL INTERACTION LEVEL SET TO ${mode.toUpperCase()}`, feedback);
@@ -424,20 +423,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     if (type === 'always-on-top') {
       setAlwaysOnTop(enabled);
       localStorage.setItem('jarvis_always_on_top', enabled ? 'true' : 'false');
-      triggerLog(`SYS: DESKTOP OVERLAY SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Always on top is ${enabled ? 'active' : 'disabled'}, sir.`);
+      triggerLog(`SYS: UI OVERLAY PREFERENCE SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Overlay preference is ${enabled ? 'active' : 'disabled'} for this session.`);
     } else {
       setLaunchOnStartup(enabled);
       localStorage.setItem('jarvis_launch_on_startup', enabled ? 'true' : 'false');
-      triggerLog(`SYS: BOOT SEQUENCE AUTO-LAUNCH SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core systems will ${enabled ? 'auto-launch' : 'not launch'} on system startup, sir.`);
-    }
-
-    if (typeof window !== 'undefined' && (window as any).require) {
-      try {
-        const { ipcRenderer } = (window as any).require('electron');
-        ipcRenderer.invoke('window-control', type, { enabled });
-      } catch (e) {
-        console.warn("Electron IPC not available", e);
-      }
+      triggerLog(`SYS: SIMULATED BOOT SEQUENCE SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core system boot preference updated.`);
     }
   };
 
@@ -449,7 +439,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       profile === 'baritone' 
         ? "Dynamic pitch resonance frequency set to British Baritone, sir." 
         : profile === 'fast' 
-          ? "Intel profile activated, Tommy." 
+          ? "Intel profile activated." 
           : "Standard default speech module standby."
     );
   };
@@ -746,6 +736,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       
       const remainingMems = await hermesDB.deleteCognitiveMemory(index);
       setCognitiveMemories(remainingMems);
+      window.dispatchEvent(new CustomEvent('cognitive-memory-updated'));
       
       triggerLog(
         `SYS: COGNITIVE PURGE SUCCESSFUL. FRAGMENT PURGED: "${purged.substring(0, 35)}..."`,
@@ -769,6 +760,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       
       const remainingMems = await hermesDB.clearCognitiveMemories();
       setCognitiveMemories(remainingMems);
+      window.dispatchEvent(new CustomEvent('cognitive-memory-updated'));
       
       triggerLog(
         `SYS: COGNITIVE PURGE SUCCESSFUL. ALL FRAGMENTS CLEARED.`,
@@ -920,7 +912,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const res = await fetch(`/api/mcp/routines/${id}/execute`, { method: 'POST' });
       const data = await res.json();
       if (data.success && data.prompt) {
-        triggerLog(`SYS: ROUTINE SIGNAL DISPATCHED (EXECUTION IMMINENT)`, "Command protocol engaged.");
+        triggerLog(`SYS: MACRO INJECTION DISPATCHED`, "Sequence prompt synchronized to terminal input.");
         window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
         setTimeout(() => onClose(), 800);
       }
@@ -947,7 +939,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         {isScanning && (
           <div className="absolute inset-0 bg-slate-950/85 z-55 flex flex-col items-center justify-center gap-4">
             <RefreshCw className="w-12 h-12 text-cyan-400 animate-spin" />
-            <span className="text-sm font-bold tracking-widest text-cyan-300 animate-pulse uppercase">JARVIS SYNAPSE SYNCING...</span>
+            <span className="text-sm font-bold tracking-widest text-cyan-300 animate-pulse uppercase">{t.btnScanning}</span>
             <span className="text-xs text-cyan-500 italic max-w-sm text-center">{scanMessage}</span>
           </div>
         )}
@@ -1062,11 +1054,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
             {/* Simulated items from Image to populate list structure cleanly with realistic styling */}
             <div className="mt-4 pt-4 border-t border-cyan-950/30">
-              <span className="text-[8.5px] text-cyan-700 tracking-widest uppercase block mb-2 px-3">Hologram Utilities</span>
+              <span className="text-[8.5px] text-cyan-700 tracking-widest uppercase block mb-2 px-3">{t.lblHoloUtils}</span>
               
               <button onClick={() => setActiveMenu('envKeys')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'envKeys' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
                 <Key className={`w-3 h-3 ${activeMenu === 'envKeys' ? 'text-cyan-400' : 'text-cyan-700'}`} />
-                <span>ENVIRONMENT KEYS</span>
+                <span>{t.lblEnvKeys}</span>
               </button>
               <button onClick={() => setActiveMenu('mcpSkills')} className={`w-full text-left px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-all ${activeMenu === 'mcpSkills' ? 'bg-cyan-950/40 border-r-[3px] border-cyan-400 text-cyan-300' : 'text-cyan-600/60 hover:text-cyan-500/80'}`}>
                 <Sparkles className={`w-3 h-3 ${activeMenu === 'mcpSkills' ? 'text-cyan-400' : 'text-cyan-700'}`} />
@@ -1872,10 +1864,10 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <label className="flex items-center justify-between cursor-pointer group">
                       <div className="flex flex-col">
                         <span className="text-xs text-cyan-300 font-bold group-hover:text-cyan-200">
-                           {locale === 'zh-TW' ? '視窗置頂 (Always on Top)' : 'ALWAYS ON TOP OVERLAY'}
+                           {locale === 'zh-TW' ? '視窗置頂模式 (Always on Top)' : 'ALWAYS ON TOP OVERLAY'}
                         </span>
                         <span className="text-[9px] text-cyan-600">
-                           {locale === 'zh-TW' ? '確保 HUD 覆蓋在其他應用程式上方' : 'Force HUD matrix to render above all desktop applications'}
+                           {locale === 'zh-TW' ? '僅作為 UI 偏好紀錄，不具備作業系統層級置頂功能' : 'Stored as UI preference (Simulation mode only)'}
                         </span>
                       </div>
                       <input 
@@ -1892,10 +1884,10 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <label className="flex items-center justify-between cursor-pointer group">
                       <div className="flex flex-col">
                         <span className="text-xs text-cyan-300 font-bold group-hover:text-cyan-200">
-                           {locale === 'zh-TW' ? '開機自啟動 (Launch on Startup)' : 'BOOT SEQUENCE AUTO-START'}
+                           {locale === 'zh-TW' ? '開機配置紀錄 (Launch Preference)' : 'BOOT SEQUENCE PREFERENCE'}
                         </span>
                         <span className="text-[9px] text-cyan-600">
-                           {locale === 'zh-TW' ? '系統啟動時自動載入 J.A.R.V.I.S 介面' : 'Automatically ignite core matrix upon system initialization'}
+                           {locale === 'zh-TW' ? '模擬開機自啟動設定，無實際系統開機影響' : 'Simulated boot preference (No actual system impact)'}
                         </span>
                       </div>
                       <input 
@@ -1956,15 +1948,15 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <>
                       <div className="p-2 border border-cyan-950 bg-slate-950/40 rounded shadow-[0_0_8px_rgba(6,182,212,0.05)] hover:border-cyan-500/35 transition-all">
                         <div className="text-white font-bold mb-0.5 font-mono">{synapseLatency}</div>
-                        <span className="text-[9px] opacity-75 block">Synapse Latency</span>
+                        <span className="text-[9px] opacity-75 block">{t.lblSynapseLatency}</span>
                       </div>
                       <div className="p-2 border border-cyan-950 bg-slate-950/40 rounded shadow-[0_0_8px_rgba(6,182,212,0.05)] hover:border-cyan-500/35 transition-all">
                         <div className="text-emerald-400 font-bold mb-0.5 font-mono">{authIsolation}</div>
-                        <span className="text-[9px] opacity-75 block">Auth Isolation</span>
+                        <span className="text-[9px] opacity-75 block">{t.lblAuthIsolation}</span>
                       </div>
                       <div className="p-2 border border-cyan-950 bg-slate-950/40 rounded shadow-[0_0_8px_rgba(6,182,212,0.05)] hover:border-cyan-500/35 transition-all">
                         <div className="text-cyan-400 font-bold mb-0.5 font-mono truncate max-w-full" title={workspaceSandboxed}>{workspaceSandboxed}</div>
-                        <span className="text-[9px] opacity-75 block">Workspace Sandboxed</span>
+                        <span className="text-[9px] opacity-75 block">{t.lblWorkspaceSandboxed}</span>
                       </div>
                     </>
                   )}
@@ -1994,7 +1986,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
             {activeMenu === 'envKeys' && (
               <div className="space-y-4">
                 <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
-                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">ENVIRONMENT KEYS</span>
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">{t.lblEnvKeysTitle}</span>
                   <p className="text-[10px] text-cyan-600 tracking-wider">
                     Configure operational API keys. Stored securely in your browser's local matrix.
                   </p>
@@ -2002,7 +1994,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                 
                 <div className="space-y-4">
                     <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">ElevenLabs TTS API Key</label>
+                        <label className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">{t.lblElevenLabsKey}</label>
                         <input 
                             type="password" 
                             className="bg-black/50 border border-cyan-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 w-full font-mono" 
@@ -2078,7 +2070,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
             {activeMenu === 'mcpSkills' && (
               <div className="space-y-4 h-full flex flex-col">
                 <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
-                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">MCP SKILLS INVENTORY</span>
+                  <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">{t.lblMcpInventory}</span>
                   <p className="text-[10px] text-cyan-600 tracking-wider">
                     Discovered Context Tools injected from authenticated MCP servers via JSON-RPC.
                   </p>
@@ -2121,20 +2113,20 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                 {activeMenu === 'mcpExternal' && (
                   <div className="space-y-4">
                     <div className="bg-slate-950/80 border border-cyan-950/50 p-3 rounded space-y-2">
-                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">Register Webhook</span>
+                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">{t.lblRegisterWebhook}</span>
                        <div className="grid grid-cols-2 gap-2">
                          <input type="text" placeholder="NODE NAME (e.g. Remote Server)" value={newWebhookName} onChange={e => setNewWebhookName(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
                          <input type="text" placeholder="URL ENDPOINT" value={newWebhookUrl} onChange={e => setNewWebhookUrl(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
                        </div>
                        <div className="flex justify-end pt-1">
-                         <button onClick={() => { handleAddWebhook(newWebhookName, newWebhookUrl); setNewWebhookName(''); setNewWebhookUrl(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors">Bind Webhook</button>
+                         <button onClick={() => { handleAddWebhook(newWebhookName, newWebhookUrl); setNewWebhookName(''); setNewWebhookUrl(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors">{t.lblBindWebhook}</button>
                        </div>
                     </div>
                     
                     <div className="space-y-2">
                       {mcpWebhooks.length === 0 ? (
                         <div className="h-[100px] flex items-center justify-center border border-cyan-950/30 bg-slate-950/30 border-dashed rounded relative overflow-hidden group hover:border-cyan-900/50 transition-colors">
-                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">No active network webhooks</span>
+                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">{t.lblNoNetworkWebhooks}</span>
                         </div>
                       ) : (
                         mcpWebhooks.map(w => (
@@ -2160,18 +2152,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                 {activeMenu === 'mcpRoutines' && (
                   <div className="space-y-4">
                     <div className="bg-slate-950/80 border border-cyan-950/50 p-3 rounded space-y-2 flex flex-col">
-                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">Create Execution Routine</span>
+                       <span className="text-[10px] font-bold text-cyan-500 uppercase tracking-widest">{t.lblCreateRoutine}</span>
                        <input type="text" placeholder="ROUTINE IDENTIFIER (e.g. Daily Standup)" value={newRoutineName} onChange={e => setNewRoutineName(e.target.value)} className="w-full bg-black/50 border border-cyan-900/50 rounded px-2 py-1.5 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500" />
                        <textarea placeholder="PROMPT PAYLOAD SEQUENCE..." value={newRoutinePrompt} onChange={e => setNewRoutinePrompt(e.target.value)} className="w-full h-16 bg-black/50 border border-cyan-900/50 rounded px-2 py-1.5 text-[11px] text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 resize-none font-mono" />
                        <div className="flex justify-end pt-1">
-                         <button onClick={() => { handleAddRoutine(newRoutineName, newRoutinePrompt); setNewRoutineName(''); setNewRoutinePrompt(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-1.5"><Activity className="w-3 h-3" /> Save Matrix</button>
+                         <button onClick={() => { handleAddRoutine(newRoutineName, newRoutinePrompt); setNewRoutineName(''); setNewRoutinePrompt(''); }} className="px-3 py-1 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-1.5"><Activity className="w-3 h-3" /> {t.lblSaveMatrix}</button>
                        </div>
                     </div>
                     
                     <div className="space-y-2">
                       {mcpRoutines.length === 0 ? (
                         <div className="h-[100px] flex items-center justify-center border border-cyan-950/30 bg-slate-950/30 border-dashed rounded relative overflow-hidden group hover:border-cyan-900/50 transition-colors">
-                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">No active matrix routines</span>
+                           <span className="text-cyan-700/60 font-mono text-[10px] uppercase tracking-widest">{t.lblNoActiveMatrixRoutines}</span>
                         </div>
                       ) : (
                         mcpRoutines.map(r => (
@@ -2179,7 +2171,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                             <div className="flex justify-between items-start">
                               <span className="text-[12px] text-cyan-300 font-bold uppercase tracking-widest">{r.name}</span>
                               <div className="flex gap-2">
-                                <button onClick={() => handleExecuteRoutine(r.id)} className="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 rounded text-[9px] uppercase tracking-wide flex items-center gap-1 hover:bg-emerald-900/60 transition-all font-bold"><Zap className="w-2.5 h-2.5" /> Execute</button>
+                                <button onClick={() => handleExecuteRoutine(r.id)} className="px-2 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 rounded text-[9px] uppercase tracking-wide flex items-center gap-1 hover:bg-emerald-900/60 transition-all font-bold"><Zap className="w-2.5 h-2.5" /> {t.lblExecuteRoutine}</button>
                                 <button onClick={() => handleDeleteRoutine(r.id, r.name)} className="text-red-500/60 hover:text-red-400 p-0.5"><Trash2 className="w-3.5 h-3.5" /></button>
                               </div>
                             </div>
@@ -2206,7 +2198,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
             onClick={onClose}
             className="px-6 py-2 bg-cyan-950/70 hover:bg-cyan-900/55 hover:border-cyan-400 hover:text-white text-cyan-300 border border-cyan-900 rounded text-[10.5px] font-bold uppercase transition-all tracking-wider active:scale-95 cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.1)]"
           >
-            {locale === 'zh-TW' ? '同步設定並且關閉' : 'Terminal Synchronized'} (關閉設定)
+            {t.btnSyncSettings}
           </button>
         </div>
 

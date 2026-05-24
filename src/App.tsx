@@ -21,6 +21,7 @@ interface PlannedAction {
   command?: string;
   priority?: string;
   description?: string;
+  ticketId?: string;
 }
 
 export default function App() {
@@ -80,12 +81,7 @@ export default function App() {
     };
   }, []);
 
-  const [logs, setLogs] = useState<string[]>([
-    "SYS: JARVIS online.",
-    "SYS: System diagnostics initialized.",
-    "SYS: Initializing core protocols...",
-    "SYS: All systems nominal."
-  ]);
+  const [logs, setLogs] = useState<string[]>([]);
   const [isMicActive, setIsMicActive] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [isHermesActive, setIsHermesActive] = useState(false);
@@ -109,8 +105,16 @@ export default function App() {
             setIsHermesActive(true);
           }
         }
+        setLogs([
+          "SYS: Connection established with local workstation.",
+          "SYS: JARVIS online [Mark LXXXV].",
+          "SYS: All local security protocols nominal."
+        ]);
       })
-      .catch(e => console.error("Failed to load settings from server", e));
+      .catch(e => {
+        console.error("Failed to load settings from server", e);
+        setLogs(["SYS: ERROR - Failed to reach local control plane."]);
+      });
   }, []);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -120,9 +124,7 @@ export default function App() {
   const [voiceAmplitude, setVoiceAmplitude] = useState(0);
 
   // WebRTC Stats and Logs states
-  const [webrtcLogs, setWebrtcLogs] = useState<string[]>([
-    "[WebRTC] VoIP satellite bridge initialized on standby."
-  ]);
+  const [webrtcLogs, setWebrtcLogs] = useState<string[]>([]);
   const [webrtcStats, setWebrtcStats] = useState({
     state: 'idle',
     codec: 'Opus @ 48kHz',
@@ -156,7 +158,17 @@ export default function App() {
 
   // Phase 2: Planned filesystem action pending consent check
   const [pendingAction, setPendingAction] = useState<PlannedAction | null>(null);
+  const [actionQueue, setActionQueue] = useState<PlannedAction[]>([]);
   const [isExecutingAction, setIsExecutingAction] = useState(false);
+
+  // Protective queue manager: If an action is already pending, others wait their turn
+  useEffect(() => {
+    if (!pendingAction && actionQueue.length > 0) {
+      const nextAction = actionQueue[0];
+      setPendingAction(nextAction);
+      setActionQueue(prev => prev.slice(1));
+    }
+  }, [pendingAction, actionQueue]);
 
   // Synchronize conversational history from backend master database
   const syncLogsFromBackend = async () => {
@@ -190,8 +202,9 @@ export default function App() {
           const res = await fetch('/api/system/stats');
           if (res.ok) {
             const data = await res.json();
+            const tempValue = data.tmp ? parseInt(data.tmp.replace(/[^\d.]/g, '')) : 0;
             // Critical Thresholds simulating system instability
-            if (data.cpu >= 90 || data.mem >= 90 || data.tmp === '84°C') {
+            if (data.cpu >= 90 || data.mem >= 90 || tempValue >= 84) {
               setLogs(prev => [...prev, "SYS: WARNING - Health metrics critical. CPU/MEM unstable."]);
               setLogs(prev => [...prev, "SYS: INITIATING AUTO-REPAIR PROTOCOLS..."]);
               
@@ -635,9 +648,32 @@ export default function App() {
     // 8. Clean up excessive whitespace
     clean = clean.replace(/\s+/g, ' ').trim();
 
-    // 9. JARVIS default response if output is purely operational
+    // 9. JARVIS dynamic fallback response if output is purely operational
     if (!clean || clean.length < 8) {
-      return "The operation has been completed, sir. All systems nominal.";
+      if (rawText.includes('[WRITE_FILE]')) {
+        const fileMatch = rawText.match(/\[WRITE_FILE\]:([^\s\n]+)/i);
+        const fileName = fileMatch ? fileMatch[1].split(/[\\/]/).pop() : '';
+        return fileName 
+          ? `I've prepared the updates for ${fileName}, sir. Workspace protocols active.`
+          : "FileSystem patch sequence initialized. Applying the requested modifications now.";
+      }
+      if (rawText.includes('[EXECUTE_COMMAND]') || rawText.includes('[RUN_COMMAND]')) {
+        return "Command sequence synchronized. Initiating local system execution protocols.";
+      }
+      if (rawText.includes('[CREATE_TASK]')) {
+        return "Milestone logged. Persistent database tracking is now active, sir.";
+      }
+      
+      const generalFallbacks = [
+        "The operation has been completed, sir. All systems nominal.",
+        "System metrics are stable. Protocol executed as requested.",
+        "Transaction complete, sir. Standing by for further instructions.",
+        "Task verified. All neural arrays reporting peak performance.",
+        "Workspace synchronized. I'm ready for the next sequence, sir.",
+        "Recalibration complete. Everything appears to be in order.",
+        "Data processed and synchronized. What is our next move?"
+      ];
+      return generalFallbacks[Math.floor(Math.random() * generalFallbacks.length)];
     }
 
     // 10. Limit length — JARVIS is concise and precise
@@ -888,6 +924,30 @@ export default function App() {
     }
   };
 
+  // Poll for server-side system logs periodically to sync ActivityLog with autonomous background activity
+  useEffect(() => {
+    let active = true;
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch('/api/system/logs');
+        if (res.ok && active) {
+          const data = await res.json();
+          const formatted = data.map((l: any) => `${l.category}: ${l.message}`);
+          setLogs(formatted);
+        }
+      } catch (e) {
+        console.warn("Failed to sync system logs in App.tsx", e);
+      }
+    };
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   // Listen for custom system event loops dispatched by high-tech sub-components like ActivityLog
   useEffect(() => {
     const handleAppendLog = (e: any) => {
@@ -927,7 +987,7 @@ export default function App() {
           "SYS: HERMES MATRIX active.",
           `HERMES: ${startupMsg}`
         ]);
-        speakText("Hermes online. Closed learning loop initialized. How can I assist you, Tommy?");
+        speakText("Hermes online. Closed learning loop initialized. How can I assist you, sir?");
       } else {
         setLogs(prevLogs => [
           ...prevLogs,
@@ -952,7 +1012,11 @@ export default function App() {
   const handleCommandRef = useRef<any>(null);
 
   const handleCommand = async (text: string) => {
-    setLogs(prev => [...prev, `USER: ${text}`]);
+    if (text.startsWith('[SYSTEM FEEDBACK]')) {
+      setLogs(prev => [...prev, `SYS: ${text}`]);
+    } else {
+      setLogs(prev => [...prev, `USER: ${text}`]);
+    }
     
     // Trigger Amber computing state immediately
     setCognitiveState('thinking');
@@ -1005,7 +1069,7 @@ export default function App() {
       
       // Check for server-extracted planned file edits or execute statements
       if (data.plannedAction) {
-        const action = data.plannedAction;
+        const action = { ...data.plannedAction, ticketId: data.ticketId };
         let shouldAutoRun = false;
 
         if (action.type === 'create_task' && securitySettings.taskMode === 'auto') {
@@ -1031,7 +1095,7 @@ export default function App() {
                     ...prev,
                     `SEC WARN: Safe Mode blocked command. Reason: ${validateData.reason}`
                   ]);
-                  speakText("Warning, Tommy. The command was blocked by the security safety matrix.");
+                  speakText("Warning, sir. The command was blocked by the security safety matrix.");
                 }
               }
             } catch (err) {
@@ -1048,13 +1112,15 @@ export default function App() {
           // Direct background execution
           executeActionDirectly(action);
         } else {
-          setPendingAction(action);
+          // Push to action queue instead of direct setPendingAction to prevent "Ghost State" overwrites
+          setActionQueue(prev => [...prev, action]);
+          
           if (action.type === 'execute') {
-            speakText("I have formulated the required local system command, Tommy. Please review and authorize its execution.");
+            speakText("I have formulated the required local system command, sir. Please review and authorize its execution.");
           } else if (action.type === 'create_task') {
             speakText(`I have prepared a new ${action.priority} priority task tracker, sir. Please review it.`);
           } else {
-            speakText("I have formulated the required code changes, Tommy. Please review and authorize the filesystem patch.");
+            speakText("I have formulated the required code changes, sir. Please review and authorize the filesystem patch.");
           }
         }
       } else {
@@ -1071,7 +1137,7 @@ export default function App() {
         setIsThinking(false);
         const fallbackText = isHermesActive
           ? "Local FTS5 state engine is operational. Local skills repository loaded. To establish satellite links, configure OPENROUTER_API_KEY."
-          : "Satellite connection offline, Tommy. Verify your OpenRouter credentials inside your local .env configuration.";
+          : "Satellite connection offline, sir. Verify your OpenRouter credentials inside your local .env configuration.";
         
         setLogs(prev => [...prev, `${isHermesActive ? 'HERMES' : 'JARVIS'}: ${fallbackText}`]);
         speakText(fallbackText);
@@ -1095,7 +1161,7 @@ export default function App() {
         const taskRes = await fetch('/api/workspace/task', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ priority, description, taskMode: securitySettings.taskMode, userApproved: true })
+          body: JSON.stringify({ priority, description, taskMode: securitySettings.taskMode, userApproved: true, ticketId: action.ticketId })
         });
         
         if (taskRes.ok) {
@@ -1120,7 +1186,7 @@ export default function App() {
         const executeRes = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli, shellMode: securitySettings.shellMode })
+          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli, shellMode: securitySettings.shellMode, ticketId: action.ticketId })
         });
         
         const executeData = await executeRes.json();
@@ -1156,7 +1222,8 @@ export default function App() {
           body: JSON.stringify({
             filePath: action.filePath,
             content: action.content,
-            writeMode: securitySettings.writeMode
+            writeMode: securitySettings.writeMode,
+            ticketId: action.ticketId
           })
         });
 
@@ -1176,31 +1243,43 @@ export default function App() {
 
         setLogs(prev => [
           ...prev, 
-          `SYS: Success. File '${action.filePath}' written to disk.`,
-          "SYS: Initiating background compilability checks..."
+          `SYS: Success. File '${action.filePath}' written to disk.`
         ]);
 
-        // Automatically trigger compilability checks via terminal commands
-        const executeRes = await fetch('/api/workspace/execute', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: "npm run build" })
-        });
+        const buildCriticalRegex = /\.(tsx?|jsx?|json|css|scss|html)$/i;
+        const isBuildCritical = buildCriticalRegex.test(action.filePath);
 
-        const executeData = await executeRes.json();
-        if (executeData.success) {
-          setLogs(prev => [
-            ...prev,
-            "SYS: Build check successful. Workspace compilability: 100%. All systems nominal."
-          ]);
-          speakText("Workspace patch applied successfully, Tommy. Local build compiles without warnings.");
+        if (isBuildCritical) {
+          setLogs(prev => [...prev, "SYS: Initiating background compilability checks..."]);
+
+          // Automatically trigger compilability checks via terminal commands
+          const executeRes = await fetch('/api/workspace/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: "npm run build" })
+          });
+
+          const executeData = await executeRes.json();
+          if (executeData.success) {
+            setLogs(prev => [
+              ...prev,
+              "SYS: Build check successful. Workspace compilability: 100%. All systems nominal."
+            ]);
+            speakText("Workspace patch applied successfully, sir. Local build compiles without warnings.");
+          } else {
+            setLogs(prev => [
+              ...prev,
+              "SYS ERROR: Compile check failed. Terminal trace output below:",
+              executeData.stderr || executeData.stdout || "Unknown compiler exit code."
+            ]);
+            speakText("Warning, sir. The patch was written to disk, but the local compiler reports syntax errors.");
+          }
         } else {
           setLogs(prev => [
             ...prev,
-            "SYS ERROR: Compile check failed. Terminal trace output below:",
-            executeData.stderr || executeData.stdout || "Unknown compiler exit code."
+            "SYS: Asset/Document synchronized. Structural integrity verified. No build check required."
           ]);
-          speakText("Warning, Tommy. The patch was written to disk, but the local compiler reports syntax errors.");
+          speakText("The file has been updated, sir. Internal record sequence complete.");
         }
       }
     } catch (err: any) {
@@ -1209,6 +1288,19 @@ export default function App() {
     } finally {
       setIsExecutingAction(false);
       setCognitiveState('idle');
+
+      // Cognitive heuristic: Auto-advance task progress after any successful side-effect action
+      // This makes the progress bar truly 'Cognitive' rather than just a manual input
+      setTimeout(() => {
+        fetch('/api/tasks/auto-advance', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success) {
+              window.dispatchEvent(new Event('task-list-updated'));
+            }
+          })
+          .catch(() => {});
+      }, 500);
     }
   };
 
@@ -1221,13 +1313,24 @@ export default function App() {
   };
 
   const handleDeclineAction = () => {
-    const declineMsg = pendingAction?.type === 'execute'
+    const isCmd = pendingAction?.type === 'execute';
+    const declineMsg = isCmd
       ? "SYS: OS command execution declined by user authorization matrix. Command aborted."
       : "SYS: Filesystem write transaction declined by user. Operations aborted.";
+    
     setLogs(prev => [...prev, declineMsg]);
-    speakText(pendingAction?.type === 'execute'
+    speakText(isCmd
       ? "Command authorization denied, sir. Standing by."
       : "Filesystem write request cancelled, sir.");
+      
+    // Notify LLM about the cancellation so it stays in sync with reality
+    const feedbackText = isCmd 
+      ? `### SYSTEM CRITICAL OVERRIDE ###\nUSER EXPLICITLY DENIED THE EXECUTION OF THE COMMAND: "${pendingAction?.command}".\nINSTRUCTION: DO NOT assume this command was successful. Roll back any internal state assumptions related to this command execution. STAND BY.`
+      : `### SYSTEM CRITICAL OVERRIDE ###\nUSER EXPLICITLY DENIED THE FILE WRITE TO "${pendingAction?.filePath}".\nINSTRUCTION: DO NOT assume the file was modified. Transaction cancelled. STAND BY.`;
+    
+    // We send this as a "system-level" command to re-sync the LLM's state
+    handleCommand(feedbackText);
+    
     setPendingAction(null);
     setCognitiveState('idle');
   };

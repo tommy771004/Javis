@@ -185,6 +185,25 @@ export interface Translations {
   lblVoiceActiveBtn: string;
   lblVoiceInactiveBtn: string;
   lblCinemediaExpanse: string;
+  // Additional Settings
+  lblHoloUtils: string;
+  lblEnvKeys: string;
+  lblEnvKeysTitle: string;
+  lblToggleAudio: string;
+  lblMuteSys: string;
+  lblSynapseLatency: string;
+  lblAuthIsolation: string;
+  lblWorkspaceSandboxed: string;
+  lblElevenLabsKey: string;
+  lblMcpInventory: string;
+  lblRegisterWebhook: string;
+  lblBindWebhook: string;
+  lblNoNetworkWebhooks: string;
+  lblCreateRoutine: string;
+  lblSaveMatrix: string;
+  lblNoActiveMatrixRoutines: string;
+  lblExecuteRoutine: string;
+  btnSyncSettings: string;
 }
 
 const zhTWTranslations: Translations = {
@@ -207,7 +226,7 @@ const zhTWTranslations: Translations = {
   menuAbout: "關於 J.A.R.V.I.S",
   mcpSkills: "技能模組 (Skills)",
   mcpExternal: "外部 MCP 連接器",
-  mcpRoutines: "自動程序 (Routines)",
+  mcpRoutines: "快捷提示詞庫 (Prompt Macros)",
   mcpServer: "MCP 安全伺服器",
   secureStorageNotice: "* 安全金鑰與參數僅保存在當前瀏覽器的本機空間 (localStorage)。",
 
@@ -279,7 +298,7 @@ const zhTWTranslations: Translations = {
   aboutTagline: "「先生，您需要重新校準熱能發射裝置嗎？」",
   aboutP1: "J.A.R.V.I.S (Just A Rather Very Intelligent System) 是史塔克工業開創的高智慧中央控制核心，本系統模擬全自動終端控制、本機 OS 連接、BYOK 憑證同步及智慧防禦矩陣。",
   aboutP2: "本主網核心介面能感知多種行為命令。當本機 Cli 或 OpenRouter 閘道連線後，可實現多學科任務編排與本機寫檔。多種權限開關為您安全護航。",
-  aboutP3: "編號 Mark LXXXV。為世界和平與史塔克先生保駕護航。Online nominal.",
+  aboutP3: "編號 Mark LXXXV。為世界和平與系統工作區保駕護航。Online nominal.",
 
   // SysMonitor keys
   systemVitalSigns: "系統 // 生命徵象監控",
@@ -362,6 +381,25 @@ const zhTWTranslations: Translations = {
   lblVoiceActiveBtn: "全時衛星語音辨識：開啟中",
   lblVoiceInactiveBtn: "全時衛星語音辨識：靜態待命",
   lblCinemediaExpanse: "電影級極致視野大螢幕 [F11]",
+
+  lblHoloUtils: "全息投影工具",
+  lblEnvKeys: "環境金鑰",
+  lblEnvKeysTitle: "環境變數與金鑰配置",
+  lblToggleAudio: "切換介面音效",
+  lblMuteSys: "靜音系統音效",
+  lblSynapseLatency: "突觸延遲",
+  lblAuthIsolation: "授權隔離",
+  lblWorkspaceSandboxed: "工作區沙盒部署",
+  lblElevenLabsKey: "ElevenLabs TTS API 金鑰",
+  lblMcpInventory: "MCP 技能清單",
+  lblRegisterWebhook: "註冊 Webhook",
+  lblBindWebhook: "綁定 Webhook",
+  lblNoNetworkWebhooks: "目前無活躍的網路 Webhooks",
+  lblCreateRoutine: "建立快捷指令",
+  lblSaveMatrix: "儲存矩陣",
+  lblNoActiveMatrixRoutines: "目前無活躍的快捷指令",
+  lblExecuteRoutine: "發送指令 (Macro)",
+  btnSyncSettings: "同步設定並關閉 (Terminal Synchronized)",
 };
 
 const enTranslations: Translations = {
@@ -384,7 +422,7 @@ const enTranslations: Translations = {
   menuAbout: "About J.A.R.V.I.S",
   mcpSkills: "Skills Modules",
   mcpExternal: "External MCP Connectors",
-  mcpRoutines: "Automation Routines",
+  mcpRoutines: "Prompt Macros (Shortcut)",
   mcpServer: "MCP Secure Servers",
   secureStorageNotice: "* Secure API keys and preferences are bounded solely to your browser session storage (localStorage).",
 
@@ -456,7 +494,7 @@ const enTranslations: Translations = {
   aboutTagline: "“Shall I recalibrate thermal emission triggers for you, sir?”",
   aboutP1: "J.A.R.V.I.S (Just A Rather Very Intelligent System) is Stark Industries' most iconic virtual operating environment, simulating background task tracking, deep shell integrations, and granular permission controls.",
   aboutP2: "This interface handles full pipeline execution. When paired with live CLIs or BYOK gateways, you unlock complete filesystem writes, automatic database logging, and system diagnostics.",
-  aboutP3: "System Mark LXXXV. Ready to guard world peace and preserve Tommy's workspace. All systems nominal.",
+  aboutP3: "System Mark LXXXV. Ready to guard world peace and preserve the operator's workspace. All systems nominal.",
 
   // SysMonitor keys
   systemVitalSigns: "SYSTEM // VITAL SIGNS",
@@ -539,6 +577,25 @@ const enTranslations: Translations = {
   lblVoiceActiveBtn: "VOICE MATRIX ACTIVATED",
   lblVoiceInactiveBtn: "VOICE CAPTURE INACTIVE",
   lblCinemediaExpanse: "cinemedia expansia [f11]",
+
+  lblHoloUtils: "Hologram Utilities",
+  lblEnvKeys: "ENVIRONMENT KEYS",
+  lblEnvKeysTitle: "ENVIRONMENT KEYS",
+  lblToggleAudio: "Toggle UI Audio Effects",
+  lblMuteSys: "Mute System Sounds",
+  lblSynapseLatency: "Synapse Latency",
+  lblAuthIsolation: "Auth Isolation",
+  lblWorkspaceSandboxed: "Workspace Sandboxed",
+  lblElevenLabsKey: "ElevenLabs TTS API Key",
+  lblMcpInventory: "MCP SKILLS INVENTORY",
+  lblRegisterWebhook: "Register Webhook",
+  lblBindWebhook: "Bind Webhook",
+  lblNoNetworkWebhooks: "No active network webhooks",
+  lblCreateRoutine: "Create Macro Shortcut",
+  lblSaveMatrix: "Save Matrix",
+  lblNoActiveMatrixRoutines: "No active macros",
+  lblExecuteRoutine: "Send Macro",
+  btnSyncSettings: "Terminal Synchronized [Close]",
 };
 
 interface I18nContextType {

@@ -25,7 +25,10 @@ export function SysMonitor({
         uptime: 0,
         processes: 0,
         os: 'WIN',
-        secStatus: 'SEC_REQUIRED'
+        secStatus: 'SEC_REQUIRED',
+        powerDraw: 'N/A',
+        fans: 'N/A',
+        voltage: 'N/A'
     });
 
     const [heartRate, setHeartRate] = useState(72);
@@ -246,18 +249,30 @@ export function SysMonitor({
                 <StatBar label={t.lblRamMemory} value={stats.mem} />
                 <StatBar label={t.lblGpuCore} value={stats.gpu} />
                 
-                <div className="mt-3 border-t border-cyan-950/60 pt-3 grid grid-cols-2 gap-y-2 text-[10px] tracking-wider text-cyan-600/90 font-mono">
+                <div className="mt-3 border-t border-cyan-950/60 pt-3 grid grid-cols-2 gap-x-2 gap-y-2 text-[10px] tracking-wider text-cyan-600/90 font-mono">
                     <div className="flex flex-col">
                         <span className="text-[8px] text-cyan-600 uppercase tracking-widest">{t.lblNetSpeed}</span>
-                        <span className="text-cyan-300 font-bold mt-0.5">{stats.net}</span>
+                        <span className="text-cyan-300 font-bold mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">{stats.net}</span>
                     </div>
                     <div className="flex flex-col text-right">
                         <span className="text-[8px] text-cyan-600 uppercase tracking-widest">{t.lblSysTemp}</span>
                         <span className="text-cyan-300 font-bold mt-0.5">{stats.tmp}</span>
                     </div>
-                    <div className="flex flex-col col-span-2 border-t border-cyan-950/30 pt-2 mt-1 text-center">
+                    <div className="flex flex-col">
+                        <span className="text-[8px] text-cyan-600 uppercase tracking-widest">POWER DRAW</span>
+                        <span className="text-cyan-300 font-bold mt-0.5">{stats.powerDraw}</span>
+                    </div>
+                    <div className="flex flex-col text-right">
+                        <span className="text-[8px] text-cyan-600 uppercase tracking-widest">FAN SPEED</span>
+                        <span className="text-cyan-300 font-bold mt-0.5">{stats.fans}</span>
+                    </div>
+                    <div className="flex flex-col">
+                        <span className="text-[8px] text-cyan-600 uppercase tracking-widest">CPU VOLTAGE</span>
+                        <span className="text-cyan-300 font-bold mt-0.5">{stats.voltage}</span>
+                    </div>
+                    <div className="flex flex-col text-right">
                         <span className="text-[8px] text-cyan-600 uppercase tracking-widest">DISK I/O</span>
-                        <span className="text-cyan-300 font-bold mt-0.5">{stats.diskIo || '0.0 MB/s WAIT'}</span>
+                        <span className="text-cyan-300 font-bold mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">{stats.diskIo || '0.0 MB/s WAIT'}</span>
                     </div>
                 </div>
             </div>

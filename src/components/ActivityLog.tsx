@@ -171,7 +171,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                 
                 window.dispatchEvent(new CustomEvent('append-sys-log', {
                     detail: {
-                        message: "SYS: STARK-7 TRANSCEIVER ORBIT PING SUCCESSFUL. SAT-LINK ESTABLISHED.",
+                        message: data.message ? `SYS: ${data.message.toUpperCase()}` : "SYS: STARK-7 TRANSCEIVER ORBIT PING SUCCESSFUL. SAT-LINK ESTABLISHED.",
                         speak: data.speak
                     }
                 }));

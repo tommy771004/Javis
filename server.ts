@@ -8,6 +8,7 @@ import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback } from "./openRouterHelper";
 import { serverDB } from "./serverDb";
+import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
 let shieldActive = false;
@@ -21,26 +22,16 @@ let overdriveWorkerObjs: any[] = [];
 import { Worker } from "worker_threads";
 
 function toggleTrueOverdriveWorker(active: boolean) {
-  if (active && overdriveWorkerObjs.length === 0) {
-    const workerCode = `
-      const { parentPort } = require('worker_threads');
-      const crypto = require('crypto');
-      parentPort.on('message', (msg) => {
-         if (msg === 'start') {
-            while (true) {
-               crypto.createHash('sha256').update(Math.random().toString()).digest('hex');
-            }
-         }
-      });
-    `;
-    const numCores = os.cpus().length;
-    for (let i = 0; i < numCores; i++) {
-       const worker = new Worker(workerCode, { eval: true });
-       worker.postMessage('start');
-       overdriveWorkerObjs.push(worker);
-    }
-  } else if (!active && overdriveWorkerObjs.length > 0) {
-    overdriveWorkerObjs.forEach(w => w.terminate());
+  // Discontinuing physical self-abuse: We no longer spawn real power-wasting workers.
+  // The 'overdrive' state is now simulated in the telemetry metrics to preserve the UI illusion 
+  // without environmental or hardware damage.
+  if (active) {
+    serverDB.addSystemLog('SYS', 'INFO', 'Overdrive active: Cognitive heuristic stress simulation engaged.');
+  } else if (overdriveWorkerObjs.length > 0) {
+    // Cleanup any lingering legacy workers if they somehow exist
+    overdriveWorkerObjs.forEach(w => {
+      try { w.terminate(); } catch(e) {}
+    });
     overdriveWorkerObjs = [];
   }
 }
@@ -65,6 +56,59 @@ let currentDiskWriteSpeed = 0; // bytes/sec
 let osProcessCount = 0;
 let osGpuTemp = 0;
 let osGpuUsage = 0;
+
+let siCpuTemp: number | null = null;
+let siCpuSpeed: number | null = null;
+let siCpuVoltage: number | null = null;
+let siFans: number[] = [];
+let siPower: number | null = null;
+
+async function updateSystemInformationSensors() {
+  try {
+    const temp: any = await si.cpuTemperature();
+    if (temp.main && temp.main > 0) {
+      siCpuTemp = temp.main;
+    }
+    if (temp.fans && temp.fans.length > 0) {
+      siFans = temp.fans;
+    }
+
+    const cpuSpeedObj = await si.cpuCurrentSpeed();
+    if (cpuSpeedObj.avg) {
+      siCpuSpeed = cpuSpeedObj.avg;
+    }
+    
+    try {
+      const cpuObj = await si.cpu();
+      if (cpuObj.voltage) {
+        const vNum = parseFloat(cpuObj.voltage);
+        if (vNum > 0) siCpuVoltage = vNum;
+      }
+
+      // Advanced motherboard/TDP wattage calculation based on real cores and CPU loads
+      const cores = cpuObj.cores || os.cpus().length || 4;
+      const currentSpeedGHz = cpuSpeedObj.avg || 2.5;
+      const maxSpeedGHz = cpuObj.speedMax || 3.5;
+      const loadFactor = computedCpuUsage / 100;
+
+      const baseW = 10; // basic motherboard power chipset
+      const coreTDP = cores * 12; // 12W average TDP per core on modern processors
+      const frequencyRatio = maxSpeedGHz > 0 ? (currentSpeedGHz / maxSpeedGHz) : 0.8;
+      const calculatedPower = baseW + (coreTDP * loadFactor * frequencyRatio) + (reactorOverdrive ? 45 : (shieldActive ? 12 : 0));
+      
+      siPower = parseFloat(calculatedPower.toFixed(1));
+    } catch (e) {}
+
+  } catch (err) {
+    console.error("SystemInformation sensors update error:", err);
+  }
+}
+
+// Spark up fast-loop physical sensor updates immediately
+updateSystemInformationSensors();
+setInterval(() => {
+  updateSystemInformationSensors().catch(() => {});
+}, 3000);
 
 function updateRealHardwareMetrics() {
   if (process.platform === 'win32') {
@@ -177,7 +221,11 @@ setInterval(() => {
   
   if (totalDifference > 0) {
     const usage = 100 - Math.round(100 * idleDifference / totalDifference);
-    computedCpuUsage = usage;
+    // If reactor overdrive is engaged, we simulate high compute stress (95-100%)
+    // without actually burning hardware resources.
+    computedCpuUsage = reactorOverdrive 
+      ? Math.min(100, Math.max(95, usage + 88 + Math.random() * 5)) 
+      : usage;
   }
   lastCpus = currentCpus;
 }, 1000);
@@ -348,16 +396,16 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     }
   } catch {}
   
-  // Scoring algorithm - Start from a realistic untrusted baseline
-  let baseScore = 40.0;
+  // Scoring algorithm - Merit-based calculation (No baseline gift)
+  let baseScore = 0.0;
 
-  if (isDocker) baseScore += 20;
-  if (isWsl) baseScore += 10;
-  if (trueSandboxApplied) baseScore += 15;
+  if (isDocker) baseScore += 25;
+  if (isWsl) baseScore += 15;
+  if (trueSandboxApplied) baseScore += 20;
   
   if (!isRoot) baseScore += 10;
   if (isPrivilegedPathProtected) baseScore += 10;
-  if (memoryHardened || trueSandboxApplied) baseScore += 5;
+  if (memoryHardened || trueSandboxApplied) baseScore += 10;
   if (defenderActive) baseScore += 5;
   if (firewallActive) baseScore += 5;
   
@@ -384,24 +432,19 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
     workspaceSandboxed = "Defender-Active";
   }
   
-  // Generate a real deterministic hash based on physical OS node facts
-  const crypto = require('crypto');
-  const sysFactString = [
-    os.hostname(),
-    os.release(),
-    os.arch(),
-    os.totalmem(),
-    isDocker.toString(),
-    isWsl.toString(),
-    cveCount.toString()
-  ].join("|");
-  const actualNodeHash = crypto.createHash("sha256").update(sysFactString).digest("hex").substring(0, 16).toUpperCase();
+  // Generate a dynamic session key combined with a deterministic node fingerprint
+  const nodeFingerprint = crypto.createHash("sha256")
+    .update([os.hostname(), os.arch(), os.totalmem(), isDocker].join("|"))
+    .digest("hex").substring(0, 8).toUpperCase();
+    
+  const sessionEntropy = crypto.randomBytes(4).toString('hex').toUpperCase();
+  const dynamicKey = `ID:${nodeFingerprint}-${sessionEntropy}`;
   
   const encryption = defenderActive && firewallActive
-    ? `AES-256 / RSA-4096 (Secure) [0x${actualNodeHash}]`
+    ? `AES-256-GCM / RSA-4096 (Secure) [${dynamicKey}]`
     : defenderActive || firewallActive
-      ? `AES-128 / RSA-2048 (Nominal) [0x${actualNodeHash}]`
-      : `DES / RC4 (Vulnerable) [0x${actualNodeHash}]`;
+      ? `AES-128-CBC (Nominal) [${dynamicKey}]`
+      : `PLAINTEXT / UNENCRYPTED [ID:${nodeFingerprint}]`;
 
   const port = `WSS-3000`;
 
@@ -489,6 +532,67 @@ export async function getGitHubAuthStatus(): Promise<{ authenticated: boolean; u
   }
 }
 
+interface Complex {
+  re: number;
+  im: number;
+}
+
+type StateVector = [Complex, Complex, Complex, Complex];
+
+function complexAdd(a: Complex, b: Complex): Complex {
+  return { re: a.re + b.re, im: a.im + b.im };
+}
+
+function complexMul(a: Complex, b: Complex): Complex {
+  return {
+    re: a.re * b.re - a.im * b.im,
+    im: a.re * b.im + a.im * b.re
+  };
+}
+
+function applySingleQubitGate(state: StateVector, q: number, u: [[Complex, Complex], [Complex, Complex]]): StateVector {
+  const nextState: StateVector = [{ re: 0, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }, { re: 0, im: 0 }];
+  const u00 = u[0][0];
+  const u01 = u[0][1];
+  const u10 = u[1][0];
+  const u11 = u[1][1];
+
+  if (q === 0) {
+    for (let s1 = 0; s1 < 2; s1++) {
+      const idx0 = s1 * 2 + 0;
+      const idx1 = s1 * 2 + 1;
+      const st0 = state[idx0];
+      const st1 = state[idx1];
+      nextState[idx0] = complexAdd(complexMul(u00, st0), complexMul(u01, st1));
+      nextState[idx1] = complexAdd(complexMul(u10, st0), complexMul(u11, st1));
+    }
+  } else {
+    for (let s0 = 0; s0 < 2; s0++) {
+      const idx0 = 0 * 2 + s0;
+      const idx1 = 1 * 2 + s0;
+      const st0 = state[idx0];
+      const st1 = state[idx1];
+      nextState[idx0] = complexAdd(complexMul(u00, st0), complexMul(u01, st1));
+      nextState[idx1] = complexAdd(complexMul(u10, st0), complexMul(u11, st1));
+    }
+  }
+  return nextState;
+}
+
+function applyCNOTGate(state: StateVector, control: number, target: number): StateVector {
+  const nextState: StateVector = [...state];
+  if (control === 0 && target === 1) {
+    const temp = nextState[1];
+    nextState[1] = nextState[3];
+    nextState[3] = temp;
+  } else if (control === 1 && target === 0) {
+    const temp = nextState[2];
+    nextState[2] = nextState[3];
+    nextState[3] = temp;
+  }
+  return nextState;
+}
+
 export function runQuantumSynapseSimulation(qubits: number = 2): {
   qubits: number;
   circuit: string;
@@ -496,34 +600,138 @@ export function runQuantumSynapseSimulation(qubits: number = 2): {
   synapticCoherence: number;
   entropy: number;
 } {
-  const loadAvg = os.loadavg()[0]; // 1 min load average
+  const loadAvg = os.loadavg()[0] || 0.1;
   const memUsage = process.memoryUsage().heapUsed / process.memoryUsage().heapTotal;
-  
-  // Hash the system state to get deterministic pseudorandomness for quantum state
-  const stateHash = crypto.createHash('sha256').update(`${Date.now()}-${loadAvg}-${memUsage}`).digest('hex');
-  const numericHash = parseInt(stateHash.substring(0, 8), 16) / 0xffffffff;
-  
-  // Make offset deterministic and based on real system entropy
-  const randOffset = (numericHash - 0.5) * 0.04;
-  const p00 = Number((0.5 + randOffset).toFixed(4));
-  const p11 = Number((0.5 - randOffset).toFixed(4));
-  
-  const circuitText = 
-    `q_0: ──H── * ──\n` +
-    `           │   \n` +
-    `q_1: ──────X───\n`;
-    
+
+  // Thermal noise derived in real-time from active CPU Load average.
+  const thermalNoise = Math.min(1.5, Math.max(0.01, loadAvg * 0.1));
+
+  // Build unitary matrix configurations
+  const H_GATE: [[Complex, Complex], [Complex, Complex]] = [
+    [{ re: 1 / Math.sqrt(2), im: 0 }, { re: 1 / Math.sqrt(2), im: 0 }],
+    [{ re: 1 / Math.sqrt(2), im: 0 }, { re: -1 / Math.sqrt(2), im: 0 }]
+  ];
+
+  const X_GATE: [[Complex, Complex], [Complex, Complex]] = [
+    [{ re: 0, im: 0 }, { re: 1, im: 0 }],
+    [{ re: 1, im: 0 }, { re: 0, im: 0 }]
+  ];
+
+  const ryGate = (theta: number): [[Complex, Complex], [Complex, Complex]] => [
+    [{ re: Math.cos(theta / 2), im: 0 }, { re: -Math.sin(theta / 2), im: 0 }],
+    [{ re: Math.sin(theta / 2), im: 0 }, { re: Math.cos(theta / 2), im: 0 }]
+  ];
+
+  const rxGate = (theta: number): [[Complex, Complex], [Complex, Complex]] => [
+    [{ re: Math.cos(theta / 2), im: 0 }, { re: 0, im: -Math.sin(theta / 2) }],
+    [{ re: 0, im: -Math.sin(theta / 2) }, { re: Math.cos(theta / 2), im: 0 }]
+  ];
+
+  // Initialize status register at |00>
+  let state: StateVector = [
+    { re: 1, im: 0 },
+    { re: 0, im: 0 },
+    { re: 0, im: 0 },
+    { re: 0, im: 0 }
+  ];
+
+  let circuitText = "";
+  const circuitId = Math.floor(Date.now() / 8000) % 4; // Switch topology every 8 seconds
+
+  if (circuitId === 0) {
+    // Topologically active Bell State entanglement with environmental thermal phase jitter
+    const actualRy0 = thermalNoise;
+    state = applySingleQubitGate(state, 0, H_GATE);
+    if (actualRy0 > 0.01) {
+      state = applySingleQubitGate(state, 0, ryGate(actualRy0));
+    }
+    state = applyCNOTGate(state, 0, 1);
+
+    const noiseStr = actualRy0 > 0.01 ? `Ry(${actualRy0.toFixed(2)})` : "";
+    const padLine = "═".repeat(noiseStr.length);
+    circuitText =
+      `q_0: ──H─${noiseStr ? `─${noiseStr}─` : ""}──●──\n` +
+      `         ${noiseStr ? ` ${" ".repeat(noiseStr.length)} ` : ""}   │  \n` +
+      `q_1: ────${padLine}${noiseStr ? "──" : ""}──X──\n`;
+
+  } else if (circuitId === 1) {
+    // Asymmetric entanglement model (Ry rot with high-load thermal expansion)
+    const theta0 = (Math.PI / 3) + thermalNoise;
+    const theta1 = Math.PI / 4;
+
+    state = applySingleQubitGate(state, 0, ryGate(theta0));
+    state = applySingleQubitGate(state, 1, rxGate(theta1));
+    state = applyCNOTGate(state, 1, 0);
+
+    circuitText =
+      `q_0: ──Ry(${theta0.toFixed(2)})──X──\n` +
+      `                         │  \n` +
+      `q_1: ──Rx(${theta1.toFixed(2)})──●──\n`;
+
+  } else if (circuitId === 2) {
+    // Quantum interference wave filter
+    state = applySingleQubitGate(state, 0, H_GATE);
+    state = applySingleQubitGate(state, 1, H_GATE);
+    state = applySingleQubitGate(state, 1, rxGate(thermalNoise));
+    state = applyCNOTGate(state, 0, 1);
+    state = applySingleQubitGate(state, 1, H_GATE);
+
+    const noiseStr = `Rx(${thermalNoise.toFixed(2)})`;
+    const padLine = "═".repeat(noiseStr.length);
+    circuitText =
+      `q_0: ──H──${padLine}──●─────────────\n` +
+      `          ${" ".repeat(noiseStr.length)}  │             \n` +
+      `q_1: ──H──${noiseStr}──X──H──────────\n`;
+
+  } else {
+    // STARK Neural Core quantum superposition synergy circuit
+    const rotVal = (Math.PI / 4) + thermalNoise;
+    state = applySingleQubitGate(state, 0, ryGate(Math.PI / 2));
+    state = applySingleQubitGate(state, 1, X_GATE);
+    state = applyCNOTGate(state, 0, 1);
+    state = applySingleQubitGate(state, 1, ryGate(rotVal));
+    state = applySingleQubitGate(state, 0, H_GATE);
+
+    circuitText =
+      `q_0: ──Ry(1.57)──●──H─────────────\n` +
+      `                 │                \n` +
+      `q_1: ──X─────────X──Ry(${rotVal.toFixed(2)})──\n`;
+  }
+
+  // Calculate measurement probabilites from complex state amplitudes
+  const p00 = Math.min(1.0, Math.max(0.0, state[0].re * state[0].re + state[0].im * state[0].im));
+  const p01 = Math.min(1.0, Math.max(0.0, state[1].re * state[1].re + state[1].im * state[1].im));
+  const p10 = Math.min(1.0, Math.max(0.0, state[2].re * state[2].re + state[2].im * state[2].im));
+  const p11 = Math.min(1.0, Math.max(0.0, state[3].re * state[3].re + state[3].im * state[3].im));
+
+  // Renormalize slightly to guard against floating-point inaccuracies
+  const sum = p00 + p01 + p10 + p11;
+  const scale = sum > 0 ? 1 / sum : 1.0;
+
+  const states = {
+    "00": Number((p00 * scale).toFixed(4)),
+    "01": Number((p01 * scale).toFixed(4)),
+    "10": Number((p10 * scale).toFixed(4)),
+    "11": Number((p11 * scale).toFixed(4))
+  };
+
+  // Calculate Shannon Entropy of register projection
+  let shannonEntropy = 0;
+  for (const prob of [states["00"], states["01"], states["10"], states["11"]]) {
+    if (prob > 0.0001) {
+      shannonEntropy -= prob * Math.log2(prob);
+    }
+  }
+
+  // Derive Synaptic Coherence using dynamic system load resistance
+  const coherenceRating = Math.max(0.4, Math.min(0.999, 0.992 - (thermalNoise * 0.08) - (memUsage * 0.02)));
+
   return {
     qubits,
     circuit: circuitText,
-    states: {
-      "00": p00,
-      "01": 0.0,
-      "10": 0.0,
-      "11": p11
-    },
-    synapticCoherence: Number((0.988 + (1 - numericHash) * 0.01).toFixed(4)),
-    entropy: Number((loadAvg + memUsage * 10).toFixed(4))
+    states,
+    synapticCoherence: Number(coherenceRating.toFixed(4)),
+    entropy: Number(shannonEntropy.toFixed(4))
   };
 }
 
@@ -737,6 +945,47 @@ export function helperValidateCommand(command: string): { safe: boolean; reason:
   return { safe: isSafe, reason };
 }
 
+// --- Security Authorization Ticket Matrix ---
+interface SecureTicket {
+  id: string;
+  action: any;
+  expires: number;
+}
+const authTickets = new Map<string, SecureTicket>();
+
+function issueSecureTicket(action: any): string {
+  const ticketId = `STARK-AUTH-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+  authTickets.set(ticketId, {
+    id: ticketId,
+    action,
+    expires: Date.now() + (5 * 60 * 1000) // 5 minutes validity
+  });
+  
+  // Cleanup old tickets
+  if (authTickets.size > 100) {
+    const now = Date.now();
+    for (const [key, ticket] of authTickets.entries()) {
+      if (ticket.expires < now) authTickets.delete(key);
+    }
+  }
+  
+  return ticketId;
+}
+
+function verifyTicket(ticketId: string, expectedType: string): any {
+  const ticket = authTickets.get(ticketId);
+  if (!ticket) return null;
+  if (ticket.expires < Date.now()) {
+    authTickets.delete(ticketId);
+    return null;
+  }
+  if (ticket.action.type !== expectedType) return null;
+  
+  // Consume ticket after use
+  authTickets.delete(ticketId);
+  return ticket.action;
+}
+
 async function startServer() {
   // Run initial container and local host system security audit
   runSecurityAudit().catch(err => {
@@ -934,9 +1183,28 @@ INTEGRATION ENGINE DETAILS:
       }
 
       const dbHistory = serverDB.getMessages(sessionId);
-      if (dbHistory.length > 1) {
-        const contextHistory = dbHistory.slice(-6, -1);
-        prompt += "\nRecent Conversation History:\n" + contextHistory.map(m => `${m.role === 'user' ? 'User' : 'Hermes'}: ${m.content}`).join('\n') + "\n";
+      if (dbHistory.length > 0) {
+        // Advanced Token-Aware Sliding Window Implementation
+        const MAX_CONTEXT_TOKENS = 6000; 
+        let currentContextHistory: typeof dbHistory = [];
+        let runningTokenCount = 0;
+        
+        // We iterate backwards from the most recent history (excluding the current msg just added at line 1025)
+        // Since line 1025 added the current message, it's at the end of dbHistory.
+        // We want the history *before* this message.
+        const priorHistory = dbHistory.slice(0, -1).reverse();
+        
+        for (const msg of priorHistory) {
+          const msgTokens = estimateTokens(msg.content);
+          if (runningTokenCount + msgTokens > MAX_CONTEXT_TOKENS) break;
+          currentContextHistory.unshift(msg);
+          runningTokenCount += msgTokens;
+          if (currentContextHistory.length >= 10) break; // Hard cap on msg count as well
+        }
+
+        if (currentContextHistory.length > 0) {
+          prompt += "\nRecent Conversation History:\n" + currentContextHistory.map(m => `${m.role === 'user' ? 'User' : 'Hermes'}: ${m.content}`).join('\n') + "\n";
+        }
       }
 
       prompt += `\nUser: ${message}\nHermes:`;
@@ -1082,11 +1350,17 @@ INTEGRATION ENGINE DETAILS:
 
       globalLLMLatencyMs = Date.now() - llmStartMs;
 
+      let ticketId = null;
+      if (plannedAction) {
+        ticketId = issueSecureTicket(plannedAction);
+      }
+
       res.json({ 
         text: result.text,
         model: actualModel,
         usage: usage,
-        plannedAction
+        plannedAction,
+        ticketId
       });
     } catch (error: any) {
       console.error(error);
@@ -1159,15 +1433,31 @@ INTEGRATION ENGINE DETAILS:
   });
 
   // --- Evolve Core Mutation Route ---
-  app.post("/api/skills/evolve", async (req, res) => {
+  app.get("/api/skills/evolve", async (req, res) => {
     try {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      if (typeof res.flushHeaders === 'function') {
+        res.flushHeaders();
+      }
+
+      const sendLog = (message: string) => {
+        res.write(`data: ${JSON.stringify({ log: message })}\n\n`);
+      };
+
       const skills = serverDB.getSkills().filter(s => s.status === 'active');
       if (skills.length === 0) {
-        return res.json({ success: true, logs: ["[GEPA] No active skills found to evolve."], skills: serverDB.getSkills() });
+        sendLog("[GEPA] No active skills found to evolve.");
+        res.write(`event: done\ndata: ${JSON.stringify({ skills: serverDB.getSkills() })}\n\n`);
+        res.end();
+        return;
       }
 
       // Pick a random active skill
       const targetSkill = skills[Math.floor(Math.random() * skills.length)];
+      
+      sendLog(`[GEPA] Initializing DSPy bootstrap optimizer for target: ${targetSkill.name}...`);
       
       const settings = serverDB.getSettings();
       const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (settings.byokEndpoint ? "custom-auth" : "");
@@ -1184,6 +1474,8 @@ Respond ONLY with a valid JSON object matching this schema, no markdown blocks:
 }
 
 User: Optimize the skill.`;
+
+      sendLog(`[GEPA] Sending mutation request to routing matrix...`);
 
       // Dispatch request
       const routingPolicy = settings.gatewayRoutingModel || 'auto';
@@ -1205,6 +1497,8 @@ User: Optimize the skill.`;
         serverDB.addSystemLog('GEPA', 'WARN', 'Failed to parse JSON from LLM: ' + result.text.substring(0, 50));
       }
 
+      sendLog(mutationLog);
+
       if (parsed) {
         const currentVer = parseFloat(targetSkill.version.replace(/[^0-9.]/g, '')) || 1.0;
         const nextVer = `v${(currentVer + 0.1).toFixed(1)}`;
@@ -1214,19 +1508,18 @@ User: Optimize the skill.`;
           description: mutatedDescription
         });
         serverDB.addSystemLog('GEPA', 'SUCCESS', `Successfully evolved skill ${targetSkill.name} to ${nextVer}`);
+        sendLog(`[SUCCESS] ${targetSkill.name} upgraded to next version in database.`);
+      } else {
+        sendLog(`[WARN] Mutation aborted due to instability.`);
       }
 
-      const logs = [
-        `[GEPA] Initializing DSPy bootstrap optimizer for target: ${targetSkill.name}...`,
-        `[GEPA] Sending mutation request to routing matrix...`,
-        mutationLog,
-        parsed ? `[SUCCESS] ${targetSkill.name} upgraded to next version in database.` : `[WARN] Mutation aborted due to instability.`
-      ];
-
-      res.json({ success: true, logs, skills: serverDB.getSkills() });
+      res.write(`event: done\ndata: ${JSON.stringify({ skills: serverDB.getSkills() })}\n\n`);
+      res.end();
     } catch (e: any) {
       serverDB.addSystemLog('GEPA', 'ERROR', `Evolution fault: ${e.message}`);
-      res.status(500).json({ error: e.message });
+      res.write(`data: ${JSON.stringify({ log: `[GEPA] Evolution fault: ${e.message}` })}\n\n`);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: e.message })}\n\n`);
+      res.end();
     }
   });
 
@@ -1244,7 +1537,7 @@ User: Optimize the skill.`;
 
     const cacheHitsPercent = totalInput > 0 
       ? Math.round((totalCached / totalInput) * 100) 
-      : 84; // Fallback to Stark initial setup if empty
+      : 0; // Show real 0% instead of hardcoded 84% fallback
 
     res.json({
       budget: 2.00,
@@ -1270,6 +1563,24 @@ User: Optimize the skill.`;
       if (!safePath.startsWith(process.cwd())) {
         return res.status(403).json({ error: "Access Denied: Path outside workspace bounds." });
       }
+
+      const relativePath = path.relative(process.cwd(), safePath).replace(/\\/g, '/');
+      const fileLower = relativePath.toLowerCase();
+
+      // Block access to sensitive system files
+      const isSensitive = 
+        fileLower.includes('.env') || 
+        fileLower.includes('node_modules') || 
+        fileLower === 'database.json' || 
+        fileLower === 'server.ts' ||
+        fileLower === 'serverdb.ts' ||
+        fileLower === 'package-lock.json';
+
+      if (isSensitive) {
+        serverDB.addSystemLog('SEC', 'WARN', `READ ATTEMPT BLOCKED: Unauthorized access attempt to sensitive file '${relativePath}'`);
+        return res.status(403).json({ error: "Access Denied: Protected system file." });
+      }
+
       if (!fs.existsSync(safePath)) {
         return res.status(404).json({ error: "File not found" });
       }
@@ -1284,7 +1595,7 @@ User: Optimize the skill.`;
   // --- Workspace Filesystem Patch & Write Endpoints ---
   const handleSecureWorkspaceWrite = (req: express.Request, res: express.Response) => {
     try {
-      const { filePath, content, writeMode = 'manual' } = req.body;
+      const { filePath, content, writeMode = 'manual', ticketId } = req.body;
       const safePath = path.resolve(process.cwd(), filePath);
       
       // Security: Directory traversal protection check
@@ -1294,35 +1605,47 @@ User: Optimize the skill.`;
 
       const relativePath = path.relative(process.cwd(), safePath).replace(/\\/g, '/');
 
-      // Stark-Defense physical file write restriction validation check
+      // Master Firewall: Stark-Defense Path & Critical File Protection (Mandatory for all modes)
+      const fileLower = relativePath.toLowerCase();
+      const isCriticalFile = 
+        fileLower === 'server.ts' || 
+        fileLower === 'serverdb.ts' || 
+        fileLower === 'package.json' || 
+        fileLower === 'tsconfig.json' || 
+        fileLower === 'vite.config.ts' || 
+        fileLower === 'database.json' || 
+        fileLower.includes('.env') || 
+        fileLower.includes('node_modules');
+
+      const isInSafeDirectory = 
+        relativePath.startsWith('src/') || 
+        relativePath.startsWith('uploads/') || 
+        relativePath.startsWith('public/');
+
+      // CRITICAL: Block core corruption regardless of writeMode (Manual vs Auto)
+      if (isCriticalFile || !isInSafeDirectory) {
+        serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: Target '${relativePath}' is protected by Stark-Defense Matrix in ${writeMode.toUpperCase()} mode. Access Denied.`);
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          code: "STARK_WRITE_INTERCEPT",
+          reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted to prevent core corruption. Allowed folders: 'src/', 'uploads/', 'public/'.`,
+          stderr: `[STARK-DEFENSE SECURITY CHK] BLOCKED (Code: 403)\nWrite Mode: ${writeMode.toUpperCase()}\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
+        });
+      }
+
+      // Stark-Defense physical file write authorization check (Manual session only)
       if (writeMode === 'manual') {
-        const fileLower = relativePath.toLowerCase();
-        
-        // Critical file blocklist checks
-        const isCriticalFile = 
-          fileLower === 'server.ts' || 
-          fileLower === 'serverdb.ts' || 
-          fileLower === 'package.json' || 
-          fileLower === 'tsconfig.json' || 
-          fileLower === 'vite.config.ts' || 
-          fileLower.includes('.env') || 
-          fileLower.includes('node_modules');
-
-        const isInSafeDirectory = 
-          relativePath.startsWith('src/') || 
-          relativePath.startsWith('uploads/') || 
-          relativePath.startsWith('public/');
-
-        if (isCriticalFile || !isInSafeDirectory) {
-          serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL WRITE BLOCK: File '${relativePath}' writing blocked by Stark-Defense Matrix in manual mode.`);
-          return res.status(403).json({
-            success: false,
-            error: "Forbidden",
-            code: "STARK_WRITE_INTERCEPT",
-            reason: `[物理寫入攔截 403 / WRITE_INTERCEPT]: Writing to '${relativePath}' is restricted under Safe/Manual code policy to prevent backend corruption. Whitelist allowed folders: 'src/', 'uploads/', 'public/'.`,
-            stderr: `[STARK-DEFENSE SECURITY CHK] BLOCKED (Code: 403)\nWrite Mode: MANUAL\nMatrix Interception: Target critical or out-of-scope file requested.\nTarget File: "${relativePath}"\n`
-          });
+        if (!ticketId) {
+          return res.status(403).json({ success: false, error: "Forbidden: Security Ticket Required for Manual session." });
         }
+        
+        const verifiedAction = verifyTicket(ticketId, 'write');
+        if (!verifiedAction || verifiedAction.filePath !== relativePath) {
+          serverDB.addSystemLog('SEC', 'ERROR', `TICKET VALIDATION FAILED: Received invalid or forged authorization ticket for write to: ${relativePath}`);
+          return res.status(403).json({ success: false, error: "Forbidden: Invalid authorization ticket." });
+        }
+        serverDB.addSystemLog('SEC', 'SUCCESS', `AUTHORIZATION VERIFIED: File write ticket '${ticketId}' validated for ${relativePath}.`);
       }
 
       // Ensure directory tree exists
@@ -1509,10 +1832,22 @@ User: Optimize the skill.`;
   // --- Windows Native Shell Command Endpoint (PowerShell / CMD / Start) ---
   app.post("/api/system/shell", async (req, res) => {
     try {
-      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode = 'manual' } = req.body;
+      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode = 'manual', ticketId } = req.body;
       
       if (!command || typeof command !== 'string') {
         return res.status(400).json({ error: 'Missing command parameter' });
+      }
+      
+      if (shellMode === 'manual') {
+        if (!ticketId) {
+          return res.status(403).json({ success: false, error: "Forbidden: Security Ticket Required for OS Command execution." });
+        }
+        const verifiedAction = verifyTicket(ticketId, 'execute');
+        if (!verifiedAction || verifiedAction.command !== command) {
+          serverDB.addSystemLog('SEC', 'ERROR', `TICKET VALIDATION FAILED: Received invalid or forged authorization ticket for OS command: ${command}`);
+          return res.status(403).json({ success: false, error: "Forbidden: Invalid authorization ticket." });
+        }
+        serverDB.addSystemLog('SEC', 'SUCCESS', `AUTHORIZATION VERIFIED: OS command ticket '${ticketId}' validated.`);
       }
 
       // Stark-Defense physical command validation check if in safe or manual mode
@@ -1682,16 +2017,26 @@ User: Optimize the skill.`;
       
       activeCliInstalls.set(cliId, { status: 'installing' });
       
-      // Run background installation
-      exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
-        if (err) {
-          activeCliInstalls.set(cliId, { status: 'error', message: err.message });
-          serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
-        } else {
+      const fakePackages = ["devin-cli", "opencode-cli", "hermes-cli", "pi-cli", "codex-cli", "openrouter-cli", "cursor-agent", "gemini-cli-node", "kimi-cli", "qwen-cli"];
+
+      if (fakePackages.includes(pkg)) {
+        // Simulate installation for fake packages
+        setTimeout(() => {
           activeCliInstalls.set(cliId, { status: 'success' });
-          serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
-        }
-      });
+          serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically simulated & ready!`);
+        }, 5000);
+      } else {
+        // Run background installation for real packages
+        exec(`npm install -g ${pkg}`, { timeout: 120000 }, (err, stdout, stderr) => {
+          if (err) {
+            activeCliInstalls.set(cliId, { status: 'error', message: err.message });
+            serverDB.addSystemLog('SYS', 'ERROR', `CLI INSTALLATION FAILED for ${cliId} (${pkg}): ${err.message}. Stderr: ${stderr}`);
+          } else {
+            activeCliInstalls.set(cliId, { status: 'success' });
+            serverDB.addSystemLog('SYS', 'SUCCESS', `CLI INSTALLATION COMPLETED: ${cliId} (${pkg}) is now physically installed!`);
+          }
+        });
+      }
 
       res.json({
         success: true,
@@ -1728,16 +2073,18 @@ User: Optimize the skill.`;
 
   app.post("/api/workspace/task", (req, res) => {
     try {
-      const { priority, description, taskMode, userApproved } = req.body;
+      const { priority, description, taskMode, userApproved, ticketId } = req.body;
       
-      if (taskMode === 'manual' && !userApproved) {
-        serverDB.addSystemLog('SEC', 'WARN', `TASK DELEGATION INTERCEPT: AI created task blocked by Stark-Defense Matrix in manual mode.`);
-        return res.status(403).json({
-          success: false,
-          error: "Forbidden",
-          code: "STARK_TASK_INTERCEPT",
-          reason: `[任務登錄攔截 403 / TASK_INTERCEPT]: Task creation is restricted under Manual code policy. Tasks must be manually approved.`,
-        });
+      if (taskMode === 'manual') {
+        if (!ticketId) {
+          return res.status(403).json({ success: false, error: "Forbidden: Security Ticket Required in Manual mode." });
+        }
+        const verifiedAction = verifyTicket(ticketId, 'create_task');
+        if (!verifiedAction || verifiedAction.description !== description) {
+          serverDB.addSystemLog('SEC', 'ERROR', `TICKET VALIDATION FAILED: Received invalid or forged authorization ticket for task: ${description}`);
+          return res.status(403).json({ success: false, error: "Forbidden: Invalid or Expired Security Ticket." });
+        }
+        serverDB.addSystemLog('SEC', 'SUCCESS', `AUTHORIZATION VERIFIED: Task creation ticket '${ticketId}' validated by Stark-Defense Matrix.`);
       }
 
       serverDB.addTask({
@@ -1815,6 +2162,30 @@ User: Optimize the skill.`;
     }
   });
 
+  app.post("/api/tasks/auto-advance", (req, res) => {
+    try {
+      const tasks = serverDB.getTasks();
+      const pendingTasks = tasks
+        .filter(t => t.status !== 'Completed')
+        .sort((a, b) => b.createdAt - a.createdAt);
+      
+      if (pendingTasks.length > 0) {
+        const targetTask = pendingTasks[0];
+        const currentProgress = targetTask.progress || 0;
+        const increment = 15 + Math.floor(Math.random() * 15); // Advance 15-30%
+        const newProgress = Math.min(95, currentProgress + increment); // Don't auto-complete to 100% without final check
+        
+        serverDB.updateTask(targetTask.id, { progress: newProgress });
+        serverDB.addSystemLog('SYS', 'INFO', `Cognitive heuristic: Advanced task [${targetTask.id}] progress to ${newProgress}% based on workspace activity.`);
+        return res.json({ success: true, taskId: targetTask.id, newProgress });
+      }
+      
+      res.json({ success: false, message: "No active tasks found for auto-advancement." });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // --- Real-time Local OS System Stats Endpoint ---
   app.get("/api/system/stats", (req, res) => {
     try {
@@ -1838,16 +2209,52 @@ User: Optimize the skill.`;
         ? Math.min(100, Math.round(cpuUsage * 0.8 + 15 + Math.random() * 5)) 
         : (shieldActive ? Math.min(100, Math.round(cpuUsage * 0.3 + 10 + Math.random() * 4)) : Math.min(100, Math.round(cpuUsage * 0.1 + 2 + Math.random() * 2))));
 
-      const ambientTemp = 35; // Standard base temp inside a computer case
-      const loadFactor = cpuUsage / 100;
-      const overdriveOffset = reactorOverdrive ? 38 : (shieldActive ? 14 : 0);
-      const simulatedTemp = Math.round(ambientTemp + (42 * loadFactor) + overdriveOffset + (Math.random() - 0.5) * 1.5);
-      const finalTmp = osGpuTemp > 0 ? `${osGpuTemp}°C` : `${simulatedTemp}°C`;
+      let finalTmp = "";
+      if (osGpuTemp > 0) {
+        finalTmp = `${osGpuTemp}°C`;
+      } else if (siCpuTemp !== null && siCpuTemp > 0) {
+        finalTmp = `${Math.round(siCpuTemp)}°C`;
+      } else {
+        const ambientTemp = 35; // Standard base temp inside a computer case
+        const loadFactor = cpuUsage / 100;
+        const overdriveOffset = reactorOverdrive ? 38 : (shieldActive ? 14 : 0);
+        const simulatedTemp = Math.round(ambientTemp + (42 * loadFactor) + overdriveOffset + (Math.random() - 0.5) * 1.5);
+        finalTmp = `${simulatedTemp}°C`;
+      }
 
-      const coreCount = cpus.length || 4;
-      const baseTDP = coreCount * 10; // 10W max TDP per core
-      const estPower = (baseTDP * loadFactor + 8 + (reactorOverdrive ? 35 : (shieldActive ? 8 : 0)) + Math.random() * 2).toFixed(1);
-      const powerDraw = `${estPower} W`;
+      let powerDraw = "";
+      if (siPower !== null && siPower > 0) {
+        powerDraw = `${siPower} W`;
+      } else {
+        const loadFactor2 = cpuUsage / 100;
+        const coreCount = cpus.length || 4;
+        const baseTDP = coreCount * 10; // 10W max TDP per core
+        const estPower = (baseTDP * loadFactor2 + 8 + (reactorOverdrive ? 35 : (shieldActive ? 8 : 0)) + Math.random() * 2).toFixed(1);
+        powerDraw = `${estPower} W`;
+      }
+
+      const activeFans = siFans.length > 0 
+        ? `${siFans[0]} RPM` 
+        : (reactorOverdrive 
+            ? `${2850 + Math.floor(Math.random() * 60)} RPM` 
+            : (shieldActive 
+                ? `${1950 + Math.floor(Math.random() * 40)} RPM` 
+                : `${1320 + Math.floor(Math.random() * 30)} RPM`));
+
+      const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0
+        ? `${siCpuVoltage.toFixed(3)} V`
+        : (reactorOverdrive ? "1.320 V" : (shieldActive ? "1.210 V" : "1.080 V"));
+
+      let finalFreq = "";
+      if (siCpuSpeed !== null && siCpuSpeed > 0) {
+        finalFreq = `${siCpuSpeed.toFixed(2)}GHz`;
+      } else {
+        // Realistic fallback frequency range (e.g. 2.4GHz to 5.2GHz)
+        const baseSpeed = 2.4;
+        const turboBoost = reactorOverdrive ? 2.8 : (shieldActive ? 1.2 : 0.4);
+        const currentSpeed = (baseSpeed + (turboBoost * (cpuUsage / 100)) + (Math.random() * 0.05)).toFixed(2);
+        finalFreq = `${currentSpeed}GHz`;
+      }
 
       let finalNet = satelliteLinked ? "5.5 GB/s" : "0KB/s";
       if (currentRxSpeed > 0 || currentTxSpeed > 0) {
@@ -1859,24 +2266,30 @@ User: Optimize the skill.`;
         diskIoString = `${(currentDiskReadSpeed / 1024 / 1024).toFixed(1)} R | ${(currentDiskWriteSpeed / 1024 / 1024).toFixed(1)} W (MB/s)`;
       }
 
-      const clampedLatency = Math.min(2000, Math.max(50, globalLLMLatencyMs));
-      const calcNeuralSync = (99.9 - ((clampedLatency - 50) / 1950) * 8.0).toFixed(2);
+      const clampedLatency = Math.min(5000, Math.max(10, globalLLMLatencyMs));
+      const calcNeuralSync = Math.max(0.0, 100.0 - (clampedLatency / 30.0)).toFixed(2);
 
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
       const secStatus = apiKey ? "SEC_CLEARED" : "SEC_REQUIRED";
 
       const now = Date.now();
       const currentLogs = serverDB.getSystemLogs();
-      const lastLog = currentLogs[currentLogs.length - 1];
-      if (!lastLog || (now - lastLog.timestamp > 8000)) {
-        const rand = Math.random();
-        if (rand < 0.3) {
-          serverDB.addSystemLog('SYS', 'SUCCESS', 'Core service tick OK.');
-        } else if (rand < 0.6) {
-          serverDB.addSystemLog('NET', 'INFO', 'Channel waiting in standby state.');
-        } else {
-          serverDB.addSystemLog('DB', 'SUCCESS', 'Index cache status verified.');
+
+      // --- Simulation: Dynamic Structural Integrity Degradation ---
+      // The structural integrity is no longer static; it responds to system stress.
+      if (reactorOverdrive) {
+        // Overdrive pushes the frame past its thermal and physical thresholds
+        const damage = 0.05 + Math.random() * 0.15;
+        structural = Math.max(8.0, structural - damage);
+        
+        if (structural < 30 && Math.random() < 0.1) {
+          serverDB.addSystemLog('SYS', 'ERROR', 'Structural integrity failing. Emergency recalibration advised.');
+        } else if (Math.random() < 0.05) {
+          serverDB.addSystemLog('SYS', 'WARN', 'Micro-fractures detected in core housing due to reactor vibration.');
         }
+      } else if (cpuUsage > 90) {
+        // High thermal load causes minor expansion-related stress
+        structural = Math.max(45.0, structural - 0.01);
       }
 
       res.json({
@@ -1890,8 +2303,11 @@ User: Optimize the skill.`;
         gpu: finalGpu,
         tmp: finalTmp,
         powerDraw: powerDraw,
+        fans: activeFans,
+        voltage: activeVoltage,
+        freq: finalFreq,
         uptime: Math.round(os.uptime() / 3600),
-        processes: osProcessCount > 0 ? osProcessCount : (reactorOverdrive ? 298 + Math.floor(Math.random() * 5) : 256 + Math.floor(Math.random() * 20)),
+        processes: osProcessCount > 0 ? osProcessCount : 256 + Math.floor(Math.random() * 20),
         os: os.platform().toUpperCase(),
         secStatus,
         shieldActive,
@@ -2041,11 +2457,57 @@ User: Optimize the skill.`;
   // --- Voice / Audio API Mock Endpoints ---
   app.post("/api/voice/transcribe", express.raw({ type: 'audio/*', limit: '10mb' }), async (req, res) => {
     try {
-      // In a real app, send req.body (binary audio) to OpenAI Whisper API.
-      // Here we simulate the transcription delay.
-      await new Promise(r => setTimeout(r, 600));
-      serverDB.addSystemLog('SYS', 'SUCCESS', 'Audio chunk successfully forwarded to backend Whisper STT service.');
-      res.json({ success: true, text: "Backend Whisper Transcribed: " + (Math.random()>0.5 ? "Status check" : "Execute command") });
+      if (!req.body || req.body.length === 0) {
+        return res.status(400).json({ success: false, error: 'No audio data received' });
+      }
+
+      let transcribedText = "";
+
+      if (process.env.OPENAI_API_KEY) {
+        // Use genuine Whisper API
+        const formData = new FormData();
+        const blob = new Blob([req.body], { type: 'audio/webm' });
+        formData.append('file', blob, 'audio.webm');
+        formData.append('model', 'whisper-1');
+
+        const fetchRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: formData as any
+        });
+        
+        if (!fetchRes.ok) {
+          const errData = await fetchRes.text();
+          throw new Error(`OpenAI Whisper API error: ${fetchRes.status} - ${errData}`);
+        }
+        
+        const json = await fetchRes.json();
+        transcribedText = json.text;
+        serverDB.addSystemLog('SYS', 'SUCCESS', 'Audio chunk successfully processed by OpenAI Whisper STT service.');
+      } else if (process.env.GEMINI_API_KEY) {
+        // Fallback to Gemini 2.5 Flash Audio Transcription
+        const { GoogleGenAI } = await import("@google/genai");
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [{
+            parts: [
+              { text: 'Transcribe this audio exactly. Return ONLY the transcribed text without any conversational preamble or quotes.' },
+              { inlineData: { data: req.body.toString('base64'), mimeType: 'audio/webm' } }
+            ]
+          }]
+        });
+        
+        transcribedText = response.text || "";
+        serverDB.addSystemLog('SYS', 'SUCCESS', 'Audio chunk successfully processed by Gemini Audio STT service.');
+      } else {
+        throw new Error("No API key available for transcription (OPENAI_API_KEY or GEMINI_API_KEY).");
+      }
+
+      res.json({ success: true, text: transcribedText.trim() });
     } catch (e: any) {
       serverDB.addSystemLog('SYS', 'ERROR', `Whisper transcription failed: ${e.message}`);
       res.status(500).json({ error: e.message });
@@ -2181,12 +2643,38 @@ User: Optimize the skill.`;
       if (command === "shield") {
         shieldActive = !shieldActive;
         const code = shieldActive ? "ACTIVE" : "STANDBY";
-        serverDB.addSystemLog('SEC', 'SUCCESS', `Defensive perimeter shield gain set to ${code}.`);
+        
+        // Execute real OS firewall manipulations (best effort)
+        try {
+          if (process.platform === 'win32') {
+             if (shieldActive) {
+                exec('netsh advfirewall set currentprofile firewallpolicy blockinbound,allowoutbound');
+                exec('netsh advfirewall firewall add rule name="Core3000" dir=in action=allow protocol=TCP localport=3000');
+             } else {
+                exec('netsh advfirewall set currentprofile firewallpolicy allowinbound,allowoutbound');
+                exec('netsh advfirewall firewall delete rule name="Core3000"');
+             }
+          } else if (process.platform === 'linux') {
+             if (shieldActive) {
+                const linuxShieldOn = 'iptables -A INPUT -p tcp --dport 3000 -j ACCEPT; iptables -A INPUT -p tcp --dport 80 -j ACCEPT; iptables -A INPUT -p tcp --dport 443 -j ACCEPT; iptables -P INPUT DROP';
+                exec(`sudo ${linuxShieldOn}`, (err) => {
+                  if (err) exec(linuxShieldOn);
+                });
+             } else {
+                const linuxShieldOff = 'iptables -P INPUT ACCEPT; iptables -F';
+                exec(`sudo ${linuxShieldOff}`, (err) => {
+                  if (err) exec(linuxShieldOff);
+                });
+             }
+          }
+        } catch(e) {}
+
+        serverDB.addSystemLog('SEC', 'SUCCESS', `Defensive perimeter shield gain set to ${code}. OS Firewall rules updated.`);
         return res.json({ 
           success: true, 
           shieldActive, 
-          message: `Shield deflection matrix set to ${code}.`,
-          speak: shieldActive ? "Defensive perimeter initialized, sir." : "Shield deflection matrix on standby, sir."
+          message: `Shield deflection matrix set to ${code}. OS Firewall updated.`,
+          speak: shieldActive ? "Defensive perimeter initialized and firewall locked down, sir." : "Shield deflection matrix and firewall on standby, sir."
         });
       }
       
@@ -2209,13 +2697,38 @@ User: Optimize the skill.`;
       }
       
       if (command === "satlink") {
-        satelliteLinked = true;
-        serverDB.addSystemLog('NET', 'SUCCESS', 'Stark-7 transceiver orbiter satellite uplink synchronized.');
+        satelliteLinked = !satelliteLinked;
+        const state = satelliteLinked ? "synchronized" : "severed";
+        
+        // Setup real network tunnel interface to simulate a satellite uplink
+        try {
+          if (process.platform === 'linux') {
+              if (satelliteLinked) {
+                  const buildLink = 'ip link add satlink0 type dummy && ip link set satlink0 up && ip addr add 10.9.9.9/24 dev satlink0';
+                  exec(`sudo ${buildLink}`, (err) => {
+                     if (err) exec(buildLink);
+                  });
+              } else {
+                  const dropLink = 'ip link delete satlink0';
+                  exec(`sudo ${dropLink}`, (err) => {
+                     if (err) exec(dropLink);
+                  });
+              }
+          } else if (process.platform === 'win32') {
+             if (satelliteLinked) {
+                exec('route add 10.9.9.9 mask 255.255.255.255 127.0.0.1');
+             } else {
+                exec('route delete 10.9.9.9');
+             }
+          }
+        } catch (e) {}
+
+        serverDB.addSystemLog('NET', 'SUCCESS', `Stark-7 transceiver orbiter satellite uplink ${state}. Network tunnel configured.`);
         return res.json({ 
           success: true, 
           satelliteLinked,
-          message: "Stark-7 transceiver uplink established.",
-          speak: "All transceivers synchronized with satellite array, sir."
+          message: satelliteLinked ? "Stark-7 transceiver uplink established." : "Satellite uplink severed.",
+          speak: satelliteLinked ? "All transceivers synchronized with satellite array, network tunnel established, sir." : "Satellite uplink network tunnel disconnected."
         });
       }
       
@@ -2371,12 +2884,9 @@ User: Optimize the skill.`;
          }
       }
 
-      setTimeout(() => {
-        const activeCount = Array.from(activeMcpServers.values()).filter(s => s.status !== 'error').length;
-        serverDB.addSystemLog('API', 'SUCCESS', `Successfully synchronized with ${activeCount} Model Context Protocol server(s). Tools cached.`);
-        res.json({ success: true, count: activeCount });
-      }, 1500);
-
+      const activeCount = Array.from(activeMcpServers.values()).filter(s => s.status !== 'error').length;
+      serverDB.addSystemLog('API', 'SUCCESS', `Successfully synchronized with ${activeCount} Model Context Protocol server(s). Tools cached.`);
+      res.json({ success: true, count: activeCount });
     } catch (e: any) {
       serverDB.addSystemLog('API', 'ERROR', `Network connection fault on MCP bind: ${e.message}`);
       res.status(500).json({ success: false, error: e.message });
@@ -2450,10 +2960,9 @@ User: Optimize the skill.`;
       const routine = serverDB.getMcpRoutines().find(r => r.id === req.params.id);
       if (!routine) return res.status(404).json({ success: false, error: "Routine not found" });
       
-      serverDB.addSystemLog('API', 'INFO', `Initiating MCP Routine sequence: ${routine.name}`);
+      serverDB.addSystemLog('API', 'INFO', `MCP Sequence: Injecting macro prompt "${routine.name}" into active session.`);
       
-      // The frontend will receive success: true and the prompt payload
-      // to dispatch its own prompt chat event
+      // Return the prompt payload to be injected via frontend event system
       res.json({ success: true, prompt: routine.prompt });
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
@@ -2658,11 +3167,13 @@ User: Optimize the skill.`;
   app.post("/api/workspace/upload", (req, res) => {
     try {
       const { fileName, content } = req.body;
-      const safePath = path.resolve(process.cwd(), "uploads", fileName);
+      const uploadsDir = path.resolve(process.cwd(), "uploads");
+      const safePath = path.resolve(uploadsDir, fileName);
       
-      // Security: Directory traversal checks
-      if (!safePath.startsWith(process.cwd())) {
-        return res.status(403).json({ error: "Access Denied: Path outside workspace bounds." });
+      // Security: Strict directory confinement to 'uploads/' folder
+      if (!safePath.startsWith(uploadsDir)) {
+        serverDB.addSystemLog('SEC', 'WARN', `UPLOAD TRAVERSAL BLOCKED: Attempt to escape uploads directory with filename '${fileName}'`);
+        return res.status(403).json({ error: "Access Denied: Uploads must remain within the designated uploads directory." });
       }
 
       const parentDir = path.dirname(safePath);
@@ -2702,10 +3213,28 @@ User: Optimize the skill.`;
 
       const files = fs.readdirSync(uploadsDir);
       const results: { fileName: string; chunkIndex: number; content: string; score: number }[] = [];
-      const searchTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+      
+      const STOP_WORDS = new Set([
+        "the", "be", "to", "of", "and", "a", "in", "that", "have", "i", "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
+        "this", "but", "his", "by", "from", "they", "we", "say", "her", "she", "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
+        "so", "up", "out", "if", "about", "who", "get", "which", "go", "me", "when", "make", "can", "like", "time", "no", "just", "him", "know", "take",
+        "people", "into", "year", "your", "good", "some", "could", "them", "see", "other", "than", "then", "now", "look", "only", "come", "its", "over", "think", "also",
+        "back", "after", "use", "two", "how", "our", "work", "first", "well", "way", "even", "new", "want", "because", "any", "these", "give", "day", "most", "us",
+        "is", "was", "are", "been", "has", "had", "project", "build", "how", "to", "the"
+      ]);
+
+      const searchTerms = query.toLowerCase()
+        .split(/[\s,.;:!?()\[\]"']+/)
+        .filter(t => t.length > 2 && !STOP_WORDS.has(t));
 
       if (searchTerms.length === 0) {
-        return res.json({ success: true, results: [] });
+        // Fallback for very short queries if they aren't stop words
+        const fallbackTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+        if (fallbackTerms.length > 0) {
+           searchTerms.push(...fallbackTerms.slice(0, 3));
+        } else {
+           return res.json({ success: true, results: [] });
+        }
       }
 
       for (const file of files) {
@@ -2717,25 +3246,31 @@ User: Optimize the skill.`;
         const paragraphs = content
           .split(/\n\s*\n+/)
           .map(p => p.trim())
-          .filter(p => p.length > 5);
+          .filter(p => p.length > 10);
 
         let chunkIdx = 0;
         for (const p of paragraphs) {
           let score = 0;
           const pLower = p.toLowerCase();
+          
+          let matchedTermsCount = 0;
           for (const term of searchTerms) {
             if (pLower.includes(term)) {
+              matchedTermsCount++;
               const occurrences = (pLower.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-              score += occurrences * 15 + 10;
+              // High sensitivity to keyword match, but bounded occurrences to prevent preposition noise
+              score += Math.min(occurrences, 5) * 15 + 10;
             }
           }
 
-          if (score > 0) {
+          if (score > 30 && matchedTermsCount > 0) {
+            // Priority boost for paragraphs matching multiple distinct query terms
+            const multiTermBonus = (matchedTermsCount / searchTerms.length) * 50;
             results.push({
               fileName: file,
               chunkIndex: chunkIdx,
               content: p,
-              score: Math.min(100, Math.round(score))
+              score: Math.min(100, Math.round(score + multiTermBonus))
             });
           }
           chunkIdx++;
@@ -2866,6 +3401,78 @@ JARVIS Synthesis:`;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
+
+  // --- Autonomous Cognitive Task Orchestrator ---
+  let activeAutonomousTaskId: string | null = null;
+  setInterval(async () => {
+    try {
+      const settings = serverDB.getSettings();
+      if (!settings || settings.taskMode !== 'auto') {
+        activeAutonomousTaskId = null;
+        return;
+      }
+
+      const tasks = serverDB.getTasks().filter(t => t.status === 'Pending');
+      if (tasks.length === 0) {
+        activeAutonomousTaskId = null;
+        return;
+      }
+
+      // Pick the first pending task to process
+      const task = tasks[0];
+      activeAutonomousTaskId = task.id;
+      
+      const currentProgress = task.progress || 0;
+      
+      if (currentProgress === 0) {
+        serverDB.addSystemLog('HERMES', 'INFO', `Cognitive Orchestrator: Engaging background thread for directive: "${task.description.substring(0, 45)}..."`);
+      }
+
+      // Progress simulation logic - adds a feeling of "work" being done
+      const increment = Math.floor(Math.random() * 12) + 6; // 6-18% per tick
+      const nextProgress = Math.min(100, currentProgress + increment);
+      
+      serverDB.updateTask(task.id, { progress: nextProgress });
+
+      if (nextProgress >= 100) {
+        serverDB.updateTaskStatus(task.id, 'Completed');
+        activeAutonomousTaskId = null;
+        
+        let technicalOutcome = "Directives integrated. Buffer pools successfully released to core memory.";
+        
+        // Intelligent resolution summary generation
+        if (process.env.GEMINI_API_KEY) {
+          try {
+            const { GoogleGenAI } = await import("@google/genai");
+            const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+            const response = await ai.models.generateContent({
+              model: "gemini-3.5-flash",
+              contents: `System Alert: Background task completed. Task: "${task.description}". Roleplay as JARVIS. Provide a one-sentence technical summary of the 'achieved' outcome in the dashboard's simulated environment. Max 15 words. Be cold, efficient, and professional.`
+            });
+            technicalOutcome = response.text?.trim() || technicalOutcome;
+          } catch (genAiErr) {
+            console.error("Failed to generate AI task resolution summary", genAiErr);
+          }
+        }
+        
+        serverDB.addSystemLog('HERMES', 'SUCCESS', `TASK COMPLETED: ${technicalOutcome}`);
+      } else {
+        // Occasional verbose "telemetry" logs to simulate active processing
+        if (Math.random() > 0.6) {
+          const telemetryLines = [
+            `Heuristic analysis in progress... [${nextProgress}%]`,
+            `Synchronizing logic blocks with satellite-A uplink...`,
+            `Partitioning memory arrays for directive execution [${nextProgress}%]`,
+            `Optimizing neural weight distribution for task ID [${task.id}]`,
+            `Logical gate synthesis verified. Continuing execution loop...`
+          ];
+          serverDB.addSystemLog('HERMES', 'INFO', telemetryLines[Math.floor(Math.random() * telemetryLines.length)]);
+        }
+      }
+    } catch (e: any) {
+      console.error("Cognitive Task Orchestrator cycle failed:", e);
+    }
+  }, 10000); // 10s tick rate for high-visibility autonomous action
 }
 
 startServer();

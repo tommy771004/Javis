@@ -79,6 +79,9 @@ export function HermesDashboard({
   const [newTaskText, setNewTaskText] = useState('');
   const [newTaskPriority, setNewTaskPriority] = useState<'Low' | 'Medium' | 'High'>('Medium');
   const [costLogs, setCostLogs] = useState<DbCostLog[]>([]);
+  const [cognitiveMemoriesCount, setCognitiveMemoriesCount] = useState(0);
+  const [selectedLoopNode, setSelectedLoopNode] = useState<'experience' | 'curation' | 'skills' | 'gepa'>('experience');
+  const [systemStats, setSystemStats] = useState<{ freq: string; os: string }>({ freq: '4.2GHz', os: 'STARK_OS' });
 
   // Autoscroll terminal
   useEffect(() => {
@@ -99,12 +102,20 @@ export function HermesDashboard({
       setCacheHits(stats.cacheHits);
       setCostLogs(stats.costLogs);
       
+      let memoriesCount = 0;
+      try {
+        const memories = await hermesDB.getCognitiveMemories();
+        memoriesCount = memories.length;
+      } catch (err) {
+        console.warn("Failed to load cognitive memories in dashboard loop:", err);
+      }
+      setCognitiveMemoriesCount(memoriesCount);
+      
       const settingsRes = await fetch('/api/settings');
       const tasksRes = await fetch('/api/tasks');
       
       if (settingsRes.ok) {
         const data = await settingsRes.json();
-        setGatewaySettings(data);
         if (data.gatewayRoutingModel) {
           setSelectedModel(data.gatewayRoutingModel);
         } else {
@@ -119,6 +130,23 @@ export function HermesDashboard({
       if (tasksRes.ok) {
         const tasksData = await tasksRes.json();
         setTasks(tasksData);
+      }
+
+      // Sync Terminal Logs with real server-side system logs
+      const logsRes = await fetch('/api/system/logs');
+      if (logsRes.ok) {
+        const logsData = await logsRes.json();
+        const formatted = logsData.map((l: any) => `[${l.category}] ${l.message}`);
+        setTerminalLogs(formatted);
+      }
+
+      const statsRes = await fetch('/api/system/stats');
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setSystemStats({
+          freq: statsData.freq || '4.2GHz',
+          os: `STARK_OS_${statsData.os || 'GENRIC'}`
+        });
       }
 
       if (terminalLogs.length === 0) {
@@ -175,45 +203,85 @@ export function HermesDashboard({
     loadDataFromBackend();
     const handleUpdate = () => loadDataFromBackend();
     window.addEventListener('task-list-updated', handleUpdate);
-    return () => window.removeEventListener('task-list-updated', handleUpdate);
+    window.addEventListener('skills-updated', handleUpdate);
+    window.addEventListener('cognitive-memory-updated', handleUpdate);
+
+    // Regular polling for autonomous updates (tasks, logs, budget)
+    const pollInterval = setInterval(() => {
+      loadDataFromBackend();
+    }, 4000);
+
+    // Regular stats polling for footer metrics
+    const statsInterval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/system/stats');
+        if (res.ok) {
+          const data = await res.json();
+          setSystemStats({
+            freq: data.freq || '4.2GHz',
+            os: `STARK_OS_${data.os || 'GENRIC'}`
+          });
+        }
+      } catch (e) {}
+    }, 5000);
+
+    return () => {
+      window.removeEventListener('task-list-updated', handleUpdate);
+      window.removeEventListener('skills-updated', handleUpdate);
+      window.removeEventListener('cognitive-memory-updated', handleUpdate);
+      clearInterval(statsInterval);
+    };
   }, [activeTab]);
 
   // Real Server-Side Skill Evolution (GEPA) mutation
-  const triggerSelfEvolution = async () => {
+  const triggerSelfEvolution = () => {
     if (isEvolving) return;
     setIsEvolving(true);
     setCognitiveState('thinking'); // Set HUD to thinking color
     setTerminalLogs(prev => [...prev, '\n--- TRIGGERING DSPy + GEPA SELF-EVOLUTION LOOP ---']);
-    
-    setTerminalLogs(prev => [...prev, '[GEPA] Connecting to Cognitive Quantum Matrix...']);
-    setTerminalLogs(prev => [...prev, '[GEPA] Waiting for LLM evolutionary mutation response... (This may take a moment)']);
+    setTerminalLogs(prev => [...prev, '[GEPA] Connecting to Cognitive Quantum Matrix via SSE stream...']);
 
-    try {
-      // Mutate the actual skills on the server
-      const res = await fetch('/api/skills/evolve', { method: 'POST' });
-      if (!res.ok) throw new Error('Evolution mutation request failed');
-      
-      const data = await res.json();
-      setSkills(data.skills);
+    // Initialize EventSource pointing to our new GET SSE endpoint
+    const eventSource = new EventSource('/api/skills/evolve');
 
-      if (data.logs && Array.isArray(data.logs)) {
-        for (const log of data.logs) {
-           setTerminalLogs(prev => [...prev, log]);
-           await new Promise(r => setTimeout(r, 400)); // visual stagger for effect
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.log) {
+          setTerminalLogs(prev => [...prev, data.log]);
         }
+      } catch (err) {
+        console.error("Error parsing stream message:", err);
       }
+    };
 
-      setTerminalLogs(prev => [
-        ...prev,
-        '[SYSTEM] Hermes Core self-evolution complete. Skills database fully optimized!'
-      ]);
-    } catch (err) {
-      console.error(err);
-      setTerminalLogs(prev => [...prev, '[SYS ERROR] Failed to write mutations to server database.']);
-    } finally {
+    eventSource.addEventListener('done', (event: any) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.skills) {
+          setSkills(data.skills);
+        }
+        setTerminalLogs(prev => [
+          ...prev,
+          '[SYSTEM] Hermes Core self-evolution complete. Skills database fully optimized!'
+        ]);
+        window.dispatchEvent(new CustomEvent('skills-updated'));
+      } catch (err) {
+        console.error("Error parsing stream done payload:", err);
+      } finally {
+        eventSource.close();
+        setIsEvolving(false);
+        setCognitiveState('idle'); // Set HUD back to idle cyan
+      }
+    });
+
+    eventSource.addEventListener('error', (event: any) => {
+      console.error("EventSource encountered error:", event);
+      setTerminalLogs(prev => [...prev, '[SYS ERROR] Evolution stream failed or aborted.']);
+      eventSource.close();
       setIsEvolving(false);
-      setCognitiveState('idle'); // Set HUD back to idle cyan
-    }
+      setCognitiveState('idle');
+    });
   };
 
   // Real FTS5 search over server database
@@ -454,43 +522,49 @@ export function HermesDashboard({
                           {/* Linear progress bar for tracking ongoing completion percentage */}
                           {task.status === 'Completed' ? (
                             <div className="mt-2 pt-2 border-t border-emerald-950/45 flex items-center gap-3">
-                              <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">PROGRESS:</span>
+                              <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">SYNC:</span>
                               <div className="flex-1 h-1.5 bg-emerald-950 border border-emerald-900/60 rounded-sm overflow-hidden">
-                                <div className="h-full bg-emerald-500 w-full" />
+                                <div className="h-full bg-emerald-500 w-full shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
                               </div>
                               <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">100%</span>
                             </div>
                           ) : (
-                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
-                              <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">PROGRESS:</span>
-                              <input 
-                                type="range" 
-                                min="0" 
-                                max="100" 
-                                step="5"
-                                value={task.progress || 0}
-                                onChange={async (e) => {
-                                  const newProgress = parseInt(e.target.value);
-                                  // Live optimistic update for seamless experience
-                                  setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: newProgress, status: newProgress === 100 ? 'Completed' : t.status } : t));
-                                  const res = await fetch(`/api/tasks/${task.id}`, {
-                                    method: 'PUT',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ progress: newProgress })
-                                  });
-                                  if (res.ok) {
-                                    // Soft refresh list
-                                    const freshRes = await fetch('/api/tasks');
-                                    if (freshRes.ok) {
-                                      setTasks(await freshRes.json());
+                            <div className="mt-2 pt-2 border-t border-emerald-950/45 flex flex-col gap-1" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex justify-between items-center mb-1">
+                                <span className="text-[7.5px] text-emerald-500/70 font-bold tracking-widest uppercase">Cognitive Tracking Active</span>
+                                <span className="text-[7.5px] text-emerald-600 animate-pulse font-bold">[HEURISTIC_SYNC]</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">SYNC:</span>
+                                <input 
+                                  type="range" 
+                                  min="0" 
+                                  max="100" 
+                                  step="5"
+                                  value={task.progress || 0}
+                                  onChange={async (e) => {
+                                    const newProgress = parseInt(e.target.value);
+                                    // Live optimistic update for seamless experience
+                                    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: newProgress, status: newProgress === 100 ? 'Completed' : t.status } : t));
+                                    const res = await fetch(`/api/tasks/${task.id}`, {
+                                      method: 'PUT',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ progress: newProgress })
+                                    });
+                                    if (res.ok) {
+                                      // Soft refresh list
+                                      const freshRes = await fetch('/api/tasks');
+                                      if (freshRes.ok) {
+                                        setTasks(await freshRes.json());
+                                      }
                                     }
-                                  }
-                                }}
-                                className="flex-1 h-1 bg-emerald-950 accent-emerald-400 border border-emerald-900/60 rounded-sm cursor-pointer"
-                              />
-                              <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">
-                                {task.progress || 0}%
-                              </span>
+                                  }}
+                                  className="flex-1 h-1 bg-emerald-950 accent-emerald-400 border border-emerald-900/60 rounded-sm cursor-pointer"
+                                />
+                                <span className="text-[9px] text-emerald-400 font-bold font-mono min-w-[32px] text-right">
+                                  {task.progress || 0}%
+                                </span>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -702,20 +776,32 @@ export function HermesDashboard({
                   {/* Nodes */}
                   <g>
                     {/* User Experience Node */}
-                    <circle cx="60" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" strokeDasharray="3,3" />
-                    <text x="60" y="83" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">EXPERIENCE</text>
+                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('experience')}>
+                      <circle cx="60" cy="80" r="26" fill={selectedLoopNode === 'experience' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'experience' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'experience' ? "1.5" : "1"} strokeDasharray="3,3" className="transition-all duration-300" />
+                      <text x="60" y="77" fill={selectedLoopNode === 'experience' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">EXPERIENCE</text>
+                      <text x="60" y="88" fill={selectedLoopNode === 'experience' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{cognitiveMemoriesCount} MEMS</text>
+                    </g>
                     
                     {/* Skill Curation Node */}
-                    <circle cx="200" cy="40" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" />
-                    <text x="200" y="43" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">CURATION</text>
+                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('curation')}>
+                      <circle cx="200" cy="40" r="26" fill={selectedLoopNode === 'curation' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'curation' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'curation' ? "1.5" : "1"} className="transition-all duration-300" />
+                      <text x="200" y="37" fill={selectedLoopNode === 'curation' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">CURATION</text>
+                      <text x="200" y="48" fill={selectedLoopNode === 'curation' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{tasks.length} TASKS</text>
+                    </g>
                     
                     {/* Active Skills Repository */}
-                    <circle cx="340" cy="80" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1" strokeDasharray="3,3" />
-                    <text x="340" y="83" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">SKILLS</text>
+                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('skills')}>
+                      <circle cx="340" cy="80" r="26" fill={selectedLoopNode === 'skills' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'skills' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'skills' ? "1.5" : "1"} strokeDasharray="3,3" className="transition-all duration-300" />
+                      <text x="340" y="77" fill={selectedLoopNode === 'skills' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">SKILLS</text>
+                      <text x="340" y="88" fill={selectedLoopNode === 'skills' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{skills.length} ACTIVE</text>
+                    </g>
                     
                     {/* DSPy/GEPA Genetic Optimizer */}
-                    <circle cx="200" cy="120" r="24" fill="rgba(6,78,59,0.3)" stroke={activeColor} strokeWidth="1.5" />
-                    <text x="200" y="123" fill="#34d399" fontSize="8" textAnchor="middle" fontFamily="monospace">GEPA EVOLVE</text>
+                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('gepa')}>
+                      <circle cx="200" cy="120" r="26" fill={selectedLoopNode === 'gepa' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'gepa' ? "#10b981" : activeColor} strokeWidth={isEvolving ? "2" : (selectedLoopNode === 'gepa' ? "1.5" : "1")} className="transition-all duration-300" />
+                      <text x="200" y="117" fill={selectedLoopNode === 'gepa' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">{isEvolving ? "EVOLVING" : "GEPA EVOLVE"}</text>
+                      <text x="200" y="128" fill={selectedLoopNode === 'gepa' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{isEvolving ? "MUTATING..." : `v${(1 + (skills.length - 3) * 0.1).toFixed(1)} GEN`}</text>
+                    </g>
                   </g>
 
                   {/* Flow Paths */}
@@ -728,31 +814,37 @@ export function HermesDashboard({
 
                   {/* Dynamic flow pulses reacting to speak text amplitude and evolution states */}
                   <motion.circle
-                    r="4"
+                    r="3.5"
                     fill={activeColor}
                     animate={{
                       cx: [80, 130, 176],
                       cy: [65, 40, 40],
+                      opacity: [0, 0.9, 0.9, 0],
+                      scale: [0.8, 1.1, 0.9, 0.8]
                     }}
                     transition={{ 
-                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
+                      duration: isEvolving ? 0.6 : (cognitiveState === 'speaking' ? 1.4 : (cognitiveState === 'thinking' ? 0.9 : 4.5)), 
                       repeat: Infinity, 
-                      ease: 'linear' 
+                      repeatDelay: Math.random() * 0.5,
+                      ease: 'easeInOut' 
                     }}
                   />
                   <motion.circle
-                    r="4"
-                    fill={activeColor}
-                    animate={{
-                      cx: [224, 270, 320],
-                      cy: [40, 40, 65],
-                    }}
-                    transition={{ 
-                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
-                      repeat: Infinity, 
-                      ease: 'linear', 
-                      delay: 1.5 
-                    }}
+                     r="3"
+                     fill={activeColor}
+                     animate={{
+                       cx: [224, 270, 320],
+                       cy: [40, 40, 65],
+                       opacity: [0, 0.8, 0.8, 0],
+                       scale: [0.7, 1.2, 0.8]
+                     }}
+                     transition={{ 
+                       duration: isEvolving ? 0.7 : (cognitiveState === 'speaking' ? 1.6 : (cognitiveState === 'thinking' ? 1.1 : 5.2)), 
+                       repeat: Infinity, 
+                       repeatDelay: 0.8 + Math.random(),
+                       ease: 'linear', 
+                       delay: 0.3 
+                     }}
                   />
                   <motion.circle
                     r="4"
@@ -760,15 +852,83 @@ export function HermesDashboard({
                     animate={{
                       cx: [320, 270, 224],
                       cy: [95, 120, 120],
+                      opacity: [0, 1, 1, 0],
+                      scale: [0.9, 1.3, 1, 0.9]
                     }}
                     transition={{ 
-                      duration: cognitiveState === 'speaking' ? 1.2 : (cognitiveState === 'thinking' ? 0.8 : 3), 
+                      duration: isEvolving ? 0.5 : (cognitiveState === 'speaking' ? 1.1 : (cognitiveState === 'thinking' ? 0.7 : 3.8)), 
                       repeat: Infinity, 
-                      ease: 'linear', 
-                      delay: 0.7 
+                      repeatDelay: Math.random() * 1.2,
+                      ease: 'circOut', 
+                      delay: 0.6 
                     }}
                   />
+                  {/* Additional stochastic 'noise' packet when evolving */}
+                  {isEvolving && (
+                    <motion.circle
+                      r="2.5"
+                      fill="#ef4444"
+                      animate={{
+                        cx: [176, 130, 80],
+                        cy: [120, 120, 95],
+                        opacity: [0, 1, 0]
+                      }}
+                      transition={{ 
+                        duration: 0.4, 
+                        repeat: Infinity, 
+                        ease: 'anticipate' 
+                      }}
+                    />
+                  )}
                 </svg>
+              </div>
+
+              {/* Selected Node Glossary & Explainer Card */}
+              <div className="border border-emerald-900/35 p-3 bg-emerald-950/5 font-mono text-[10px] rounded-xs select-none">
+                {selectedLoopNode === 'experience' && (
+                  <div>
+                    <div className="text-emerald-400 font-bold uppercase tracking-wider mb-1 flex justify-between">
+                      <span>Phase I: Dynamic Memory & Trace Extraction</span>
+                      <span className="text-emerald-500 text-[8px] bg-emerald-950 px-1.5 border border-emerald-900/40">EXPERIENCE</span>
+                    </div>
+                    <p className="text-emerald-500/80 leading-relaxed text-[9px]">
+                      Automatically parses logs, user triggers, and voice transcripts to form long-term session presets. Persisted physically to <code className="text-emerald-300 font-bold">USER.md</code> & <code className="text-emerald-300 font-bold">MEMORY.md</code> for immediate model ingestion bypass, maintaining alignment without hardcoded constraints.
+                    </p>
+                  </div>
+                )}
+                {selectedLoopNode === 'curation' && (
+                  <div>
+                    <div className="text-emerald-400 font-bold uppercase tracking-wider mb-1 flex justify-between">
+                      <span>Phase II: Task Curation & Context Assembly</span>
+                      <span className="text-emerald-500 text-[8px] bg-emerald-950 px-1.5 border border-emerald-900/40">CURATION</span>
+                    </div>
+                    <p className="text-emerald-500/80 leading-relaxed text-[9px]">
+                      Ingests active user workflows and tasks. Resolves priorities, checks authorization gates (Auto-Repair vs Manual settings), and configures pricing/token allocation rules to safely schedule targeted prompt executions.
+                    </p>
+                  </div>
+                )}
+                {selectedLoopNode === 'skills' && (
+                  <div>
+                    <div className="text-emerald-400 font-bold uppercase tracking-wider mb-1 flex justify-between">
+                      <span>Phase III: Hot-Swappable Skills Registry</span>
+                      <span className="text-emerald-500 text-[8px] bg-emerald-950 px-1.5 border border-emerald-900/40">SKILLS</span>
+                    </div>
+                    <p className="text-emerald-500/80 leading-relaxed text-[9px]">
+                      Pre-compiled reusable capabilities designed according to the <code className="text-emerald-300 font-bold">agentskills.io</code> layout standard. Allows JARVIS to hot-inject complex instructions, avoiding heavy prompting context windows while maintaining SQLite speed performance.
+                    </p>
+                  </div>
+                )}
+                {selectedLoopNode === 'gepa' && (
+                  <div>
+                    <div className="text-emerald-400 font-bold uppercase tracking-wider mb-1 flex justify-between">
+                      <span>Phase IV: DSPy / Genetic-Pareto Prompt Optimization</span>
+                      <span className="text-emerald-500 text-[8px] bg-emerald-950 px-1.5 border border-emerald-900/40">GEPA EVOLVE</span>
+                    </div>
+                    <p className="text-emerald-500/80 leading-relaxed text-[9px]">
+                      Self-mutation system. Runs synthetic evaluations, applies DSPy-guided mutations on core instruction templates, and checks them against Pareto budget limits to upgrade resident skills in the active server database.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Skills Grid */}
@@ -885,7 +1045,10 @@ export function HermesDashboard({
                       >
                         <div className="text-[8px] text-emerald-500 font-bold mb-1 uppercase tracking-wider flex justify-between">
                           <span>{result.title}</span>
-                          <span>Score match: {result.confidence.toFixed(2)}</span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-[7px] text-emerald-700/80 px-1 border border-emerald-900/40 rounded-sm">KEYWORD_DENSITY</span>
+                            Relevance: {result.confidence.toFixed(0)}%
+                          </span>
                         </div>
                         <p className="text-emerald-400">{result.excerpt}</p>
                       </motion.div>
@@ -893,9 +1056,9 @@ export function HermesDashboard({
                   ) : (
                     <div className="text-[10px] text-emerald-700/80 italic text-center mt-12">
                       Ready to execute FTS5 keyword recall.<br/>
-                      Try typing keywords such as <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('Tommy'); }}>"Tommy"</span>,{' '}
-                      <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('powershell'); }}>"powershell"</span>, or{' '}
-                      <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('fts5'); }}>"fts5"</span>.
+                      Try typing keywords such as <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('system'); }}>"system"</span>,{' '}
+                      <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('security'); }}>"security"</span>, or{' '}
+                      <span className="underline text-emerald-500 cursor-pointer" onClick={() => { setSearchQuery('protocol'); }}>"protocol"</span>.
                     </div>
                   )}
                 </div>
@@ -1036,7 +1199,7 @@ export function HermesDashboard({
                 </div>
                 <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
                   <div className="text-[8px] opacity-60 text-emerald-500">AUDIO CODEC</div>
-                  <div className="text-[9px] xl:text-[10px] font-bold text-emerald-300">OPUS Mono</div>
+                  <div className="text-[9px] xl:text-[10px] font-bold text-emerald-300 text-center leading-tight">{webrtcStats?.codec || 'OPUS Mono'}</div>
                 </div>
                 <div className="border border-emerald-900/30 p-2 bg-[#020d06]/65 flex flex-col justify-center items-center">
                   <div className="text-[8px] opacity-60 text-emerald-500">RTT LATENCY</div>
@@ -1185,9 +1348,12 @@ export function HermesDashboard({
       </div>
 
       {/* Footer Navigation Hints */}
-      <div className="border-t border-emerald-900/40 pt-2 pb-2 text-[8px] text-emerald-500/70 tracking-widest uppercase flex justify-between flex-shrink-0">
-        <span>SECURITY: SYSTEM CLEAR</span>
-        <span>SYS FREQ: 98.7GHz</span>
+      <div className="border-t border-emerald-900/40 pt-2 pb-2 text-[8px] text-emerald-700 font-bold uppercase tracking-widest flex justify-between flex-shrink-0">
+        <span className="flex items-center gap-1.5 font-mono">
+          <span className="w-1 h-1 bg-emerald-800 rounded-full animate-pulse"></span>
+          SYS FREQ: {systemStats.freq}
+        </span>
+        <span className="font-mono">OS: {systemStats.os}</span>
       </div>
     </div>
   );

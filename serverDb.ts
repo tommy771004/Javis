@@ -45,7 +45,7 @@ export interface DbTask {
 
 export interface SystemLogEntry {
   timestamp: number;
-  category: 'SYS' | 'HERMES' | 'DB' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC';
+  category: 'SYS' | 'HERMES' | 'DB' | 'NET' | 'API' | 'VOIP' | 'EXEC' | 'SEC' | 'GEPA';
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
   message: string;
 }
@@ -163,40 +163,51 @@ class ServerPersistenceEngine {
   }
 
   private initDb() {
+    const initialCostLogs: DbCostLog[] = [
+      {
+        id: 'tx-init-01',
+        timestamp: Date.now() - 3600000 * 2,
+        model: 'anthropic/claude-3-5-haiku-latest',
+        taskType: 'fts_query',
+        costUsd: 0.00086,
+        inputTokens: 1200,
+        outputTokens: 120,
+        cachedTokens: 960
+      },
+      {
+        id: 'tx-init-02',
+        timestamp: Date.now() - 3600000 * 1,
+        model: 'anthropic/claude-3-5-sonnet-latest',
+        taskType: 'prompt_evolution',
+        costUsd: 0.01245,
+        inputTokens: 8400,
+        outputTokens: 480,
+        cachedTokens: 7200
+      }
+    ];
+
+    const INITIAL_COGNITIVE_MEMORIES = [
+      "User prefer voice speed matrix set to British Baritone cadence.",
+      "Local host operates powershell Start-Process hooks bypassing safe confirmation.",
+      "Stark Industries home assistant terminal core version initialized perfectly.",
+      "OpenRouter bypass keys stored locally for cognitive inference routines."
+    ];
+
     try {
-      const initialCostLogs: DbCostLog[] = [
-        {
-          id: 'tx-init-01',
-          timestamp: Date.now() - 3600000 * 2,
-          model: 'anthropic/claude-3-5-haiku-latest',
-          taskType: 'fts_query',
-          costUsd: 0.00086,
-          inputTokens: 1200,
-          outputTokens: 120,
-          cachedTokens: 960
-        },
-        {
-          id: 'tx-init-02',
-          timestamp: Date.now() - 3600000 * 1,
-          model: 'anthropic/claude-3-5-sonnet-latest',
-          taskType: 'prompt_evolution',
-          costUsd: 0.01245,
-          inputTokens: 8400,
-          outputTokens: 480,
-          cachedTokens: 7200
-        }
-      ];
-
-      const INITIAL_COGNITIVE_MEMORIES = [
-        "User prefer voice speed matrix set to British Baritone cadence.",
-        "Local host operates powershell Start-Process hooks bypassing safe confirmation.",
-        "Stark Industries home assistant terminal core version initialized perfectly.",
-        "OpenRouter bypass keys stored locally for cognitive inference routines."
-      ];
-
       if (fs.existsSync(DB_FILE)) {
-        const raw = fs.readFileSync(DB_FILE, 'utf8');
-        this.cache = JSON.parse(raw);
+        const raw = fs.readFileSync(DB_FILE, 'utf8').trim();
+        if (raw) {
+          this.cache = JSON.parse(raw);
+        } else {
+          this.cache = {
+            messages: [],
+            skills: INITIAL_SKILLS,
+            costLogs: initialCostLogs,
+            tasks: [],
+            cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
+          };
+          this.saveDb();
+        }
         // Sync skills if empty
         if (!this.cache.skills || this.cache.skills.length === 0) {
           this.cache.skills = INITIAL_SKILLS;
@@ -225,15 +236,69 @@ class ServerPersistenceEngine {
         this.saveDb();
       }
       this.addSystemLog('SYS', 'SUCCESS', 'Persistent server DB initialized.');
+      this.syncMarkdownFiles();
     } catch (e: any) {
-      console.error('Failed to initialize local server database file', e);
-      this.cache = { messages: [], skills: INITIAL_SKILLS, costLogs: [], tasks: [], cognitiveMemories: [] };
+      console.error('Failed to initialize local server database file, resetting database.json', e);
+      this.cache = {
+        messages: [],
+        skills: INITIAL_SKILLS,
+        costLogs: initialCostLogs,
+        tasks: [],
+        cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
+      };
+      this.saveDb();
+    }
+  }
+
+  private syncMarkdownFiles() {
+    try {
+      // 1. Generate USER.md content
+      const settings = this.getSettings();
+      const userMdContent = `# NoseResearch Hermes User Profile
+
+- **Operator Name**: ${settings.operatorName || "Tommy (Admin)"}
+- **Shell Execute Mode**: ${settings.shellMode || "auto"}
+- **File Write Mode**: ${settings.writeMode || "auto"}
+- **Task Orchestration Mode**: ${settings.taskMode || "auto"}
+- **Active Shell Skin**: ${settings.activeSkin || "Carbon HUD"}
+- **Satellite Bridge Linked**: ${settings.satelliteName || "Linked Satellite-A"}
+- **Core Armor Defense Grade**: ${settings.armorModel || "Mk-85 Quantum Armor"}
+- **Voice Synthesis Profile**: ${settings.voiceProfile || "standard"}
+- **Auto-Repair Protocol**: ${settings.autoRepair ? "Enabled" : "Disabled"}
+- **Gateway Model Selector**: ${settings.gatewayRoutingModel || "auto"}
+- **BYOK Endpoint Status**: ${settings.byokEndpoint ? `Configured (${settings.byokEndpoint})` : "Not Configured / Direct Model Gateway"}
+
+---
+*Synchronized automatically from JARVIS neural settings layer.*
+`;
+
+      fs.writeFileSync(path.join(process.cwd(), 'USER.md'), userMdContent, 'utf8');
+
+      // 2. Generate MEMORY.md content
+      const memories = this.getCognitiveMemories();
+      const memoryLines = memories.map((mem, index) => `${index + 1}. ${mem}`).join('\n');
+      const memoryMdContent = `# JARVIS Long-Term Cognitive Memories
+
+Active workspace guidelines, past feedback loops, and preference vectors synchronized back into plain markdown trace profiles:
+
+### Stored Memory Vectors
+${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
+
+---
+*Neural state vector cache updated automatically.*
+`;
+
+      fs.writeFileSync(path.join(process.cwd(), 'MEMORY.md'), memoryMdContent, 'utf8');
+
+    } catch (e: any) {
+      console.error('Failed to write physical markdown sync files:', e);
     }
   }
 
   private saveDb() {
     try {
       fs.writeFileSync(DB_FILE, JSON.stringify(this.cache, null, 2), 'utf8');
+      this.syncMarkdownFiles();
     } catch (e) {
       console.error('Failed to write local database file', e);
     }
