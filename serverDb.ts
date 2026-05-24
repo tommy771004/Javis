@@ -109,13 +109,7 @@ const INITIAL_SKILLS: DbSkill[] = [];
 class ServerPersistenceEngine {
   private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
   private ftsDb: any;
-  private systemLogs: SystemLogEntry[] = [
-    { timestamp: Date.now() - 5000, category: 'SYS', level: 'INFO', message: 'JARVIS online.' },
-    { timestamp: Date.now() - 4000, category: 'SYS', level: 'SUCCESS', message: 'System diagnostics initialized.' },
-    { timestamp: Date.now() - 3000, category: 'SYS', level: 'INFO', message: 'Initializing core protocols...' },
-    { timestamp: Date.now() - 2000, category: 'DB', level: 'SUCCESS', message: 'state.db mapped via FTS5 indexers.' },
-    { timestamp: Date.now() - 1000, category: 'NET', level: 'INFO', message: 'VoIP satellite bridge listening.' }
-  ];
+  private systemLogs: SystemLogEntry[] = [];
 
   constructor() {
     this.ftsDb = new Database('jarvis_fts.sqlite');
@@ -180,28 +174,7 @@ class ServerPersistenceEngine {
   }
 
   private initDb() {
-    const initialCostLogs: DbCostLog[] = [
-      {
-        id: 'tx-init-01',
-        timestamp: Date.now() - 3600000 * 2,
-        model: 'anthropic/claude-3-5-haiku-latest',
-        taskType: 'fts_query',
-        costUsd: 0.00086,
-        inputTokens: 1200,
-        outputTokens: 120,
-        cachedTokens: 960
-      },
-      {
-        id: 'tx-init-02',
-        timestamp: Date.now() - 3600000 * 1,
-        model: 'anthropic/claude-3-5-sonnet-latest',
-        taskType: 'prompt_evolution',
-        costUsd: 0.01245,
-        inputTokens: 8400,
-        outputTokens: 480,
-        cachedTokens: 7200
-      }
-    ];
+    const initialCostLogs: DbCostLog[] = [];
 
     const INITIAL_COGNITIVE_MEMORIES: string[] = [];
 
@@ -344,8 +317,8 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
         autoRepair: false,
         gatewayRoutingModel: 'auto',
         activeSkin: 'cyan',
-        satelliteName: 'STARK-SAT-4',
-        armorModel: 'Mark LXXXV',
+        satelliteName: 'Main Router',
+        armorModel: 'Production Build',
         operatorName: 'T. STARK',
         byokKey: '',
         byokModel: 'google/gemini-2.5-flash',

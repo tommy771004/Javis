@@ -193,47 +193,6 @@ export default function App() {
     syncLogsFromBackend();
   }, [isHermesActive]);
 
-  // Auto-Repair Health Monitor Polling
-  useEffect(() => {
-    let pollingInterval: NodeJS.Timeout | null = null;
-    if (securitySettings.autoRepair) {
-      pollingInterval = setInterval(async () => {
-        try {
-          const res = await fetch('/api/system/stats');
-          if (res.ok) {
-            const data = await res.json();
-            const tempValue = data.tmp ? parseInt(data.tmp.replace(/[^\d.]/g, '')) : 0;
-            // Critical Thresholds simulating system instability
-            if (data.cpu >= 90 || data.mem >= 90 || tempValue >= 84) {
-              setLogs(prev => [...prev, "SYS: WARNING - Health metrics critical. CPU/MEM unstable."]);
-              setLogs(prev => [...prev, "SYS: INITIATING AUTO-REPAIR PROTOCOLS..."]);
-              
-              // Trigger Auto-Repair (Reboot) logic on the backend
-              await fetch('/api/system/reboot', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
-              });
-              
-              const resetResp = await fetch('/api/gateway/reset-budget', { method: 'POST' });
-              const purgeResp = await fetch('/api/system/purge-cache', { method: 'POST' });
-              
-              if (purgeResp.ok) {
-                 setLogs(prev => [...prev, "SYS: AUTO-REPAIR SUCCESSFUL. Core metrics normalizing."]);
-              }
-            }
-          }
-        } catch (e) {
-          console.error("Auto-repair stat poll failed", e);
-        }
-      }, 8000);
-    }
-    
-    return () => {
-      if (pollingInterval) clearInterval(pollingInterval);
-    };
-  }, [securitySettings.autoRepair]);
-
   // WebRTC Active Switch Effect
   useEffect(() => {
     if (isMicActive) {

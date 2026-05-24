@@ -15,7 +15,6 @@ let shieldActive = false;
 let reactorOverdrive = false;
 let satelliteLinked = true;
 let corePower = 98;
-let structural = 100;
 
 // Internal Background Computations for True Overdrive
 let overdriveWorkerObjs: any[] = [];
@@ -1129,6 +1128,20 @@ async function startServer() {
 
   app.use(express.json());
 
+// Physical Firewall Middleware (Tied to shieldActive)
+app.use((req, res, next) => {
+  if (shieldActive) {
+    const ip = req.ip || req.connection?.remoteAddress || '';
+    // Basic IP block: if not local or private LAN
+    const isLocal = ip.includes('127.0.0.1') || ip.includes('::1') || ip.includes('192.168.') || ip.includes('10.');
+    if (!isLocal) {
+      serverDB.addSystemLog('SEC', 'WARN', `Shield Firewall blocked external IP access: ${ip}`);
+      return res.status(403).json({ error: "Access Denied: Shield Firewall Active" });
+    }
+  }
+  next();
+});
+
   // --- Real-time Chat & Cost Routing Endpoint ---
   app.post("/api/chat", async (req, res) => {
     const llmStartMs = Date.now();
@@ -1366,6 +1379,18 @@ INTEGRATION ENGINE DETAILS:
         serverDB.addSystemLog('HERMES', 'INFO', 'Prompt cache MISS. Context cache control sent.');
       }
 
+      if (!satelliteLinked) {
+        serverDB.addSystemLog('NET', 'ERROR', 'Satellite link offline. External LLM routing aborted.');
+        const offlineMsg = "[OFFLINE MODE] Satellite link severed. Unable to reach external LLM via OpenRouter/Gemini.";
+        if (req.body.stream) {
+          res.write(`data: ${JSON.stringify({ response: offlineMsg })}\n\n`);
+          res.write(`data: [DONE]\n\n`);
+          res.end();
+        } else {
+          res.json({ response: offlineMsg });
+        }
+        return;
+      }
       serverDB.addSystemLog('HERMES', 'INFO', `Routing request to model: ${model || 'Auto-Router'}`);
 
       const settings = serverDB.getSettings();
@@ -2522,9 +2547,6 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       
       // Calculate dynamic memory and GPU base on overcharged matrix
       let finalMem = memUsage;
-      if (shieldActive) {
-        finalMem = Math.min(100, finalMem + 8);
-      }
       
       let finalGpu = osGpuUsage > 0 ? osGpuUsage : 0;
 
@@ -2553,7 +2575,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         finalFreq = `${siCpuSpeed.toFixed(2)}GHz`;
       }
 
-      let finalNet = satelliteLinked ? "5.5 GB/s" : "0KB/s";
+      let finalNet = "0KB/s";
       if (currentRxSpeed > 0 || currentTxSpeed > 0) {
         finalNet = `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`;
       }
@@ -2564,27 +2586,19 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       }
 
       const clampedLatency = Math.min(5000, Math.max(10, globalLLMLatencyMs));
-      const calcNeuralSync = Math.max(0.0, 100.0 - (clampedLatency / 30.0)).toFixed(2);
-
+      
       const apiKey = process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY;
       const secStatus = apiKey ? "SEC_CLEARED" : "SEC_REQUIRED";
 
       const now = Date.now();
       const currentLogs = serverDB.getSystemLogs();
 
-      // --- Simulation: Dynamic Structural Integrity Degradation ---
-      // The structural integrity is no longer static; it responds to system stress.
-      if (reactorOverdrive && structural > 8.0) {
-        // High thermal load causes stress over time instead of random
-        // No longer purely random UI drops over time without real reason.
-      }
-
       res.json({
         cpu: cpuUsage,
         mem: finalMem,
         net: finalNet,
         diskIo: diskIoString,
-        neuralSync: calcNeuralSync,
+        neuralSync: "100.00",
         rxSpeed: currentRxSpeed,
         txSpeed: currentTxSpeed,
         gpu: finalGpu,
@@ -2601,7 +2615,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         reactorOverdrive,
         satelliteLinked,
         corePower,
-        structural,
+        structural: 100,
         nodeVersion: process.version,
         costLogsCount: serverDB.getCostLogs().length,
         messagesCount: serverDB.getAllMessages().length,
@@ -2706,8 +2720,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       reactorOverdrive = false;
       corePower = 98;
       satelliteLinked = false;
-      structural = 98.7;
-      computedCpuUsage = 0;
+            computedCpuUsage = 0;
       
       res.json({ 
         success: true, 
@@ -3002,8 +3015,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       }
       
       if (command === "recalibrate") {
-        structural = 100;
-        
+                
         // Execute real system recalibration (Garbage Collection and Memory compaction)
         if (global.gc) {
           global.gc();
@@ -3012,7 +3024,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         serverDB.addSystemLog('SEC', 'SUCCESS', 'System diagnostic neural metrics recalibrated successfully. V8 Garbage Collection executed.');
         return res.json({ 
           success: true, 
-          structural,
+          structural: 100,
           message: "System memory compacted & heuristics recalibrated.",
           speak: "Vital diagnostics restored to one hundred percent and system memory compacted, Tommy."
         });
@@ -3665,8 +3677,7 @@ JARVIS Synthesis:`;
           // Reset baseline hardware simulation counters
           shieldActive = false;
           corePower = 98;
-          structural = 100;
-          computedCpuUsage = 12; // Cooled baseline
+                    computedCpuUsage = 12; // Cooled baseline
 
           serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Subsystem normalizing sequence completed. Status: green (nominal).');
         }
