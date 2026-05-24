@@ -204,6 +204,32 @@ export interface Translations {
   lblNoActiveMatrixRoutines: string;
   lblExecuteRoutine: string;
   btnSyncSettings: string;
+
+  // Settings operation logs
+  logShellMessage: (mode: string) => string;
+  logShellSpeakManual: string;
+  logShellSpeakSafe: string;
+  logShellSpeakAuto: string;
+  logWriteMessage: (mode: string) => string;
+  logWriteSpeakManual: string;
+  logWriteSpeakAuto: string;
+  logTaskMessage: (mode: string) => string;
+  logTaskSpeak: string;
+  logSkinMessage: (skin: string) => string;
+  logDesktopOverlayMessage: (enabled: boolean) => string;
+  logDesktopOverlaySpeak: (enabled: boolean) => string;
+  logDesktopStartupMessage: (enabled: boolean) => string;
+  logDesktopStartupSpeak: string;
+  logVoiceMessage: (profile: string) => string;
+  logVoiceSpeakBaritone: string;
+  logVoiceSpeakFast: string;
+  logVoiceSpeakStandard: string;
+  logSttEngineMessage: (engine: string) => string;
+  logTtsEngineMessage: (engine: string) => string;
+  logLocaleZhTwMessage: string;
+  logLocaleZhTwSpeak: string;
+  logLocaleEnMessage: string;
+  logLocaleEnSpeak: string;
 }
 
 const zhTWTranslations: Translations = {
@@ -401,6 +427,30 @@ const zhTWTranslations: Translations = {
   lblNoActiveMatrixRoutines: "目前無活躍的快捷指令",
   lblExecuteRoutine: "發送指令 (Macro)",
   btnSyncSettings: "同步設定並關閉 (Terminal Synchronized)",
+  logShellMessage: (mode: string) => `SYS: 命令互動層級已切換為 ${mode}。`,
+  logShellSpeakManual: "授權協定已切換為手動確認模式。",
+  logShellSpeakSafe: "已啟用安全模式，系統將只自動執行低風險資訊指令。",
+  logShellSpeakAuto: "已啟用全自動模式，系統取得完整命令執行授權。",
+  logWriteMessage: (mode: string) => `SYS: 工作區檔案保護模式已切換為 ${mode}。`,
+  logWriteSpeakManual: "工作區寫入維持人工審查流程。",
+  logWriteSpeakAuto: "工作區已切換為自動寫入模式。",
+  logTaskMessage: (mode: string) => `SYS: 任務追蹤策略已更新為 ${mode}。`,
+  logTaskSpeak: "任務資料庫矩陣已完成更新。",
+  logSkinMessage: (skin: string) => `SYS: 介面主題已切換為「${skin}」，偏好已寫入 database.enc。`,
+  logDesktopOverlayMessage: (enabled: boolean) => `SYS: 桌面置頂偏好已設為 ${enabled ? 'LOCKED' : 'UNLOCKED'}。`,
+  logDesktopOverlaySpeak: (enabled: boolean) => `本次工作階段的桌面置頂偏好已${enabled ? '啟用' : '停用'}。`,
+  logDesktopStartupMessage: (enabled: boolean) => `SYS: 開機啟動偏好已設為 ${enabled ? 'ACTIVE' : 'INACTIVE'}。`,
+  logDesktopStartupSpeak: "核心開機偏好設定已更新。",
+  logVoiceMessage: (profile: string) => `SYS: 語音協調矩陣已切換為 ${profile}。`,
+  logVoiceSpeakBaritone: "語音共鳴頻率已校準為低沉男聲配置。",
+  logVoiceSpeakFast: "已啟用緊湊快節奏語音配置。",
+  logVoiceSpeakStandard: "標準語音模組已進入待命狀態。",
+  logSttEngineMessage: (engine: string) => `SYS: STT 引擎已切換為 ${engine}。`,
+  logTtsEngineMessage: (engine: string) => `SYS: TTS 引擎已切換為 ${engine}。`,
+  logLocaleZhTwMessage: "SYS: 系統語系已切換為 ZH_TW。",
+  logLocaleZhTwSpeak: "已啟用繁體中文介面與語音回饋。",
+  logLocaleEnMessage: "SYS: SYSTEM LOCALE SET TO EN_US.",
+  logLocaleEnSpeak: "Speech and HUD interfaces adjusted to English.",
 };
 
 const enTranslations: Translations = {
@@ -597,6 +647,30 @@ const enTranslations: Translations = {
   lblNoActiveMatrixRoutines: "No active macros",
   lblExecuteRoutine: "Send Macro",
   btnSyncSettings: "Terminal Synchronized [Close]",
+  logShellMessage: (mode: string) => `SYS: SHELL INTERACTION LEVEL SET TO ${mode}.`,
+  logShellSpeakManual: "Authorization protocol shifted to manual confirmation.",
+  logShellSpeakSafe: "Safe mode active. Only low-risk informational commands will run automatically.",
+  logShellSpeakAuto: "Full autonomous mode is active. Maximum command authorization granted.",
+  logWriteMessage: (mode: string) => `SYS: FILESYSTEM PROTECTION SHIFTED TO ${mode}.`,
+  logWriteSpeakManual: "Workspace writes remain under manual review.",
+  logWriteSpeakAuto: "Workspace boundaries set to auto write.",
+  logTaskMessage: (mode: string) => `SYS: TASK TRACKER POLICY UPDATED TO ${mode}.`,
+  logTaskSpeak: "Task database matrix updated.",
+  logSkinMessage: (skin: string) => `SYS: UI THEME CHANGED TO "${skin}". PREFERENCE PERSISTED TO database.enc.`,
+  logDesktopOverlayMessage: (enabled: boolean) => `SYS: OS DESKTOP OVERLAY SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}.`,
+  logDesktopOverlaySpeak: (enabled: boolean) => `Overlay preference is ${enabled ? 'active' : 'disabled'} for this session.`,
+  logDesktopStartupMessage: (enabled: boolean) => `SYS: OS BOOT SEQUENCE REGISTRY SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}.`,
+  logDesktopStartupSpeak: "Core system boot preference updated.",
+  logVoiceMessage: (profile: string) => `SYS: VOICE HARMONIZATION MATRIX ALTERED TO ${profile}.`,
+  logVoiceSpeakBaritone: "Dynamic pitch resonance frequency set to British Baritone.",
+  logVoiceSpeakFast: "Fast-paced voice profile activated.",
+  logVoiceSpeakStandard: "Standard speech module standing by.",
+  logSttEngineMessage: (engine: string) => `SYS: STT ENGINE SWITCHED TO ${engine}.`,
+  logTtsEngineMessage: (engine: string) => `SYS: TTS ENGINE SWITCHED TO ${engine}.`,
+  logLocaleZhTwMessage: "SYS: LOCALE SET TO ZH_TW.",
+  logLocaleZhTwSpeak: "Localized Traditional Chinese set.",
+  logLocaleEnMessage: "SYS: LOCALE SET TO EN_US.",
+  logLocaleEnSpeak: "Speech and HUD interfaces adjusted to English.",
 };
 
 interface I18nContextType {
@@ -622,7 +696,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem('jarvis_active_locale', newLocale);
   };
 
-  const t = locale === 'zh-TW' ? zhTWTranslations : enTranslations;
+  const t = getTranslations(locale);
 
   return (
     <I18nContext.Provider value={{ locale, t, setLocale }}>
@@ -637,4 +711,8 @@ export function useI18n() {
     throw new Error('useI18n must be used within an I18nProvider');
   }
   return context;
+}
+
+export function getTranslations(locale: Locale): Translations {
+  return locale === 'zh-TW' ? zhTWTranslations : enTranslations;
 }

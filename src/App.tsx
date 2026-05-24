@@ -13,6 +13,7 @@ import { apiClient } from './services/apiClient';
 import { SettingsModal, SecuritySettings } from './components/SettingsModal';
 import { SpectrumRebootOverlay } from './components/SpectrumRebootOverlay';
 import { startCommsChannel, stopCommsChannel, playTactileClick, getMasterAnalyser, modulateSynthVolumeForSpeech } from './services/audioSynth';
+import { CACHE_PURGE_RESET_EVENT, createInitialWebRtcStats, createUiResetSnapshot } from './services/uiResetPolicies';
 
 interface PlannedAction {
   type: 'write' | 'execute' | 'create_task';
@@ -94,6 +95,15 @@ export default function App() {
     voiceProfile: 'baritone',
     autoRepair: false
   });
+  const [sttProvider, setSttProvider] = useState<string>(() => localStorage.getItem('jarvis_stt_provider') || 'webspeech');
+  const [ttsProvider, setTtsProvider] = useState<string>(() => localStorage.getItem('jarvis_tts_provider') || 'webspeech');
+  const [elevenLabsRuntimeKey, setElevenLabsRuntimeKey] = useState<string>(() => localStorage.getItem('jarvis_elevenlabs_key') || '');
+
+  useEffect(() => {
+    if (securitySettings.elevenLabsKey !== undefined) {
+      setElevenLabsRuntimeKey(securitySettings.elevenLabsKey);
+    }
+  }, [securitySettings.elevenLabsKey]);
 
   useEffect(() => {
     fetch('/api/settings')
@@ -125,19 +135,7 @@ export default function App() {
 
   // WebRTC Stats and Logs states
   const [webrtcLogs, setWebrtcLogs] = useState<string[]>([]);
-  const [webrtcStats, setWebrtcStats] = useState({
-    state: 'idle',
-    codec: 'Opus @ 48kHz',
-    rtt: 0,
-    jitter: 0,
-    packetsSent: 0,
-    packetsReceived: 0,
-    bytesSent: 0,
-    bytesReceived: 0,
-    bitrate: 0,
-    offerSdp: '',
-    answerSdp: ''
-  });
+  const [webrtcStats, setWebrtcStats] = useState(createInitialWebRtcStats);
 
   // WebRTC refs
   const pc1Ref = useRef<RTCPeerConnection | null>(null);
@@ -444,7 +442,6 @@ export default function App() {
       }, 500);
 
       // 6. Web Speech Recognition Setup or Backend Whisper processing
-      const sttProvider = localStorage.getItem('jarvis_stt_provider') || 'webspeech';
       const SpeechRecognitionClass = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       
       if (sttProvider === 'whisper' && (window as any).MediaRecorder) {
@@ -748,14 +745,11 @@ export default function App() {
       window.speechSynthesis.speak(utterance);
     };
 
-    const ttsProvider = localStorage.getItem('jarvis_tts_provider') || 'webspeech';
-    
     if (ttsProvider === 'elevenlabs') {
       setCognitiveState('speaking');
       startCommsChannel();
       
-      const elevenLabsKey = localStorage.getItem('jarvis_elevenlabs_key') || '';
-      const payload = { text: spokenText, provider: 'elevenlabs', voiceProfile: securitySettings.voiceProfile, elevenLabsKey };
+      const payload = { text: spokenText, provider: 'elevenlabs', voiceProfile: securitySettings.voiceProfile, elevenLabsKey: elevenLabsRuntimeKey };
 
       fetch('/api/voice/tts', {
         method: 'POST',
@@ -939,6 +933,59 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const handleVoiceEngineUpdated = () => {
+      setSttProvider(localStorage.getItem('jarvis_stt_provider') || 'webspeech');
+      setTtsProvider(localStorage.getItem('jarvis_tts_provider') || 'webspeech');
+      setElevenLabsRuntimeKey(localStorage.getItem('jarvis_elevenlabs_key') || '');
+
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      stopCommsChannel();
+      setVoiceAmplitude(0);
+      setCognitiveState('idle');
+    };
+
+    window.addEventListener('voice-engine-updated', handleVoiceEngineUpdated);
+    return () => {
+      window.removeEventListener('voice-engine-updated', handleVoiceEngineUpdated);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isMicActive) return;
+    stopVoiceBridge();
+    const restartTimer = setTimeout(() => {
+      startVoiceBridge();
+    }, 0);
+
+    return () => {
+      clearTimeout(restartTimer);
+    };
+  }, [sttProvider]);
+
+  useEffect(() => {
+    const handleCachePurgeReset = () => {
+      const reset = createUiResetSnapshot();
+      setIsMicActive(reset.isMicActive);
+      setIsThinking(reset.isThinking);
+      setCognitiveState(reset.cognitiveState);
+      setVoiceAmplitude(reset.voiceAmplitude);
+      setPendingAction(reset.pendingAction);
+      setActionQueue(reset.actionQueue);
+      setIsExecutingAction(reset.isExecutingAction);
+      setWebrtcLogs(reset.webrtcLogs);
+      setWebrtcStats(reset.webrtcStats);
+      setLogs(reset.logs);
+    };
+
+    window.addEventListener(CACHE_PURGE_RESET_EVENT, handleCachePurgeReset);
+    return () => {
+      window.removeEventListener(CACHE_PURGE_RESET_EVENT, handleCachePurgeReset);
+    };
+  }, []);
+
   const handleToggleHermes = async () => {
     const next = !isHermesActive;
     
@@ -1091,7 +1138,7 @@ export default function App() {
                 }
               }
             } catch (err) {
-              console.warn("AST command safety validation failed, falling back to strict block", err);
+              console.warn("Command policy validation failed, falling back to strict block", err);
             }
           }
         }
@@ -1125,18 +1172,16 @@ export default function App() {
     } catch (e) {
       console.error(e);
       setCognitiveState('idle');
-      setTimeout(() => {
-        setIsThinking(false);
-        const fallbackText = isHermesActive
-          ? "Local FTS5 state engine is operational. Local skills repository loaded. To establish satellite links, configure OPENROUTER_API_KEY."
-          : "Satellite connection offline, sir. Verify your OpenRouter credentials inside your local .env configuration.";
-        
-        setLogs(prev => [...prev, `${isHermesActive ? 'HERMES' : 'JARVIS'}: ${fallbackText}`]);
-        speakText(fallbackText);
-      }, 800);
+      // Show error feedback immediately — no artificial delay
+      const fallbackText = isHermesActive
+        ? "Local FTS5 state engine is operational. Local skills repository loaded. To establish satellite links, configure OPENROUTER_API_KEY."
+        : "Satellite connection offline, sir. Verify your OpenRouter credentials inside your local .env configuration.";
+      setLogs(prev => [...prev, `${isHermesActive ? 'HERMES' : 'JARVIS'}: ${fallbackText}`]);
+      speakText(fallbackText);
     } finally {
       setIsThinking(false);
     }
+
   };
 
   // --- Execute Workspace Filesystem or OS Shell Command action directly ---

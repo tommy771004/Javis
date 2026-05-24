@@ -147,9 +147,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                 
                 window.dispatchEvent(new CustomEvent('append-sys-log', {
                     detail: {
-                        message: data.reactorOverdrive 
-                          ? "SYS: ARC REACTOR CONVERSION MATRIX OVERCHARGED TO 125% FORCE." 
-                          : "SYS: ARC REACTOR OUTPUT CALIBRATED TO NOMINAL 98%.",
+                        message: data.message ? `SYS: ${String(data.message).toUpperCase()}` : "SYS: REACTOR OVERDRIVE VISUALIZATION UPDATED.",
                         speak: data.speak
                     }
                 }));

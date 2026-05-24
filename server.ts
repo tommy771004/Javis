@@ -7,7 +7,9 @@ import crypto from "crypto";
 import { exec, spawn, ChildProcess } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { fetchOpenRouterWithFallback, parseAndRepairJSON } from "./openRouterHelper";
+import { getReactorOverdriveRuntime, normalizeMeasuredPowerWatts, resolveAutoRepairCpuTarget, resolveEffectiveShellMode } from "./serverRuntimePolicies";
 import { serverDB, DB_KEY_FINGERPRINT } from "./serverDb";
+import { resolveSecurityAuditTransportLabel } from "./src/services/settingsIntegrationPolicies";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -16,103 +18,26 @@ let reactorOverdrive = false;
 let satelliteLinked = true;
 let corePower = 98;
 
-// Internal Background Computations for True Overdrive
-let overdriveWorkerObjs: any[] = [];
-import { Worker } from "worker_threads";
+// Legacy overdrive workers are kept only so shutdown paths can safely terminate any pre-existing handles.
+let overdriveWorkerObjs: Array<{ terminate: () => unknown }> = [];
 
 function toggleTrueOverdriveWorker(active: boolean) {
-  if (active) {
-    serverDB.addSystemLog('SYS', 'WARN', 'Overdrive active: Spawning physical compute workers to perform deep codebase and dependency FTS index parsing.');
-    try {
-       os.setPriority(os.constants.priority.PRIORITY_HIGH);
-    } catch(e) {}
-    const cores = os.cpus().length || 1;
-    for (let i = 0; i < cores; i++) {
-        const workerCode = `
-          const fs = require('fs');
-          const path = require('path');
-          const { parentPort } = require('worker_threads');
+  const runtime = getReactorOverdriveRuntime(active);
+  serverDB.addSystemLog('SYS', 'INFO', runtime.systemLog);
 
-          function walkDir(dir) {
-            let results = [];
-            try {
-              const list = fs.readdirSync(dir);
-              for (let file of list) {
-                const fullPath = path.join(dir, file);
-                const stat = fs.statSync(fullPath);
-                if (stat && stat.isDirectory()) {
-                  if (!fullPath.includes('.git')) {
-                     results = results.concat(walkDir(fullPath));
-                  }
-                } else {
-                  if (file.endsWith('.ts') || file.endsWith('.tsx') || file.endsWith('.js') || file.endsWith('.d.ts')) {
-                    results.push(fullPath);
-                  }
-                }
-              }
-            } catch(e) {}
-            return results;
-          }
+  try {
+    os.setPriority(
+      runtime.setHighPriority
+        ? os.constants.priority.PRIORITY_HIGH
+        : os.constants.priority.PRIORITY_NORMAL
+    );
+  } catch (e) {}
 
-          const allFiles = walkDir(process.cwd());
-          
-          for (let i = allFiles.length - 1; i > 0; i--) {
-              const j = Math.floor(Math.random() * (i + 1));
-              [allFiles[i], allFiles[j]] = [allFiles[j], allFiles[i]];
-          }
-
-          let fileIndex = 0;
-          setInterval(() => {
-            for(let i = 0; i < 20; i++) {
-                if (fileIndex >= allFiles.length) fileIndex = 0;
-                if (allFiles.length === 0) return;
-                
-                const filePath = allFiles[fileIndex];
-                fileIndex++;
-                
-                try {
-                   const content = fs.readFileSync(filePath, 'utf8');
-                   const funcRegex = /(?:function|const|let|class|interface|type)\\s+([a-zA-Z0-9_]+)\\s*(?:=|\\(|<|extends|implements|\\{)/g;
-                   let match;
-                   let extractedSymbols = [];
-                   while ((match = funcRegex.exec(content)) !== null) {
-                      if(match[1].length > 2) extractedSymbols.push(match[1]);
-                   }
-                   
-                   if(extractedSymbols.length > 0) {
-                      if (Math.random() < 0.05) { // Only stream 5% back to avoid main thread starvation
-                          parentPort.postMessage({
-                             type: 'symbol_chunk',
-                             file: filePath.replace(process.cwd(), ''),
-                             symbols: extractedSymbols.slice(0, 15).join(', ')
-                          });
-                      }
-                   }
-                } catch(e) {}
-            }
-          }, 10);
-        `;
-        try {
-          const w = new Worker(workerCode, { eval: true });
-          w.on('message', (msg) => {
-            if (msg.type === 'symbol_chunk') {
-               serverDB.addDeepIndex(`Codebase Matrix [${msg.file}]`, `Symbols extracted: ${msg.symbols}`);
-            }
-          });
-          overdriveWorkerObjs.push(w);
-        } catch(e) {}
-    }
-  } else {
-    serverDB.addSystemLog('SYS', 'INFO', 'Overdrive deactivated: Terminating hardware stress workers and normalizing process priority.');
-    try {
-       os.setPriority(os.constants.priority.PRIORITY_NORMAL);
-    } catch(e) {}
-    if (overdriveWorkerObjs.length > 0) {
-      overdriveWorkerObjs.forEach(w => {
-        try { w.terminate(); } catch(e) {}
-      });
-      overdriveWorkerObjs = [];
-    }
+  if (overdriveWorkerObjs.length > 0) {
+    overdriveWorkerObjs.forEach(w => {
+      try { w.terminate(); } catch (e) {}
+    });
+    overdriveWorkerObjs = [];
   }
 }
 // --- Targeted Webhook Dispatcher ---
@@ -216,18 +141,7 @@ async function updateSystemInformationSensors() {
         if (vNum > 0) siCpuVoltage = vNum;
       }
 
-      // Advanced motherboard/TDP wattage calculation based on real cores and CPU loads
-      const cores = cpuObj.cores || os.cpus().length || 4;
-      const currentSpeedGHz = cpuSpeedObj.avg || 2.5;
-      const maxSpeedGHz = cpuObj.speedMax || 3.5;
-      const loadFactor = computedCpuUsage / 100;
-
-      const baseW = 10; // basic motherboard power chipset
-      const coreTDP = cores * 12; // 12W average TDP per core on modern processors
-      const frequencyRatio = maxSpeedGHz > 0 ? (currentSpeedGHz / maxSpeedGHz) : 0.8;
-      const calculatedPower = baseW + (coreTDP * loadFactor * frequencyRatio);
-      
-      siPower = parseFloat(calculatedPower.toFixed(1));
+      siPower = normalizeMeasuredPowerWatts((cpuObj as { power?: number | null }).power);
     } catch (e) {}
 
   } catch (err) {
@@ -388,7 +302,7 @@ let cachedSecurityAudit: SecurityAuditResult = {
   authIsolation: "92.0%",
   workspaceSandboxed: "Host-Secured",
   encryption: "AES-128 / RSA-2048",
-  port: "WSS-3000",
+  port: "SSE /api/system/stream",
   sandboxControl: "HOST-UNSECURED",
   details: {
     defenderActive: false,
@@ -581,7 +495,7 @@ export async function runSecurityAudit(): Promise<SecurityAuditResult> {
   // algorithm is the actual AES-256-GCM used by ServerPersistenceEngine.
   const encryption = `AES-256-GCM / at-rest [KEY:${DB_KEY_FINGERPRINT}]`;
 
-  const port = `WSS-3000`;
+  const port = resolveSecurityAuditTransportLabel('/api/system/stream');
 
   const sandboxControl = isDocker
     ? "DOCKER-ISOLATED"
@@ -1030,7 +944,7 @@ export function helperValidateCommand(command: string): { safe: boolean; reason:
     // Block invocation operators to prevent variable splicing execution (e.g. & $a or . $b)
     if (primaryVerb === '&' || primaryVerb === '.') {
       isSafe = false;
-      reason = "Script invocation operators (&, .) are strictly blocked to prevent AST obfuscation bypasses.";
+      reason = "Script invocation operators (&, .) are strictly blocked to prevent command obfuscation bypasses.";
       break;
     }
 
@@ -2085,7 +1999,9 @@ User: Evolve the skill.`;
   // --- Windows Native Shell Command Endpoint (PowerShell / CMD / Start) ---
   app.post("/api/system/shell", async (req, res) => {
     try {
-      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode = 'manual', ticketId } = req.body;
+      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode: requestedShellMode, ticketId } = req.body;
+      const persistedShellMode = serverDB.getSettings().shellMode;
+      const shellMode = resolveEffectiveShellMode(requestedShellMode, persistedShellMode);
       
       if (!command || typeof command !== 'string') {
         return res.status(400).json({ error: 'Missing command parameter' });
@@ -2107,7 +2023,7 @@ User: Evolve the skill.`;
       const isolationScore = parseFloat(cachedSecurityAudit.authIsolation);
       const isStrictSandbox = isolationScore < 60.0;
 
-      // HERMES Guard physical command validation check
+      // HERMES Guard token/allowlist command validation check
       if (isStrictSandbox || shellMode === 'manual' || shellMode === 'safe') {
         const validation = helperValidateCommand(command);
         if (isStrictSandbox && !validation.safe) {
@@ -2117,7 +2033,7 @@ User: Evolve the skill.`;
             error: "Forbidden",
             code: "HERMES_GUARD_INTERCEPT",
             reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Low Sandbox Isolation (${isolationScore}%) forces SAFE mode. Details: ${validation.reason}`,
-            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: FORCED STRICT (Score: ${isolationScore}%)\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: FORCED STRICT (Score: ${isolationScore}%)\nMatrix Interception: Command violates strict local command policy rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
           });
         } else if (!isStrictSandbox && !validation.safe && shellMode === 'safe') {
           serverDB.addSystemLog('SEC', 'ERROR', `PHYSICAL COMMAND BLOCK: System is running in SAFE security mode. Executing '${command}' has been blocked by HERMES Guard Security Policy. Reason: ${validation.reason}`);
@@ -2126,7 +2042,7 @@ User: Evolve the skill.`;
             error: "Forbidden",
             code: "HERMES_GUARD_INTERCEPT",
             reason: `[物理攔截代碼 403 / PHYS_INTERCEPT]: Command blocked under SAFE mode safety policy. Details: ${validation.reason}`,
-            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: SAFE\nMatrix Interception: Command violates strict local AST rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
+            stderr: `[HERMES-GUARD SECURITY CHK] BLOCKED (Code: 403)\nSafety Mode: SAFE\nMatrix Interception: Command violates strict local command policy rules.\nBlocked Statement: "${command}"\nReason: ${validation.reason}\n`
           });
         }
       }
@@ -2784,7 +2700,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     }
   });
 
-  // --- HERMES Guard AST Command Safety Filter ---
+  // --- HERMES Guard Command Policy Validation Filter ---
   app.post("/api/system/validate-command", (req, res) => {
     try {
       const { command } = req.body;
@@ -2792,13 +2708,13 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         return res.status(400).json({ error: "Missing command parameter" });
       }
 
-      serverDB.addSystemLog('SEC', 'INFO', `Analyzing shell command structures for safety validations...`);
+      serverDB.addSystemLog('SEC', 'INFO', `Analyzing shell command structures against local command policy...`);
       const { safe, reason } = helperValidateCommand(command);
 
       if (safe) {
-        serverDB.addSystemLog('SEC', 'SUCCESS', 'HERMES Guard AST Filter: Command structure validated as 100% safe.');
+        serverDB.addSystemLog('SEC', 'SUCCESS', 'HERMES Guard Command Policy: Command structure validated as safe.');
       } else {
-        serverDB.addSystemLog('SEC', 'WARN', `HERMES Guard AST Filter: Command blocked! Reason: ${reason}`);
+        serverDB.addSystemLog('SEC', 'WARN', `HERMES Guard Command Policy: Command blocked. Reason: ${reason}`);
       }
 
       res.json({
@@ -3126,19 +3042,15 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       if (command === "overdrive") {
         reactorOverdrive = !reactorOverdrive;
         toggleTrueOverdriveWorker(reactorOverdrive);
-        corePower = reactorOverdrive ? 125 : 98;
-        serverDB.addSystemLog('SEC', 'WARN', `Database query router capacity boosted to ${reactorOverdrive ? '125%' : '98% nominal'}. Direct CPU core stress applied.`);
+        const runtime = getReactorOverdriveRuntime(reactorOverdrive);
+        corePower = runtime.corePower;
         broadcastMcpEvent('SYSTEM_ALERT', { alert: 'OVERDRIVE_TOGGLED', active: reactorOverdrive });
         return res.json({ 
           success: true, 
           reactorOverdrive,
           corePower,
-          message: reactorOverdrive 
-            ? "Database processing router thread capacity boosted to 125% limit." 
-            : "Database thread router level normalized to safety threshold.",
-          speak: reactorOverdrive 
-            ? "Database scaling thread boosted to one hundred and twenty-five percent capacity." 
-            : "Scaling thread levels normalized."
+          message: runtime.apiMessage,
+          speak: runtime.speak
         });
       }
       
@@ -3868,18 +3780,11 @@ JARVIS Synthesis:`;
         const freeMem = os.freemem();
         const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
         
-        let targetCpu = computedCpuUsage;
-        if (reactorOverdrive) {
-          targetCpu = 95; // Simulated extreme load when overdrive is active
-        }
+        const targetCpu = resolveAutoRepairCpuTarget(computedCpuUsage, reactorOverdrive);
 
         let isSystemUnstable = false;
         const reasons: string[] = [];
 
-        if (reactorOverdrive) {
-          isSystemUnstable = true;
-          reasons.push("Overdrive Thermal Excitation");
-        }
         if (targetCpu >= 85) {
           isSystemUnstable = true;
           reasons.push(`High core processor pressure (${targetCpu}%)`);
@@ -3896,7 +3801,7 @@ JARVIS Synthesis:`;
           if (reactorOverdrive) {
             reactorOverdrive = false;
             toggleTrueOverdriveWorker(false);
-            serverDB.addSystemLog('SYS', 'WARN', 'Auto-Repair Daemon: Successfully disabled Reactor Overdrive and closed spin worker threads.');
+            serverDB.addSystemLog('SYS', 'WARN', 'Auto-Repair Daemon: Disabled Reactor Overdrive visualization mode and returned controls to nominal state.');
           }
 
           // Force DB persist cache flush
@@ -3906,7 +3811,7 @@ JARVIS Synthesis:`;
           // Reset baseline hardware simulation counters
           shieldActive = false;
           corePower = 98;
-                    computedCpuUsage = 12; // Cooled baseline
+          computedCpuUsage = 12; // Cooled baseline
 
           serverDB.addSystemLog('SYS', 'SUCCESS', 'Auto-Repair Daemon: Subsystem normalizing sequence completed. Status: green (nominal).');
         }

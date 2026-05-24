@@ -6,10 +6,12 @@ import {
   Info, Brain, Radio, HelpCircle, Activity, Sparkles, Check, Server, Monitor,
   Trash2, Zap
 } from 'lucide-react';
-import { useI18n } from '../services/i18n';
+import { getTranslations, useI18n } from '../services/i18n';
 import { JarvisLogo } from './JarvisLogo';
 import { apiClient } from '../services/apiClient';
 import { playTactileClick } from '../services/audioSynth';
+import { CACHE_PURGE_RESET_EVENT } from '../services/uiResetPolicies';
+import { formatCliPackageMap, parseCliPackageMapInput } from '../services/settingsIntegrationPolicies';
 
 export interface SecuritySettings {
   shellMode: 'manual' | 'safe' | 'auto';
@@ -33,6 +35,7 @@ export interface SecuritySettings {
   alwaysOnTop?: boolean;
   launchOnStartup?: boolean;
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
+  cliPackageMap?: Record<string, string>;
   // Provider API keys stored in encrypted DB
   openrouterKey?: string;
   openaiKey?: string;
@@ -190,6 +193,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   
   const [newRoutineName, setNewRoutineName] = useState('');
   const [newRoutinePrompt, setNewRoutinePrompt] = useState('');
+  const [cliPackageMapText, setCliPackageMapText] = useState<string>(formatCliPackageMap({}));
+  const [cliPackageMapStatus, setCliPackageMapStatus] = useState<string>('');
 
   const [supportedModels, setSupportedModels] = useState<{id: string, name: string, defaultPrompt?: string}[]>([
     { id: "google/gemini-2.5-flash", name: "google/gemini-2.5-flash" }
@@ -256,6 +261,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
         .then(data => {
           if (data) {
             setSettings({ ...DEFAULT_SETTINGS, ...data });
+            setCliPackageMapText(formatCliPackageMap(data.cliPackageMap));
 
             // Mirror DB → state AND localStorage so subsequent reads are consistent
             const applyAndCache = (lsKey: string, setter: (v: string) => void, value: string | undefined) => {
@@ -291,7 +297,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           // Backend unreachable — fall back to localStorage as secondary source
           console.warn('[Settings] Backend unreachable, falling back to localStorage:', err);
           const stored = localStorage.getItem('jarvis_security_settings');
-          if (stored) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
+          if (stored) {
+            const parsed = { ...DEFAULT_SETTINGS, ...JSON.parse(stored) };
+            setSettings(parsed);
+            setCliPackageMapText(formatCliPackageMap(parsed.cliPackageMap));
+          }
 
           const fallback = (lsKey: string, setter: (v: string) => void, def?: string) => {
             const v = localStorage.getItem(lsKey) || def;
@@ -360,26 +370,26 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
   if (!isOpen) return null;
 
-    const handleShellChange = (mode: 'manual' | 'safe' | 'auto') => {
+  const handleShellChange = (mode: 'manual' | 'safe' | 'auto') => {
     const updated = { ...settings, shellMode: mode };
     saveSettings(updated);
 
-    let feedback = "Authorization protocol shift complete.";
-    if (mode === 'auto') {
-      feedback = "Full system automated intervention code is now active. Maximum authorization cleared.";
-    } else if (mode === 'safe') {
-      feedback = "I will run system diagnosis of informational statements autonomously.";
-    }
+    const feedback =
+      mode === 'auto'
+        ? t.logShellSpeakAuto
+        : mode === 'safe'
+          ? t.logShellSpeakSafe
+          : t.logShellSpeakManual;
 
-    triggerLog(`SYS: SHELL INTERACTION LEVEL SET TO ${mode.toUpperCase()}`, feedback);
+    triggerLog(t.logShellMessage(mode.toUpperCase()), feedback);
   };
 
   const handleWriteChange = (mode: 'manual' | 'auto') => {
     const updated = { ...settings, writeMode: mode };
     saveSettings(updated);
     triggerLog(
-      `SYS: FILESYSTEM PROTECTION SHIFTED TO ${mode.toUpperCase()}`, 
-      mode === 'auto' ? "Workspace boundaries set to auto write, sir." : "Standard review active, sir."
+      t.logWriteMessage(mode.toUpperCase()),
+      mode === 'auto' ? t.logWriteSpeakAuto : t.logWriteSpeakManual
     );
   };
 
@@ -387,8 +397,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     const updated = { ...settings, taskMode: mode };
     saveSettings(updated);
     triggerLog(
-      `SYS: TASK TRACKER POLICY UPDATED TO ${mode.toUpperCase()}`,
-      "Affirmative. Task database matrix updated."
+      t.logTaskMessage(mode.toUpperCase()),
+      t.logTaskSpeak
     );
   };
 
@@ -420,14 +430,14 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     // Persist to backend encrypted DB so the preference survives process restarts
     const updated = { ...settings, activeSkin: skin };
     saveSettings(updated);
-    triggerLog(`SYS: UI theme changed to "${skin}". Preference persisted to database.enc.`);
+    triggerLog(t.logSkinMessage(skin));
   };
 
   const handleDesktopToggle = async (type: 'always-on-top' | 'startup', enabled: boolean) => {
     if (type === 'always-on-top') {
       setAlwaysOnTop(enabled);
       localStorage.setItem('jarvis_always_on_top', enabled ? 'true' : 'false');
-      triggerLog(`SYS: OS DESKTOP OVERLAY SET TO ${enabled ? 'LOCKED' : 'UNLOCKED'}`, `Overlay preference is ${enabled ? 'active' : 'disabled'} for this session.`);
+      triggerLog(t.logDesktopOverlayMessage(enabled), t.logDesktopOverlaySpeak(enabled));
       
       await fetch('/api/system/control', {
         method: 'POST',
@@ -437,7 +447,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     } else {
       setLaunchOnStartup(enabled);
       localStorage.setItem('jarvis_launch_on_startup', enabled ? 'true' : 'false');
-      triggerLog(`SYS: OS BOOT SEQUENCE REGISTRY SET TO ${enabled ? 'ACTIVE' : 'INACTIVE'}`, `Core system boot preference updated.`);
+      triggerLog(t.logDesktopStartupMessage(enabled), t.logDesktopStartupSpeak);
       
       await fetch('/api/system/control', {
         method: 'POST',
@@ -450,13 +460,15 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const handleVoiceChange = (profile: 'baritone' | 'fast' | 'standard') => {
     const updated = { ...settings, voiceProfile: profile };
     saveSettings(updated);
+    const feedback =
+      profile === 'baritone'
+        ? t.logVoiceSpeakBaritone
+        : profile === 'fast'
+          ? t.logVoiceSpeakFast
+          : t.logVoiceSpeakStandard;
     triggerLog(
-      `SYS: VOICE HARMONIZATION MATRIX ALTERED TO ${profile.toUpperCase()}`,
-      profile === 'baritone' 
-        ? "Dynamic pitch resonance frequency set to British Baritone, sir." 
-        : profile === 'fast' 
-          ? "Intel profile activated." 
-          : "Standard default speech module standby."
+      t.logVoiceMessage(profile.toUpperCase()),
+      feedback
     );
   };
 
@@ -483,6 +495,24 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       `SYS: BYOK API PARAMETERS UPDATE. MODEL: ${openRouterModel}`,
       `Protocol Adapter: ${openRouterProtocol.toUpperCase()}`
     );
+  };
+
+  const handleSaveCliPackageMap = async () => {
+    try {
+      const parsedMap = parseCliPackageMapInput(cliPackageMapText);
+      const updated = { ...settings, cliPackageMap: parsedMap };
+      await saveSettings(updated);
+      setCliPackageMapText(formatCliPackageMap(parsedMap));
+      setCliPackageMapStatus(locale === 'zh-TW' ? 'CLI 套件來源對映已儲存。' : 'CLI package map saved.');
+      triggerLog(
+        `SYS: CLI PACKAGE MAP UPDATED. ${Object.keys(parsedMap).length} ROUTES ACTIVE.`,
+        locale === 'zh-TW' ? 'CLI 套件來源對映已同步。' : 'CLI package source mappings synchronized.'
+      );
+    } catch (e: any) {
+      const msg = e?.message || 'Invalid CLI package map JSON.';
+      setCliPackageMapStatus(msg);
+      triggerLog(`SYS: CLI PACKAGE MAP REJECTED. ${msg}`);
+    }
   };
 
   const handleSelectCLI = async (cliId: string) => {
@@ -825,6 +855,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const resp = await fetch("/api/system/purge-cache", { method: "POST" });
       const data = await resp.json();
       if (data.success) {
+        window.dispatchEvent(new Event(CACHE_PURGE_RESET_EVENT));
         triggerLog("SYS: CACHE PURGE SUCCESSFUL. DATABASE RELOADED.", "System cache has been successfully purged, sir.");
       } else {
         throw new Error(data.error || "Purge Failed");
@@ -1232,6 +1263,38 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         );
                       })}
                     </div>
+
+                    <div className="border border-cyan-950 bg-cyan-950/5 rounded p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex flex-col">
+                          <span className="text-[11px] font-bold text-cyan-300 uppercase tracking-widest">CLI Package Map</span>
+                          <span className="text-[9px] text-cyan-600/80">
+                            {locale === 'zh-TW'
+                              ? '編輯背景安裝 CLI 時使用的 npm 套件來源對映表。'
+                              : 'Edit the package source map used for background CLI installs.'}
+                          </span>
+                        </div>
+                        <button
+                          onClick={handleSaveCliPackageMap}
+                          className="px-3 py-1.5 text-[10px] bg-cyan-950 text-cyan-300 border border-cyan-800 hover:border-cyan-500 hover:text-white transition-all cursor-pointer font-bold uppercase tracking-wider"
+                        >
+                          SAVE MAP
+                        </button>
+                      </div>
+                      <textarea
+                        value={cliPackageMapText}
+                        onChange={(e) => {
+                          setCliPackageMapText(e.target.value);
+                          if (cliPackageMapStatus) setCliPackageMapStatus('');
+                        }}
+                        className="w-full min-h-[140px] bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
+                      />
+                      <span className={`text-[9px] ${cliPackageMapStatus && !/saved|儲存/.test(cliPackageMapStatus) ? 'text-red-400' : 'text-cyan-600/80'}`}>
+                        {cliPackageMapStatus || (locale === 'zh-TW'
+                          ? '例如：{"cursor-agent":"cursor","devin":"devin"}'
+                          : 'Example: {"cursor-agent":"cursor","devin":"devin"}')}
+                      </span>
+                    </div>
                   </div>
                 )}
 
@@ -1257,15 +1320,23 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
                       <div className="flex flex-col gap-1.5">
                         <label className="text-[10px] text-cyan-500 uppercase tracking-wider">{t.lblPreferredModel}</label>
-                        <select
+                        <input
+                          list="supported-models"
                           value={openRouterModel}
                           onChange={(e) => setOpenRouterModel(e.target.value)}
+                          placeholder={openRouterProtocol === 'ollama' ? 'llama3:8b' : 'google/gemini-2.5-flash'}
                           className="w-full bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500 cursor-pointer"
-                        >
+                        />
+                        <datalist id="supported-models">
                           {supportedModels.map(m => (
                             <option key={m.id} value={m.id}>{m.name}</option>
                           ))}
-                        </select>
+                        </datalist>
+                        <span className="text-[9px] text-cyan-600/80">
+                          {openRouterProtocol === 'ollama'
+                            ? 'Enter any local Ollama model tag, for example llama3:8b or qwen2.5-coder:7b.'
+                            : 'Pick a suggested model or type any custom/local model id manually.'}
+                        </span>
                       </div>
 
                       <div className="flex flex-col gap-1.5">
@@ -1286,7 +1357,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                             type="text"
                             value={openRouterEndpoint}
                             onChange={(e) => setOpenRouterEndpoint(e.target.value)}
-                            placeholder="https://openrouter.ai/api/v1"
+                            placeholder={openRouterProtocol === 'ollama' ? 'http://localhost:11434' : 'https://openrouter.ai/api/v1'}
                             className="flex-1 bg-slate-950 border border-cyan-950/80 p-2.5 rounded text-[11px] text-cyan-300 focus:outline-none focus:border-cyan-500"
                           />
                         </div>
@@ -1642,7 +1713,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         value={localStorage.getItem('jarvis_stt_provider') || 'webspeech'}
                         onChange={(e) => {
                           localStorage.setItem('jarvis_stt_provider', e.target.value);
-                          triggerLog(`SYS: STT ENGINE SWITCHED TO ${e.target.value.toUpperCase()}`);
+                          triggerLog(t.logSttEngineMessage(e.target.value.toUpperCase()));
                           // Dispatch event to app
                           window.dispatchEvent(new Event('voice-engine-updated'));
                         }}
@@ -1659,7 +1730,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         value={localStorage.getItem('jarvis_tts_provider') || 'webspeech'}
                         onChange={(e) => {
                           localStorage.setItem('jarvis_tts_provider', e.target.value);
-                          triggerLog(`SYS: TTS ENGINE SWITCHED TO ${e.target.value.toUpperCase()}`);
+                          triggerLog(t.logTtsEngineMessage(e.target.value.toUpperCase()));
                           window.dispatchEvent(new Event('voice-engine-updated'));
                         }}
                         className="bg-slate-950 border border-cyan-950 text-[10px] text-cyan-300 rounded p-1"
@@ -1719,7 +1790,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <button 
                       onClick={() => {
                         setLocale('zh-TW');
-                        triggerLog("SYS: LOCALE SET TO ZH_TW.", "Localized Traditional Chinese set, sir.");
+                        const nextTranslations = getTranslations('zh-TW');
+                        triggerLog(nextTranslations.logLocaleZhTwMessage, nextTranslations.logLocaleZhTwSpeak);
                       }}
                       className={`p-2 border rounded text-[10.5px] font-bold uppercase text-center cursor-pointer transition-all ${
                         locale === 'zh-TW'
@@ -1732,7 +1804,8 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <button 
                       onClick={() => {
                         setLocale('en');
-                        triggerLog("SYS: LOCALE SET TO EN_US.", "Speech and HUD interfaces adjusted to English, sir.");
+                        const nextTranslations = getTranslations('en');
+                        triggerLog(nextTranslations.logLocaleEnMessage, nextTranslations.logLocaleEnSpeak);
                       }}
                       className={`p-2 border rounded text-[10.5px] font-bold uppercase text-center cursor-pointer transition-all ${
                         locale === 'en'
