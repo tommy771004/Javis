@@ -115,15 +115,19 @@ const compactProviderError = (status: number, rawText: string) => {
 };
 
 export async function fetchOpenRouterWithFallback(
-  apiKey: string, 
-  prompt: string, 
+  apiKey: string,
+  prompt: string,
   validator?: (text: string) => string,
   requestedModel?: string,
   apiEndpoint?: string,
   protocol: string = "openrouter",
   customBodyTemplate?: string,
   customResponsePath?: string,
-  routingPolicy: string = "auto"
+  routingPolicy: string = "auto",
+  /** Pass the system instruction as a separate string so prompt caching never
+   *  needs to rely on heuristic string splitting. When provided, `prompt`
+   *  is treated as the user-turn only. */
+  explicitSystemPrompt?: string
 ) {
   let lastError: Error | null = null;
 
@@ -145,38 +149,62 @@ export async function fetchOpenRouterWithFallback(
 
   const modelsToTry = requestedModel ? [requestedModel, ...targetFallbackModels] : targetFallbackModels;
 
-  // Split prompt into system (context) and user parts for prompt caching
-  const systemMarker = "System:";
-  const userMarker = "User:";
+
+  // ---------------------------------------------------------------------------
+  // Build messages payload — robust split that never mis-fires on user content
+  // ---------------------------------------------------------------------------
+  // Priority 1: caller supplied an explicit systemPrompt (zero ambiguity)
+  // Priority 2: legacy single-string format "System: ... User: ..."
+  //             → only split on the FIRST occurrence of each sentinel so that
+  //               user content containing "User:" or "System:" is harmless.
+  // Priority 3: treat entire string as a single user message.
   let messagesPayload: any[] = [];
 
-  if (prompt.includes(systemMarker) && prompt.includes(userMarker)) {
-    const sysStart = prompt.indexOf(systemMarker) + systemMarker.length;
-    const userStart = prompt.lastIndexOf(userMarker);
-    
-    // Everything between first System: and last User: is the system instruction / context
-    const systemContent = prompt.substring(sysStart, userStart).trim();
-    // Everything after the last User: is the actual user query
-    const userContent = prompt.substring(userStart + userMarker.length).trim();
+  let resolvedSystem = "";
+  let resolvedUser = prompt;
 
+  if (explicitSystemPrompt) {
+    // Caller explicitly separated concerns — safest path.
+    resolvedSystem = explicitSystemPrompt.trim();
+    resolvedUser = prompt.trim();
+  } else {
+    // Legacy heuristic: split only on the FIRST "System:" and FIRST "User:"
+    // anchored at the very start of those tokens (case-sensitive, trimmed).
+    const sysToken = "System:";
+    const userToken = "\nUser:";
+    const sysIdx = prompt.indexOf(sysToken);
+    const userIdx = prompt.indexOf(userToken, sysIdx !== -1 ? sysIdx + sysToken.length : 0);
+
+    if (sysIdx !== -1 && userIdx !== -1) {
+      resolvedSystem = prompt.substring(sysIdx + sysToken.length, userIdx).trim();
+      resolvedUser = prompt.substring(userIdx + userToken.length).trim();
+    } else if (sysIdx !== -1) {
+      // Only System: marker found, no User: — treat remainder as system only.
+      resolvedSystem = prompt.substring(sysIdx + sysToken.length).trim();
+      resolvedUser = "";
+    }
+    // If neither marker found, resolvedSystem stays "" and resolvedUser = prompt
+  }
+
+  if (resolvedSystem) {
     messagesPayload = [
       {
         role: "system",
         content: [
           {
             type: "text",
-            text: systemContent,
+            text: resolvedSystem,
             cache_control: { type: "ephemeral" } // Prompt caching trigger
           }
         ]
       },
       {
         role: "user",
-        content: userContent
+        content: resolvedUser
       }
     ];
   } else {
-    messagesPayload = [{ role: "user", content: prompt }];
+    messagesPayload = [{ role: "user", content: resolvedUser || prompt }];
   }
 
   for (const model of modelsToTry) {
@@ -214,14 +242,8 @@ export async function fetchOpenRouterWithFallback(
           }
         }
 
-        let systemPrompt = "";
-        let userPrompt = prompt;
-        if (prompt.includes("System:") && prompt.includes("User:")) {
-          const sysStart = prompt.indexOf("System:") + "System:".length;
-          const userStart = prompt.indexOf("User:");
-          systemPrompt = prompt.substring(sysStart, userStart).trim();
-          userPrompt = prompt.substring(userStart + "User:".length).trim();
-        }
+        let systemPrompt = resolvedSystem;
+        let userPrompt = resolvedUser || prompt;
 
         const headers: { [key: string]: string } = {
           'Content-Type': 'application/json'

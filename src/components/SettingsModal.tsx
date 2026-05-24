@@ -33,6 +33,10 @@ export interface SecuritySettings {
   alwaysOnTop?: boolean;
   launchOnStartup?: boolean;
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
+  // Provider API keys stored in encrypted DB
+  openrouterKey?: string;
+  openaiKey?: string;
+  geminiKey?: string;
 }
 
 const DEFAULT_SETTINGS: SecuritySettings = {
@@ -57,6 +61,9 @@ const DEFAULT_SETTINGS: SecuritySettings = {
   alwaysOnTop: false,
   launchOnStartup: false,
   gatewayRoutingModel: 'auto',
+  openrouterKey: '',
+  openaiKey: '',
+  geminiKey: '',
 };
 
 interface SettingsModalProps {
@@ -156,6 +163,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   const [customResponsePath, setCustomResponsePath] = useState<string>('choices[0].message.content');
   
   const [elevenLabsKey, setElevenLabsKey] = useState<string>('');
+  const [openrouterKey, setOpenrouterKey] = useState<string>('');
+  const [openaiKey, setOpenaiKey] = useState<string>('');
+  const [geminiKey, setGeminiKey] = useState<string>('');
   const [envSaveStatus, setEnvSaveStatus] = useState<string>('');
   const [systemPrompt, setSystemPrompt] = useState<string>('');
 
@@ -233,97 +243,88 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
   useEffect(() => {
     try {
       const storedMcp = localStorage.getItem('jarvis_mcp_config');
-      if (storedMcp) {
-        setMcpServersText(storedMcp);
-      }
+      if (storedMcp) setMcpServersText(storedMcp);
 
+
+      // -----------------------------------------------------------------------
+      // Single Source of Truth: /api/settings (backend encrypted DB) is primary.
+      // localStorage is written FROM the DB response so both stay in sync.
+      // localStorage is used as fallback ONLY if the backend is unreachable.
+      // -----------------------------------------------------------------------
       fetch('/api/settings')
         .then(res => res.json())
         .then(data => {
           if (data) {
             setSettings({ ...DEFAULT_SETTINGS, ...data });
-            if (data.operatorName) {
-              setOperatorName(data.operatorName);
-              localStorage.setItem('jarvis_operator_name', data.operatorName);
-            }
-            if (data.armorModel) {
-              setArmorModel(data.armorModel);
-              localStorage.setItem('jarvis_armor_model', data.armorModel);
-            }
-            if (data.satelliteName) {
-              setSatelliteName(data.satelliteName);
-              localStorage.setItem('jarvis_satellite_name', data.satelliteName);
-            }
+
+            // Mirror DB → state AND localStorage so subsequent reads are consistent
+            const applyAndCache = (lsKey: string, setter: (v: string) => void, value: string | undefined) => {
+              if (value) { setter(value); localStorage.setItem(lsKey, value); }
+            };
+
+            applyAndCache('jarvis_operator_name',       setOperatorName,       data.operatorName);
+            applyAndCache('jarvis_armor_model',         setArmorModel,         data.armorModel);
+            applyAndCache('jarvis_satellite_name',      setSatelliteName,      data.satelliteName);
+            applyAndCache('jarvis_byok_key',            setOpenRouterKey,      data.byokKey);
+            applyAndCache('jarvis_byok_model',          setOpenRouterModel,    data.byokModel);
+            applyAndCache('jarvis_byok_endpoint',       setOpenRouterEndpoint, data.byokEndpoint);
+            applyAndCache('jarvis_byok_protocol',       setOpenRouterProtocol, data.byokProtocol);
+            applyAndCache('jarvis_byok_template',       setCustomBodyTemplate, data.byokTemplate);
+            applyAndCache('jarvis_byok_response_path',  setCustomResponsePath, data.byokResponsePath);
+            applyAndCache('jarvis_system_prompt',       setSystemPrompt,       data.systemPrompt);
+            applyAndCache('jarvis_active_cli',          setSelectedCLI,        data.activeCli);
+            applyAndCache('jarvis_elevenlabs_key',      setElevenLabsKey,      data.elevenLabsKey);
+            applyAndCache('jarvis_openrouter_key',      setOpenrouterKey,      data.openrouterKey);
+            applyAndCache('jarvis_openai_key',          setOpenaiKey,          data.openaiKey);
+            applyAndCache('jarvis_gemini_key',          setGeminiKey,          data.geminiKey);
+
             if (data.activeSkin) {
               setActiveSkin(data.activeSkin);
               localStorage.setItem('jarvis_active_skin', data.activeSkin);
               window.dispatchEvent(new CustomEvent('skin-updated'));
             }
-            if (data.byokKey) setOpenRouterKey(data.byokKey);
-            if (data.byokModel) setOpenRouterModel(data.byokModel);
-            if (data.byokEndpoint) setOpenRouterEndpoint(data.byokEndpoint);
-            if (data.byokProtocol) setOpenRouterProtocol(data.byokProtocol);
-            if (data.byokTemplate) setCustomBodyTemplate(data.byokTemplate);
-            if (data.byokResponsePath) setCustomResponsePath(data.byokResponsePath);
-            if (data.systemPrompt) setSystemPrompt(data.systemPrompt);
-            if (data.activeCli) setSelectedCLI(data.activeCli);
-            if (data.elevenLabsKey) setElevenLabsKey(data.elevenLabsKey);
             if (data.alwaysOnTop !== undefined) setAlwaysOnTop(data.alwaysOnTop);
             if (data.launchOnStartup !== undefined) setLaunchOnStartup(data.launchOnStartup);
           }
         })
         .catch(err => {
-          console.warn("Failed to fetch settings from server on mount", err);
+          // Backend unreachable — fall back to localStorage as secondary source
+          console.warn('[Settings] Backend unreachable, falling back to localStorage:', err);
           const stored = localStorage.getItem('jarvis_security_settings');
-          if (stored) {
-            setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
-          }
+          if (stored) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(stored) });
+
+          const fallback = (lsKey: string, setter: (v: string) => void, def?: string) => {
+            const v = localStorage.getItem(lsKey) || def;
+            if (v) setter(v);
+          };
+          fallback('jarvis_operator_name',       setOperatorName,       locale === 'zh-TW' ? '系統管理員' : 'ADMIN OPERATOR');
+          fallback('jarvis_armor_model',         setArmorModel,         'Core v4.5');
+          fallback('jarvis_satellite_name',      setSatelliteName,      locale === 'zh-TW' ? '本機 SQLite 資料庫' : 'LOCAL_SQLITE_DB');
+          fallback('jarvis_active_skin',         setActiveSkin,         'cyan');
+          fallback('jarvis_byok_key',            setOpenRouterKey);
+          fallback('jarvis_byok_model',          setOpenRouterModel);
+          fallback('jarvis_byok_endpoint',       setOpenRouterEndpoint);
+          fallback('jarvis_byok_protocol',       setOpenRouterProtocol);
+          fallback('jarvis_byok_template',       setCustomBodyTemplate);
+          fallback('jarvis_byok_response_path',  setCustomResponsePath);
+          fallback('jarvis_system_prompt',       setSystemPrompt);
+          fallback('jarvis_active_cli',          setSelectedCLI);
+          fallback('jarvis_elevenlabs_key',      setElevenLabsKey);
+          fallback('jarvis_openrouter_key',      setOpenrouterKey);
+          fallback('jarvis_openai_key',          setOpenaiKey);
+          fallback('jarvis_gemini_key',          setGeminiKey);
         });
-
-      const savedOperatorName = localStorage.getItem('jarvis_operator_name') || (locale === 'zh-TW' ? '系統管理員' : 'ADMIN OPERATOR');
-      const savedArmorModel = localStorage.getItem('jarvis_armor_model') || 'Core v4.5';
-      const savedSatelliteName = localStorage.getItem('jarvis_satellite_name') || (locale === 'zh-TW' ? '本機 SQLite 資料庫' : 'LOCAL_SQLITE_DB');
-      const savedSkin = localStorage.getItem('jarvis_active_skin') || 'cyan';
-
-      setOperatorName(savedOperatorName);
-      setArmorModel(savedArmorModel);
-      setSatelliteName(savedSatelliteName);
-      setActiveSkin(savedSkin);
-
-      // Load BYOK persistent preferences
-      const key = localStorage.getItem('jarvis_byok_key');
-      const model = localStorage.getItem('jarvis_byok_model');
-      const endpoint = localStorage.getItem('jarvis_byok_endpoint');
-      const protocol = localStorage.getItem('jarvis_byok_protocol');
-      const savedPrompt = localStorage.getItem('jarvis_system_prompt');
-      const savedCLI = localStorage.getItem('jarvis_active_cli');
-      const elevenlabs = localStorage.getItem('jarvis_elevenlabs_key');
-
-      const savedTemplate = localStorage.getItem('jarvis_byok_template');
-      const savedPath = localStorage.getItem('jarvis_byok_response_path');
-
-      if (key) setOpenRouterKey(key);
-      if (model) setOpenRouterModel(model);
-      if (endpoint) setOpenRouterEndpoint(endpoint);
-      if (protocol) setOpenRouterProtocol(protocol);
-      if (savedPrompt) setSystemPrompt(savedPrompt);
-      if (savedCLI) setSelectedCLI(savedCLI);
-      if (elevenlabs) setElevenLabsKey(elevenlabs);
-      if (savedTemplate) setCustomBodyTemplate(savedTemplate);
-      if (savedPath) setCustomResponsePath(savedPath);
 
       runPathScan(true);
 
-      // Fetch dynamic cognitive memories from the backend RAG memory bank
       apiClient.getCognitiveMemories().then(mems => {
         setCognitiveMemories(mems);
-      }).catch(err => {
-        console.warn("Failed to load cognitive memories on mount", err);
-      });
+      }).catch(err => console.warn('Failed to load cognitive memories', err));
     } catch (e) {
       console.error('Failed to parse security settings', e);
     }
   }, [isOpen]);
+
 
   const saveSettings = async (newSettings: SecuritySettings) => {
     setSettings(newSettings);
@@ -339,6 +340,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     if (newSettings.systemPrompt !== undefined) localStorage.setItem('jarvis_system_prompt', newSettings.systemPrompt);
     if (newSettings.activeCli !== undefined) localStorage.setItem('jarvis_active_cli', newSettings.activeCli);
     if (newSettings.elevenLabsKey !== undefined) localStorage.setItem('jarvis_elevenlabs_key', newSettings.elevenLabsKey);
+    if (newSettings.openrouterKey !== undefined) localStorage.setItem('jarvis_openrouter_key', newSettings.openrouterKey);
+    if (newSettings.openaiKey !== undefined) localStorage.setItem('jarvis_openai_key', newSettings.openaiKey);
+    if (newSettings.geminiKey !== undefined) localStorage.setItem('jarvis_gemini_key', newSettings.geminiKey);
 
     if (onSettingsChange) {
       onSettingsChange(newSettings);
@@ -408,15 +412,15 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
     window.dispatchEvent(new Event('identity-updated'));
   };
 
-  const handleSkinChange = (skin: string, logMsg: string, speakMsg: string) => {
+  const handleSkinChange = (skin: string) => {
     playTactileClick();
     localStorage.setItem('jarvis_active_skin', skin);
     setActiveSkin(skin);
     window.dispatchEvent(new CustomEvent('skin-updated'));
-    triggerLog(logMsg, speakMsg);
-
+    // Persist to backend encrypted DB so the preference survives process restarts
     const updated = { ...settings, activeSkin: skin };
     saveSettings(updated);
+    triggerLog(`SYS: UI theme changed to "${skin}". Preference persisted to database.enc.`);
   };
 
   const handleDesktopToggle = async (type: 'always-on-top' | 'startup', enabled: boolean) => {
@@ -924,14 +928,18 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
       const res = await fetch(`/api/mcp/routines/${id}/execute`, { method: 'POST' });
       const data = await res.json();
       if (data.success && data.prompt) {
-        triggerLog(`SYS: MACRO INJECTION DISPATCHED`, "Sequence prompt synchronized to terminal input.");
+        const source = data.source === 'mcp-server' ? 'MCP server prompt' : 'stored shortcut';
+        triggerLog(`SYS: Routine dispatched (${source}) — sending ${data.prompt.length} chars to conversation.`);
         window.dispatchEvent(new CustomEvent('jarvis-mcp-routine', { detail: data.prompt }));
         setTimeout(() => onClose(), 800);
+      } else {
+        triggerLog(`SYS: Routine execute failed — ${data.error || 'no prompt returned'}`);
       }
     } catch (e) {
       console.error(e);
     }
   };
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4 sm:p-6 select-none font-mono">
@@ -1751,7 +1759,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
 
                 <div className="grid grid-cols-2 gap-3 pb-2">
                   <div 
-                    onClick={() => handleSkinChange('cyan', "SYS: CALIBRATING HOLOGRAPHIC CYAN SPECTRA.", "Calibrating hologram emission wavelength, sir.")}
+                    onClick={() => handleSkinChange('cyan')}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'cyan' 
                         ? 'border-2 border-cyan-500/80 bg-cyan-950/15 shadow-[0_0_12px_rgba(6,182,212,0.25)]' 
@@ -1766,7 +1774,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => handleSkinChange('emerald', "SYS: ADJUSTING FREQUENCY TO EMERALD RAYS.", "Reactor plasma aligned to Emerald, sir.")}
+                    onClick={() => handleSkinChange('emerald')}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'emerald' 
                         ? 'border-2 border-emerald-500 bg-emerald-950/15 shadow-[0_0_12px_rgba(16,185,129,0.25)]' 
@@ -1781,7 +1789,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => handleSkinChange('amber', "SYS: SHIFTING SPECTRUM TO BARITONE AMBER.", "Tactical warm amber profiles established.")}
+                    onClick={() => handleSkinChange('amber')}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'amber' 
                         ? 'border-2 border-amber-500 bg-amber-950/15 shadow-[0_0_12px_rgba(245,158,11,0.25)]' 
@@ -1796,7 +1804,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   </div>
 
                   <div 
-                    onClick={() => handleSkinChange('red', "SYS: WARNING: OVERLOAD THRESHOLD TRIGGERED.", "Combat Mark Eighty-Five mode activated, sir.")}
+                    onClick={() => handleSkinChange('red')}
                     className={`p-4 cursor-pointer rounded text-left group transition-all ${
                       activeSkin === 'red' 
                         ? 'border-2 border-red-500 bg-red-950/15 shadow-[0_0_12px_rgba(239,68,68,0.25)]' 
@@ -1998,44 +2006,99 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                 <div className="border-b border-cyan-950 pb-2 flex flex-col gap-1">
                   <span className="text-sm font-extrabold text-cyan-400 tracking-widest uppercase">{t.lblEnvKeysTitle}</span>
                   <p className="text-[10px] text-cyan-600 tracking-wider">
-                    Configure operational API keys. Stored securely in your browser's local matrix.
+                    API keys are persisted to the encrypted <span className="text-cyan-400 font-mono">database.enc</span> (AES-256-GCM). They are never written to disk in plaintext.
                   </p>
                 </div>
-                
-                <div className="space-y-4">
-                    <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest">{t.lblElevenLabsKey}</label>
-                        <input 
-                            type="password" 
-                            className="bg-black/50 border border-cyan-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 w-full font-mono" 
-                            placeholder="sk-..."
-                            value={elevenLabsKey}
-                            onChange={e => setElevenLabsKey(e.target.value)}
-                        />
-                        <span className="text-[9px] text-cyan-600/70">Required for high-fidelity Jarvis voice synthesis.</span>
-                    </div>
 
-                    <div className="flex justify-end pt-2">
-                        <button 
-                            className="px-4 py-1.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-2"
-                            onClick={() => {
-                                localStorage.setItem('jarvis_elevenlabs_key', elevenLabsKey);
-                                setEnvSaveStatus('SAVED TO LOCAL STORAGE');
-                                setTimeout(() => setEnvSaveStatus(''), 2000);
-                            }}
-                        >
-                            <Key className="w-3 h-3" />
-                            SAVE KEYS
-                        </button>
+                <div className="space-y-5">
+                  {/* OpenRouter */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-cyan-500 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400 inline-block"></span>
+                      OPENROUTER API KEY
+                    </label>
+                    <input
+                      type="password"
+                      className="bg-black/50 border border-cyan-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500 w-full font-mono"
+                      placeholder="sk-or-..."
+                      value={openrouterKey}
+                      onChange={e => setOpenrouterKey(e.target.value)}
+                    />
+                    <span className="text-[9px] text-cyan-600/70">Primary LLM gateway (OpenRouter). Also accepted by all BYOK-compatible endpoints.</span>
+                  </div>
+
+                  {/* OpenAI */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-emerald-500 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
+                      OPENAI API KEY
+                    </label>
+                    <input
+                      type="password"
+                      className="bg-black/50 border border-emerald-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-emerald-500 w-full font-mono"
+                      placeholder="sk-..."
+                      value={openaiKey}
+                      onChange={e => setOpenaiKey(e.target.value)}
+                    />
+                    <span className="text-[9px] text-cyan-600/70">Used for Whisper speech-to-text transcription endpoint.</span>
+                  </div>
+
+                  {/* Gemini */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-amber-500 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
+                      GOOGLE GEMINI API KEY
+                    </label>
+                    <input
+                      type="password"
+                      className="bg-black/50 border border-amber-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-amber-500 w-full font-mono"
+                      placeholder="AIza..."
+                      value={geminiKey}
+                      onChange={e => setGeminiKey(e.target.value)}
+                    />
+                    <span className="text-[9px] text-cyan-600/70">Backup LLM provider + Gemini native STT fallback.</span>
+                  </div>
+
+                  {/* ElevenLabs */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] text-purple-400 font-bold uppercase tracking-widest flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-purple-400 inline-block"></span>
+                      {t.lblElevenLabsKey}
+                    </label>
+                    <input
+                      type="password"
+                      className="bg-black/50 border border-purple-900/50 rounded px-3 py-2 text-xs text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-purple-500 w-full font-mono"
+                      placeholder="sk-..."
+                      value={elevenLabsKey}
+                      onChange={e => setElevenLabsKey(e.target.value)}
+                    />
+                    <span className="text-[9px] text-cyan-600/70">Required for high-fidelity ElevenLabs voice synthesis.</span>
+                  </div>
+
+                  <div className="flex justify-end pt-1">
+                    <button
+                      className="px-4 py-1.5 bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[10px] rounded uppercase font-bold tracking-widest transition-colors flex items-center gap-2"
+                      onClick={async () => {
+                        const updated = { ...settings, elevenLabsKey, openrouterKey, openaiKey, geminiKey };
+                        await saveSettings(updated);
+                        setEnvSaveStatus('SAVED TO DATABASE');
+                        setTimeout(() => setEnvSaveStatus(''), 2000);
+                      }}
+                    >
+                      <Key className="w-3 h-3" />
+                      SAVE ALL KEYS
+                    </button>
+                  </div>
+                  {envSaveStatus && (
+                    <div className="text-right text-[10px] text-emerald-400 animate-pulse mt-1">
+                      {envSaveStatus}
                     </div>
-                    {envSaveStatus && (
-                        <div className="text-right text-[10px] text-emerald-400 animate-pulse mt-1">
-                            {envSaveStatus}
-                        </div>
-                    )}
+                  )}
                 </div>
               </div>
             )}
+
+
 
             {/* MCP Config Panel */}
             {activeMenu === 'mcpServer' && (

@@ -1,17 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Play, Mic, Maximize2, Terminal } from 'lucide-react';
 import { useI18n } from '../services/i18n';
 
 export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCommand: (cmd: string) => void, isMicActive: boolean, setIsMicActive: (active: boolean) => void }) {
     const { t } = useI18n();
     const [input, setInput] = useState('');
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+    // Auto-resize textarea height based on content (min 1 row, max 8 rows)
+    useEffect(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.style.height = 'auto';
+        const lineHeight = parseInt(getComputedStyle(el).lineHeight) || 18;
+        const maxHeight = lineHeight * 8;
+        el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+        el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    }, [input]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (input.trim()) {
             onCommand(input);
             setInput('');
+            // Reset height after clear
+            if (textareaRef.current) {
+                textareaRef.current.style.height = 'auto';
+            }
         }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (input.trim()) {
+                onCommand(input);
+                setInput('');
+                if (textareaRef.current) {
+                    textareaRef.current.style.height = 'auto';
+                }
+            }
+        }
+        // Shift+Enter: default textarea behaviour inserts \n (no override needed)
     };
 
     const toggleFullscreen = () => {
@@ -41,19 +71,23 @@ export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCom
                 </div>
                 <span className="text-[7.5px] text-cyan-600 tracking-[0.2em] font-semibold font-mono">TUP_98</span>
             </div>
-            
-            <form onSubmit={handleSubmit} className="flex gap-2 h-9 relative">
-                <input 
-                    type="text" 
+
+            <form onSubmit={handleSubmit} className="flex gap-2 relative items-end">
+                <textarea
+                    ref={textareaRef}
+                    id="chat-input"
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
                     placeholder={isMicActive ? t.placeholderVoiceActive : t.placeholderTextActive}
-                    className="flex-1 bg-cyan-950/10 border border-cyan-900/60 px-3 text-cyan-100 placeholder:text-cyan-800/60 focus:outline-none focus:border-cyan-500/80 focus:bg-cyan-950/20 text-xs tracking-widest font-mono rounded-sm transition-all"
+                    rows={1}
+                    style={{ resize: 'none', overflowY: 'hidden' }}
+                    className="flex-1 bg-cyan-950/10 border border-cyan-900/60 px-3 py-2 text-cyan-100 placeholder:text-cyan-800/60 focus:outline-none focus:border-cyan-500/80 focus:bg-cyan-950/20 text-xs tracking-widest font-mono rounded-sm transition-all leading-[1.5] min-h-[36px]"
                 />
-                <button 
-                    type="submit" 
-                    className="border border-cyan-900/60 hover:border-cyan-400/80 px-4 text-cyan-500 hover:text-cyan-300 hover:bg-cyan-950/40 active:scale-95 transition-all flex items-center justify-center rounded-sm cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.05)]"
-                    title="Transmit Command"
+                <button
+                    type="submit"
+                    className="border border-cyan-900/60 hover:border-cyan-400/80 px-4 text-cyan-500 hover:text-cyan-300 hover:bg-cyan-950/40 active:scale-95 transition-all flex items-center justify-center rounded-sm cursor-pointer shadow-[0_0_8px_rgba(6,182,212,0.05)] h-9 flex-shrink-0"
+                    title="Transmit Command (Enter)"
                 >
                     <Play className="w-3.5 h-3.5 fill-cyan-500/85 hover:fill-cyan-400" />
                 </button>
@@ -61,12 +95,12 @@ export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCom
 
             <div className="flex flex-col gap-2">
                 {/* Voice Dispatch Channel */}
-                <button 
+                <button
                     type="button"
                     onClick={() => setIsMicActive(!isMicActive)}
                     className={`flex items-center justify-center gap-3 py-2 border text-[10px] tracking-[0.2em] font-bold transition-all rounded-sm cursor-pointer active:scale-[0.98] ${
-                        isMicActive 
-                          ? 'border-green-500/50 text-green-400 bg-green-950/20 shadow-[0_0_12px_rgba(34,197,94,0.30)] animate-pulse' 
+                        isMicActive
+                          ? 'border-green-500/50 text-green-400 bg-green-950/20 shadow-[0_0_12px_rgba(34,197,94,0.30)] animate-pulse'
                           : 'border-cyan-950 hover:border-cyan-500/50 text-cyan-600 hover:text-cyan-400/90 bg-cyan-950/10'
                     }`}
                 >
@@ -75,13 +109,16 @@ export function CommandInput({ onCommand, isMicActive, setIsMicActive }: { onCom
                 </button>
 
                 {/* HTML5 Native Fullscreen Expansion */}
-                <button 
-                    type="button" 
+                <button
+                    type="button"
                     onClick={toggleFullscreen}
                     className="flex items-center justify-center gap-2 py-1 text-cyan-700 hover:text-cyan-400 tracking-widest hover:bg-cyan-950/15 border border-transparent hover:border-cyan-950/40 active:scale-95 transition-all w-full text-[9px] font-bold uppercase rounded"
                 >
                     <Maximize2 className="w-3 h-3" /> {t.lblCinemediaExpanse}
                 </button>
+
+                {/* Hint */}
+                <p className="text-[8px] text-cyan-900 text-center tracking-wider">Enter · Send &nbsp;|&nbsp; Shift+Enter · New Line</p>
             </div>
         </div>
     );

@@ -241,8 +241,9 @@ export default function App() {
       // Scale average fft values smoothly for holographic dashboard radar
       const normalizedAmp = Math.min(100, Math.round(average * 4.2));
       
-      // Keep a very subtle organic vibration when active so the HUD remains lively
-      const finalAmp = normalizedAmp > 2 ? normalizedAmp : (8 + Math.floor(Math.random() * 5));
+      // Pure physical amplitude: raw FFT average scaled to 0-100.
+      // No artificial floor noise injected — zero output means truly silent.
+      const finalAmp = normalizedAmp;
       setVoiceAmplitude(finalAmp);
 
       speakingFrameId = requestAnimationFrame(checkOutputVolume);

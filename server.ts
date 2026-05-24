@@ -402,31 +402,49 @@ let cachedSecurityAudit: SecurityAuditResult = {
 export async function applyTrueSandboxOperations() {
   if (process.platform === "linux") {
     try {
-      // Create dynamically constrained cgroup for AI process
-      const cgroupPath = "/sys/fs/cgroup/memory/jarvis_sandbox";
-      if (!fs.existsSync(cgroupPath)) {
-         fs.mkdirSync(cgroupPath, { recursive: true });
+      // Detect cgroup version:
+      // - v2 unified hierarchy mounts at /sys/fs/cgroup (no /memory sub-controller)
+      // - v1 has /sys/fs/cgroup/memory
+      const isCgroupV2 = !fs.existsSync("/sys/fs/cgroup/memory");
+
+      if (isCgroupV2) {
+        // cgroup v2 path and attributes
+        const cgroupPath = "/sys/fs/cgroup/jarvis_sandbox";
+        if (!fs.existsSync(cgroupPath)) {
+          fs.mkdirSync(cgroupPath, { recursive: true });
+        }
+        // memory.max replaces memory.limit_in_bytes in v2 (512 MB)
+        fs.writeFileSync(`${cgroupPath}/memory.max`, "536870912");
+        // memory.swap.max = 0 disables swap for this cgroup
+        try { fs.writeFileSync(`${cgroupPath}/memory.swap.max`, "0"); } catch {}
+        // Add current PID to cgroup.procs (v2 uses cgroup.procs, not tasks)
+        fs.writeFileSync(`${cgroupPath}/cgroup.procs`, String(process.pid));
+        serverDB.addSystemLog('SEC', 'SUCCESS', `cgroup v2 sandbox applied: memory.max=512MB at ${cgroupPath}`);
+      } else {
+        // cgroup v1 path and attributes
+        const cgroupPath = "/sys/fs/cgroup/memory/jarvis_sandbox";
+        if (!fs.existsSync(cgroupPath)) {
+          fs.mkdirSync(cgroupPath, { recursive: true });
+        }
+        fs.writeFileSync(`${cgroupPath}/memory.limit_in_bytes`, "536870912");
+        fs.writeFileSync(`${cgroupPath}/memory.swappiness`, "10");
+        fs.writeFileSync(`${cgroupPath}/tasks`, String(process.pid));
+        serverDB.addSystemLog('SEC', 'SUCCESS', `cgroup v1 sandbox applied: memory.limit_in_bytes=512MB at ${cgroupPath}`);
       }
-      
-      // Enforce physical memory limits for worker threads (e.g., 512MB RAM cap)
-      fs.writeFileSync(`${cgroupPath}/memory.limit_in_bytes`, "536870912");
-      fs.writeFileSync(`${cgroupPath}/memory.swappiness`, "10");
-      
-      // Bind current execution context to the sandbox cgroup
-      fs.writeFileSync(`${cgroupPath}/tasks`, String(process.pid));
-      
-      // Attempt read-only mount overlay of sensitive directories (best effort if root)
+
+      // Attempt read-only bind mount of workspace (only if running as root)
       if (process.getuid && process.getuid() === 0) {
-         exec("mount --bind -r /workspace /workspace && mount -o remount,ro /workspace");
+        exec("mount --bind -r /workspace /workspace && mount -o remount,ro /workspace");
       }
       return true;
     } catch (e: any) {
-      serverDB.addSystemLog('SEC', 'WARN', `Low-level CGroup allocation failed, OS rejected privileges: ${e.message}`);
+      serverDB.addSystemLog('SEC', 'WARN', `cgroup memory sandbox failed (insufficient privileges): ${e.message}`);
       return false;
     }
   }
   return false;
 }
+
 
 export async function runSecurityAudit(): Promise<SecurityAuditResult> {
   const isDocker = fs.existsSync("/.dockerenv") || !!process.env.DOCKER;
@@ -1134,7 +1152,9 @@ app.use((req, res, next) => {
     const llmStartMs = Date.now();
     try {
       const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter", byokTemplate, byokResponsePath } = req.body;
-      const apiKey = byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
+      // Key priority: BYOK field → DB-stored provider keys → environment variables
+      const dbCfg = serverDB.getSettings();
+      const apiKey = byokKey || dbCfg.openrouterKey || dbCfg.geminiKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
 
       if (!apiKey) {
         serverDB.addSystemLog('API', 'ERROR', 'Request blocked: Missing API key credentials.');
@@ -1167,27 +1187,43 @@ app.use((req, res, next) => {
       if (discreteAgents.includes(activeCli)) {
         serverDB.addSystemLog('EXEC', 'INFO', `Delegating autonomy to distinct CLI runner: ${activeCli}`);
 
-        let resolvedCommand = "";
         const safePrompt = message.replace(/"/g, '\\"').replace(/\$/g, '\\$');
 
-        if (activeCli === 'claude-code') {
-          // The anthropic claude code execution:
-          resolvedCommand = `npx -y @anthropic-ai/claude-code --print -p "${safePrompt}"`;
-        } else if (activeCli === 'cursor-agent') {
-          resolvedCommand = `cursor --agent --prompt "${safePrompt}"`;
-        } else if (activeCli === 'devin') {
-          resolvedCommand = `devin --interactive false --instruction "${safePrompt}"`;
-        } else if (activeCli === 'gemini-cli') {
-          resolvedCommand = `gemini query "${safePrompt}"`;
+        // --- Resolve execution template from cli-mapping.json (single source of truth) ---
+        // Fallback defaults mirror the original behaviour; users override via cli-mapping.json.
+        const FALLBACK_TEMPLATES: Record<string, string> = {
+          'claude-code':    `npx -y @anthropic-ai/claude-code --print -p "{{prompt}}"`,
+          'cursor-agent':   `cursor --agent --prompt "{{prompt}}"`,
+          'devin':          `devin --interactive false --instruction "{{prompt}}"`,
+          'gemini-cli':     `gemini query "{{prompt}}"`,
+        };
+
+        let resolvedTemplate = FALLBACK_TEMPLATES[activeCli] ?? `${activeCli} "{{prompt}}"`;
+        try {
+          const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
+          if (fs.existsSync(mappingPath)) {
+            const mappingConf: Array<{ id: string; executionTemplate?: string; envPrefix?: string }> =
+              JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
+            const entry = mappingConf.find(c => c.id === activeCli);
+            if (entry?.executionTemplate) {
+              resolvedTemplate = entry.executionTemplate;
+              serverDB.addSystemLog('EXEC', 'INFO',
+                `CLI runner template sourced from cli-mapping.json for [${activeCli}].`);
+            }
+          }
+        } catch (mapErr: any) {
+          serverDB.addSystemLog('EXEC', 'WARN',
+            `Failed to read cli-mapping.json, using built-in default for ${activeCli}: ${mapErr.message}`);
         }
 
+        const resolvedCommand = resolvedTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
+
         try {
-          // Emulate physical binary execution locally
-          const { stdout, stderr } = await execAsync(resolvedCommand, { 
+          const { stdout, stderr } = await execAsync(resolvedCommand, {
             timeout: 60000,
-            env: { ...process.env, ANTHROPIC_API_KEY: apiKey } // passes BYOK or OpenRouter key as fallback
+            env: { ...process.env, ANTHROPIC_API_KEY: apiKey }
           });
-          
+
           let cliOutput = stdout || stderr || `[${activeCli}] Executed successfully with no output.`;
           const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER OUTPUT]\n\n${cliOutput.trim()}`;
           const tokensOut = estimateTokens(botResponse);
@@ -1215,10 +1251,10 @@ app.use((req, res, next) => {
 
         } catch (err: any) {
           serverDB.addSystemLog('EXEC', 'WARN', `${activeCli} physical binary execution fault: ${err.message}`);
-          
+
           let errorText = err.stderr || err.stdout || err.message;
           const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER FAULT]\n\nCommand attempted: \`${resolvedCommand}\`\n\nExecution error:\n\`\`\`text\n${errorText}\n\`\`\`\n\nThe target runner binary may not be installed in the current physical environment, or requires external environment keys. Switching back to 'OpenRouter REST API' or 'Hermes' mode in settings is recommended for guaranteed LLM inference.`;
-          
+
           const tokensOut = estimateTokens(botResponse);
           serverDB.addMessage({
             id: Math.random().toString(36).substring(7),
@@ -1243,6 +1279,7 @@ app.use((req, res, next) => {
         }
       }
       // --- End Distinct CLI Runner ---
+
 
       // Construct dynamic system prompt with active skills context and filesystem instructions
       const activeSkills = serverDB.getSkills().filter(s => s.status === 'active');
@@ -1631,37 +1668,58 @@ INTEGRATION ENGINE DETAILS:
           return;
         }
       } else {
-        // Fallback to first active skill rather than random mutation
         targetSkill = skills[0];
       }
-      
+
       sendLog(`[GEPA] Initializing DSPy bootstrap optimizer for target: ${targetSkill.name}...`);
-      
+
       const settings = serverDB.getSettings();
-      const apiKey = settings.byokKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (settings.byokEndpoint ? "custom-auth" : "");
-      
+      const dbCfg2 = serverDB.getSettings();
+      const apiKey = settings.byokKey || dbCfg2.openrouterKey || dbCfg2.geminiKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (settings.byokEndpoint ? "custom-auth" : "");
+
       const sysName = settings.satelliteName || "HERMES";
-      const prompt = `System: You are ${sysName}'s internal Genetic Evaluation and Prompt Algorithm (GEPA). Your task is to evolve and optimize an AI Agent Skill. 
-Make the description more concise, highly agentic, and precise. Do not invent new skills, just rewrite the existing instruction.
-Target Skill Name: ${targetSkill.name}
+
+      // Include the full skill content so the LLM mutates execution logic, not just labels
+      const currentYaml = targetSkill.yamlContent?.trim() || "(no YAML content defined)";
+      const prompt = `System: You are ${sysName}'s internal Genetic Evaluation and Prompt Algorithm (GEPA).
+Your task is to evolve and optimize a real AI Agent Skill's execution logic — not just its label text.
+
+Target Skill: ${targetSkill.name} (${targetSkill.version})
 Current Description: ${targetSkill.description}
 
-Respond ONLY with a valid JSON object matching this schema, no markdown blocks:
+Current Execution Content (YAML/Markdown):
+---
+${currentYaml}
+---
+
+Evolution Rules:
+1. "mutatedDescription": Rewrite the description to be concise and agentic. One sentence max.
+2. "mutatedYamlContent": Improve the ACTUAL execution content. You may:
+   - Add missing edge-case handling steps
+   - Sharpen ambiguous instructions into concrete actions
+   - Add a verification or fallback step if absent
+   - Restructure sections for better LLM parsing
+   - Remove redundant or contradictory instructions
+   Do NOT invent entirely new capabilities. Ground all changes in the existing content.
+3. "mutationLog": A precise technical description of WHAT changed and WHY (e.g. "Added retry step for API timeout", not "optimized the skill").
+
+Respond ONLY with a valid JSON object, no markdown blocks:
 {
-  "mutatedDescription": "new optimized description",
-  "mutationLog": "[GEPA] Optimized XYZ..."
+  "mutatedDescription": "...",
+  "mutatedYamlContent": "...",
+  "mutationLog": "[GEPA vX.X] ..."
 }
 
-User: Optimize the skill.`;
+User: Evolve the skill.`;
 
-      sendLog(`[GEPA] Sending mutation request to routing matrix...`);
+      sendLog(`[GEPA] Dispatching mutation request — targeting execution logic and description...`);
 
-      // Dispatch request
       const routingPolicy = settings.gatewayRoutingModel || 'auto';
       const result = await fetchOpenRouterWithFallback(apiKey, prompt, undefined, settings.byokModel || undefined, settings.byokEndpoint, settings.byokProtocol, settings.byokTemplate, settings.byokResponsePath, routingPolicy);
-      
+
       let mutatedDescription = targetSkill.description;
-      let mutationLog = "[GEPA] Evolution failed to produce valid JSON. Fallback to standard AST parsing.";
+      let mutatedYamlContent = targetSkill.yamlContent || "";
+      let mutationLog = "[GEPA] Evolution failed to produce valid JSON. No changes applied.";
       let parsed = false;
 
       try {
@@ -1670,6 +1728,10 @@ User: Optimize the skill.`;
         if (json.mutatedDescription && json.mutationLog) {
           mutatedDescription = json.mutatedDescription;
           mutationLog = json.mutationLog;
+          // Only apply yamlContent mutation if the LLM actually returned a non-empty string
+          if (typeof json.mutatedYamlContent === 'string' && json.mutatedYamlContent.trim().length > 0) {
+            mutatedYamlContent = json.mutatedYamlContent;
+          }
           parsed = true;
         }
       } catch(e) {
@@ -1681,16 +1743,25 @@ User: Optimize the skill.`;
       if (parsed) {
         const currentVer = parseFloat(targetSkill.version.replace(/[^0-9.]/g, '')) || 1.0;
         const nextVer = `v${(currentVer + 0.1).toFixed(1)}`;
+        const didMutateContent = mutatedYamlContent !== (targetSkill.yamlContent || "");
         serverDB.addOrUpdateSkill({
           ...targetSkill,
           version: nextVer,
-          description: mutatedDescription
+          description: mutatedDescription,
+          yamlContent: mutatedYamlContent
         });
-        serverDB.addSystemLog('GEPA', 'SUCCESS', `Successfully evolved skill ${targetSkill.name} to ${nextVer}`);
-        broadcastMcpEvent('SKILL_EVOLVED', { skillId: targetSkill.id, name: targetSkill.name, version: nextVer, description: mutatedDescription });
-        sendLog(`[SUCCESS] ${targetSkill.name} upgraded to next version in database.`);
+        serverDB.addSystemLog('GEPA', 'SUCCESS',
+          `Evolved skill "${targetSkill.name}" → ${nextVer}. Content mutated: ${didMutateContent}. Description mutated: ${mutatedDescription !== targetSkill.description}.`);
+        broadcastMcpEvent('SKILL_EVOLVED', {
+          skillId: targetSkill.id,
+          name: targetSkill.name,
+          version: nextVer,
+          description: mutatedDescription,
+          contentMutated: didMutateContent
+        });
+        sendLog(`[SUCCESS] ${targetSkill.name} upgraded to ${nextVer} — execution logic ${didMutateContent ? 'mutated' : 'unchanged (LLM returned identical content)'}.`);
       } else {
-        sendLog(`[WARN] Mutation aborted due to instability.`);
+        sendLog(`[WARN] Mutation aborted: LLM response did not conform to required JSON schema.`);
       }
 
       res.write(`event: done\ndata: ${JSON.stringify({ skills: serverDB.getSkills() })}\n\n`);
@@ -1702,6 +1773,7 @@ User: Optimize the skill.`;
       res.end();
     }
   });
+
 
   // --- Cost-Aware Gateway Stats Route ---
   app.get("/api/gateway/stats", (req, res) => {
@@ -2438,23 +2510,51 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
             fileToCreate = data.technicalArtifact.title || `task_${task.id}_artifact.md`;
           }
           if (typeof data.shell_command === 'string' && data.shell_command.trim().length > 0) {
-            shellCommandExecuted = data.shell_command;
-            logMessage += ` (Executed command: \`${shellCommandExecuted}\`)`;
-            try {
-              const { stdout, stderr } = await new Promise<{stdout: string, stderr: string}>((resolve) => {
-                exec(shellCommandExecuted, { cwd: process.cwd(), timeout: 15000 }, (err, stdout, stderr) => {
-                  resolve({ stdout: stdout || "", stderr: stderr || (err ? err.message : "") });
+            shellCommandExecuted = data.shell_command.trim();
+
+            // -----------------------------------------------------------------------
+            // SECURITY GATE: Every LLM-generated command MUST pass helperValidateCommand
+            // before exec(). Auto-mode has no human in the loop, so we enforce a
+            // read-only subset: only safe informational verbs are permitted.
+            // -----------------------------------------------------------------------
+            const AUTO_SAFE_VERBS = [
+              'git', 'node', 'npm', 'npx', 'ls', 'dir', 'echo', 'cat', 'type',
+              'ping', 'nslookup', 'whoami', 'pwd', 'hostname', 'python', 'curl',
+            ];
+            const primaryVerb = shellCommandExecuted.split(/\s+/)[0]
+              .toLowerCase().replace(/['".]/g, '').replace(/^.*[\\/]/, '');
+            const passesAllowlist = AUTO_SAFE_VERBS.includes(primaryVerb) ||
+                                    primaryVerb.startsWith('get-');
+            const validation = helperValidateCommand(shellCommandExecuted);
+
+            if (!passesAllowlist || !validation.safe) {
+              const blockReason = !passesAllowlist
+                ? `Command "${primaryVerb}" is not in the autonomous-mode read-only allowlist.`
+                : validation.reason;
+              serverDB.addSystemLog('SEC', 'ERROR',
+                `[HERMES-GUARD] AUTO-TASK RCE BLOCKED: LLM-generated command "${shellCommandExecuted}" rejected. Reason: ${blockReason}`);
+              shellCommandOutput = `\n\n### CLI Execution Blocked by Security Gate\n**Command**: \`${shellCommandExecuted}\`\n**Reason**: ${blockReason}\n\n> This command was generated by the autonomous LLM task runner and blocked before OS execution.\n`;
+              logMessage += ` (Command blocked by HERMES-GUARD: ${blockReason})`;
+            } else {
+              logMessage += ` (Executed command: \`${shellCommandExecuted}\`)`;
+              try {
+                const { stdout, stderr } = await new Promise<{stdout: string, stderr: string}>((resolve) => {
+                  exec(shellCommandExecuted, { cwd: process.cwd(), timeout: 15000 }, (err, stdout, stderr) => {
+                    resolve({ stdout: stdout || "", stderr: stderr || (err ? err.message : "") });
+                  });
                 });
-              });
-              shellCommandOutput = `\n\n### CLI Execution Result\n**Command**: \`${shellCommandExecuted}\`\n\n**STDOUT**:\n\`\`\`text\n${stdout.substring(0, 2000)}\n\`\`\`\n\n**STDERR**:\n\`\`\`text\n${stderr.substring(0, 1000)}\n\`\`\`\n`;
-            } catch (execErr: any) {
-              shellCommandOutput = `\n\n### CLI Execution Error\n\`\`\`text\n${execErr.message}\n\`\`\`\n`;
+                shellCommandOutput = `\n\n### CLI Execution Result\n**Command**: \`${shellCommandExecuted}\`\n\n**STDOUT**:\n\`\`\`text\n${stdout.substring(0, 2000)}\n\`\`\`\n\n**STDERR**:\n\`\`\`text\n${stderr.substring(0, 1000)}\n\`\`\`\n`;
+              } catch (execErr: any) {
+                shellCommandOutput = `\n\n### CLI Execution Error\n\`\`\`text\n${execErr.message}\n\`\`\`\n`;
+              }
             }
-          }
+            }
+
+          }         // end: if (data)
+        } catch (e: any) {
+          console.error("AI deep auto-advance execution failed:", e.message);
         }
-      } catch (e: any) {
-        console.error("AI deep auto-advance execution failed:", e.message);
-      }
+
     }
 
     const newProgress = Math.min(100, currentProgress + increment);
@@ -2827,7 +2927,10 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
 
       let transcribedText = "";
 
-      if (process.env.OPENAI_API_KEY) {
+      // STT key priority: DB-stored keys → environment variables
+      const dbCfgStt = serverDB.getSettings();
+      if (dbCfgStt.openaiKey || process.env.OPENAI_API_KEY) {
+        const sttKey = dbCfgStt.openaiKey || process.env.OPENAI_API_KEY;
         // Use genuine Whisper API
         const formData = new FormData();
         const blob = new Blob([req.body], { type: 'audio/webm' });
@@ -2837,7 +2940,7 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         const fetchRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+            'Authorization': `Bearer ${sttKey}`
           },
           body: formData as any
         });
@@ -2850,10 +2953,11 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         const json = await fetchRes.json();
         transcribedText = json.text;
         serverDB.addSystemLog('SYS', 'SUCCESS', 'Audio chunk successfully processed by OpenAI Whisper STT service.');
-      } else if (process.env.GEMINI_API_KEY) {
+      } else if (dbCfgStt.geminiKey || process.env.GEMINI_API_KEY) {
         // Fallback to Gemini 2.5 Flash Audio Transcription
         const { GoogleGenAI } = await import("@google/genai");
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const gemKey = dbCfgStt.geminiKey || process.env.GEMINI_API_KEY;
+        const ai = new GoogleGenAI({ apiKey: gemKey! });
         
         const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
@@ -2881,7 +2985,9 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
   app.post("/api/voice/tts", async (req, res) => {
     try {
       const { text, provider, voiceProfile, elevenLabsKey } = req.body;
-      const apiKey = elevenLabsKey || process.env.ELEVENLABS_API_KEY;
+      // Key resolution priority: request body → DB settings → environment variable
+      const dbSettings = serverDB.getSettings();
+      const apiKey = elevenLabsKey || dbSettings.elevenLabsKey || process.env.ELEVENLABS_API_KEY;
 
       if (!apiKey) {
         serverDB.addSystemLog('SYS', 'WARN', 'Dispatched TTS payload to ElevenLabs. Warning: ELEVENLABS_API_KEY is missing from backend secrets, falling back to local speech.');
@@ -3065,7 +3171,64 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         });
       }
       
+      if (command === "always-on-top") {
+        const enabled: boolean = req.body.enabled === true;
+        serverDB.updateSettings({ alwaysOnTop: enabled });
+
+        if (process.platform === "win32") {
+          // HWND_TOPMOST = -1, HWND_NOTOPMOST = -2
+          const hwndConst = enabled ? "-1" : "-2";
+          const ps = [
+            'Add-Type @"',
+            'using System;',
+            'using System.Runtime.InteropServices;',
+            'public class Win32 {',
+            '  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string t);',
+            '  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr i, int x, int y, int cx, int cy, uint f);',
+            '}',
+            '"@',
+            `$h = [Win32]::FindWindow($null, "Hermes")`,
+            `if ($h -ne [IntPtr]::Zero) { [Win32]::SetWindowPos($h, [IntPtr]${hwndConst}, 0, 0, 0, 0, 3) }`
+          ].join('; ');
+          exec(`powershell -NoProfile -NonInteractive -Command "${ps}"`, (err) => {
+            if (err) serverDB.addSystemLog('SYS', 'WARN', `always-on-top failed: ${err.message}`);
+          });
+        }
+
+        serverDB.addSystemLog('SYS', 'INFO', `Window always-on-top set to ${enabled}.`);
+        return res.json({ success: true, alwaysOnTop: enabled });
+      }
+
+      if (command === "startup") {
+        const enabled: boolean = req.body.enabled === true;
+        serverDB.updateSettings({ launchOnStartup: enabled });
+
+        if (process.platform === "win32") {
+          const serverPath = process.execPath;
+          const scriptPath = require('path').join(process.cwd(), 'dist', 'server.cjs');
+          const regKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`;
+          const regName = `JarvisServer`;
+
+          if (enabled) {
+            const regValue = `${serverPath} ${scriptPath}`;
+            exec(`reg add "${regKey}" /v "${regName}" /t REG_SZ /d "${regValue}" /f`, (err) => {
+              if (err) serverDB.addSystemLog('SYS', 'WARN', `Registry startup add failed: ${err.message}`);
+              else serverDB.addSystemLog('SYS', 'SUCCESS', `Startup registry key added: JarvisServer`);
+            });
+          } else {
+            exec(`reg delete "${regKey}" /v "${regName}" /f`, (err) => {
+              if (err) serverDB.addSystemLog('SYS', 'WARN', `Registry startup delete skipped (key not found): ${err.message}`);
+              else serverDB.addSystemLog('SYS', 'SUCCESS', `Startup registry key removed: JarvisServer`);
+            });
+          }
+        }
+
+        serverDB.addSystemLog('SYS', 'INFO', `Launch on startup set to ${enabled}.`);
+        return res.json({ success: true, launchOnStartup: enabled });
+      }
+
       return res.status(400).json({ error: "Unknown system command matrix trigger." });
+
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3327,30 +3490,58 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
     }
   });
 
-  app.post("/api/mcp/routines/:id/execute", (req, res) => {
+  app.post("/api/mcp/routines/:id/execute", async (req, res) => {
     try {
       const routine = serverDB.getMcpRoutines().find(r => r.id === req.params.id);
       if (!routine) return res.status(404).json({ success: false, error: "Routine not found" });
-      const newTask = {
-        id: crypto.randomUUID(),
-        title: `Routine: ${routine.name}`,
-        description: routine.prompt,
-        status: 'In Progress' as const,
-        progress: 0,
-        createdAt: Date.now(),
-        priority: 'High' as const,
-        tags: ['mcp-routine', 'automation']
-      };
-      
-      serverDB.addTask(newTask);
-      serverDB.addSystemLog('HERMES', 'SUCCESS', `Registered new physical task [${newTask.id}] with priority High.`);
-      broadcastMcpEvent('TASK_CREATED', newTask);
-      
-      res.json({ success: true, task: newTask });
+
+      // --- Path A: Routine has a targetServer → attempt real MCP server RPC ---
+      if (routine.targetServer) {
+        const instance = activeMcpServers.get(routine.targetServer);
+        if (instance && instance.status === 'connected') {
+          // Try MCP prompts/get to retrieve a server-side prompt by name
+          const callId = `routine-${Date.now()}`;
+          const rpcRequest = {
+            jsonrpc: '2.0',
+            id: callId,
+            method: 'prompts/get',
+            params: { name: routine.name }
+          };
+
+          const rpcResult = await new Promise<any>((resolve) => {
+            const timeout = setTimeout(() => resolve(null), 5000);
+            pendingMcpCalls.set(callId, {
+              resolve: (v: any) => { clearTimeout(timeout); resolve(v); },
+              reject:  ()      => { clearTimeout(timeout); resolve(null); }
+            });
+            instance.process.stdin?.write(JSON.stringify(rpcRequest) + '\n');
+          });
+
+          if (rpcResult && rpcResult.result?.messages?.[0]?.content?.text) {
+            const serverPrompt = rpcResult.result.messages[0].content.text as string;
+            serverDB.addSystemLog('API', 'SUCCESS',
+              `MCP prompts/get [${routine.targetServer}/${routine.name}] resolved prompt of ${serverPrompt.length} chars.`);
+            return res.json({ success: true, prompt: serverPrompt, source: 'mcp-server' });
+          }
+
+          // RPC failed or timed out — fall through to local prompt below
+          serverDB.addSystemLog('API', 'WARN',
+            `MCP prompts/get timed out for [${routine.targetServer}/${routine.name}], falling back to stored prompt.`);
+        }
+      }
+
+      // --- Path B: No targetServer, or RPC failed → return the stored prompt directly ---
+      // The frontend will dispatch this to handleCommand, which sends it to the LLM.
+      // This IS the correct behaviour for a prompt shortcut / macro.
+      serverDB.addSystemLog('HERMES', 'INFO',
+        `Routine "${routine.name}" dispatched: stored prompt (${routine.prompt.length} chars) sent to conversation.`);
+      return res.json({ success: true, prompt: routine.prompt, source: 'local' });
+
     } catch (e: any) {
       res.status(500).json({ success: false, error: e.message });
     }
   });
+
 
   // --- Real-time Local OS System Diagnostics & Scan Endpoints ---
   app.post("/api/system/test-cli-ping", async (req, res) => {

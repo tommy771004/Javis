@@ -117,6 +117,10 @@ export interface DbSettings {
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
   activeLoopNode?: 'experience' | 'curation' | 'skills' | 'gepa';
   cliPackageMap?: Record<string, string>;
+  // Provider API keys managed via UI (encrypted in database.enc)
+  openrouterKey?: string;  // OpenRouter — used as primary LLM gateway
+  openaiKey?: string;      // OpenAI — used for Whisper STT
+  geminiKey?: string;      // Google Gemini — backup LLM + Gemini STT
 }
 
 export interface DbMcpWebhook {
@@ -130,6 +134,8 @@ export interface DbMcpRoutine {
   id: string;
   name: string;
   prompt: string;
+  // Optional: when set, the routine targets a specific connected MCP server
+  targetServer?: string;
 }
 
 interface DatabaseSchema {
