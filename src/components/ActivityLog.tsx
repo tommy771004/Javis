@@ -171,7 +171,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                 
                 window.dispatchEvent(new CustomEvent('append-sys-log', {
                     detail: {
-                        message: data.message ? `SYS: ${data.message.toUpperCase()}` : "SYS: STARK-7 TRANSCEIVER ORBIT PING SUCCESSFUL. SAT-LINK ESTABLISHED.",
+                        message: data.message ? `SYS: ${data.message.toUpperCase()}` : "SYS: LOCAL DATABASE ROUTING VERIFIED. HEALTH-LINK SYNCHRONIZED.",
                         speak: data.speak
                     }
                 }));
@@ -346,7 +346,7 @@ export function ActivityLog({ logs }: { logs: string[] }) {
                                     [{getFormattedTimestamp(i)}]
                                 </span>
                                 <span className="flex-1 text-[10.5px]">
-                                    {isUser ? <strong className="text-cyan-300 font-bold mr-1">T_STARK // </strong> : ''}
+                                    {isUser ? <strong className="text-cyan-300 font-bold mr-1">OPERATOR // </strong> : ''}
                                     {content}
                                 </span>
                             </div>

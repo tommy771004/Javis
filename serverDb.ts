@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import Database from 'better-sqlite3';
 
 export interface DbMessage {
   id: string;
@@ -41,6 +42,7 @@ export interface DbTask {
   status: 'Pending' | 'Completed' | 'Cancelled';
   createdAt: number;
   progress?: number;
+  completedAt?: number;
 }
 
 export interface SystemLogEntry {
@@ -72,6 +74,7 @@ export interface DbSettings {
   alwaysOnTop?: boolean;
   launchOnStartup?: boolean;
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
+  activeLoopNode?: 'experience' | 'curation' | 'skills' | 'gepa';
 }
 
 export interface DbMcpWebhook {
@@ -92,6 +95,7 @@ interface DatabaseSchema {
   skills: DbSkill[];
   costLogs: DbCostLog[];
   tasks: DbTask[];
+  archivedTasks?: DbTask[];
   cognitiveMemories: string[];
   settings?: DbSettings;
   mcpWebhooks?: DbMcpWebhook[];
@@ -102,41 +106,42 @@ const DB_FILE = path.join(process.cwd(), 'database.json');
 
 const INITIAL_SKILLS: DbSkill[] = [
   { 
-    id: 'github-pr-reviewer', 
-    name: 'github-pr-reviewer', 
-    version: 'v2.4', 
+    id: 'sqlite-fts-indexer', 
+    name: 'sqlite-fts-indexer', 
+    version: 'v1.0', 
     status: 'active', 
-    description: 'Review git diffs, compile projects, and run testing checks.',
-    yamlContent: '---\nname: github-pr-reviewer\ndescription: Core git PR compiler and review workflow.\nversion: 2.4\n---'
+    description: 'Builds and queries fast SQLite FTS5 index matrices.',
+    yamlContent: '---\nname: sqlite-fts-indexer\ndescription: Core full-text indexing engine workflows.\nversion: 1.0\n---'
   },
   { 
-    id: 'mlops-orchestrator', 
-    name: 'mlops-orchestrator', 
-    version: 'v1.1', 
+    id: 'task-pipeline-manager', 
+    name: 'task-pipeline-manager', 
+    version: 'v1.2', 
     status: 'active', 
-    description: 'Deploy serverless modal jobs, optimize weights, and track pipelines.',
-    yamlContent: '---\nname: mlops-orchestrator\ndescription: Modal serverless MLOps deployment pipeline.\nversion: 1.1\n---'
+    description: 'Coordinates pending cognitive pipelines, tracking progress and status histories.',
+    yamlContent: '---\nname: task-pipeline-manager\ndescription: Workflows for scheduling and evaluating multi-step tasks.\nversion: 1.2\n---'
   },
   { 
-    id: 'code-refactorer', 
-    name: 'code-refactorer', 
-    version: 'v4.2', 
+    id: 'workspace-file-writer', 
+    name: 'workspace-file-writer', 
+    version: 'v2.1', 
     status: 'active', 
-    description: 'Inspect complexity, run AST checks, and rewrite non-adjacent lines.',
-    yamlContent: '---\nname: code-refactorer\ndescription: AST-aware deep code refactoring rules.\nversion: 4.2\n---'
+    description: 'Reviews filesystem permission targets and applies structured file writes safely.',
+    yamlContent: '---\nname: workspace-file-writer\ndescription: System writes and patch application with security guardrails.\nversion: 2.1\n---'
   },
   { 
-    id: 'cost-aware-router', 
-    name: 'cost-aware-router', 
-    version: 'v3.0', 
+    id: 'router-cost-estimator', 
+    name: 'router-cost-estimator', 
+    version: 'v1.5', 
     status: 'active', 
-    description: 'Analyze token counts, check budget limits, and route to Haiku/Sonnet.',
-    yamlContent: '---\nname: cost-aware-router\ndescription: Model routing and prompt caching optimizations.\nversion: 3.0\n---'
+    description: 'Tracks language model token spend rates and prompts routing decisions dynamically.',
+    yamlContent: '---\nname: router-cost-estimator\ndescription: Token and budget allocation workflows for API integrations.\nversion: 1.5\n---'
   }
 ];
 
 class ServerPersistenceEngine {
   private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
+  private ftsDb: any;
   private systemLogs: SystemLogEntry[] = [
     { timestamp: Date.now() - 5000, category: 'SYS', level: 'INFO', message: 'JARVIS online.' },
     { timestamp: Date.now() - 4000, category: 'SYS', level: 'SUCCESS', message: 'System diagnostics initialized.' },
@@ -146,7 +151,52 @@ class ServerPersistenceEngine {
   ];
 
   constructor() {
+    this.ftsDb = new Database('jarvis_fts.sqlite');
+    this.initFTS();
     this.initDb();
+  }
+
+  private initFTS() {
+    this.ftsDb.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS fts_docs USING fts5(
+        type, title, excerpt, content, tokenize='porter'
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS fts_tasks USING fts5(
+        id, description, status, priority, tokenize='porter'
+      );
+    `);
+  }
+
+  private syncFTS() {
+    try {
+      this.ftsDb.exec('BEGIN TRANSACTION;');
+      this.ftsDb.exec('DELETE FROM fts_docs;');
+      this.ftsDb.exec('DELETE FROM fts_tasks;');
+
+      const insertDoc = this.ftsDb.prepare('INSERT INTO fts_docs (type, title, excerpt, content) VALUES (?, ?, ?, ?)');
+      this.cache.messages.forEach(msg => {
+        if (msg.role !== 'system') {
+          const timeStr = new Date(msg.timestamp).toLocaleTimeString();
+          insertDoc.run('message', `Server Turn Memory [${msg.role.toUpperCase()} @ ${timeStr}]`, msg.content.substring(0, 147) + (msg.content.length > 147 ? '...' : ''), msg.content);
+        }
+      });
+      this.cache.skills.forEach(skill => {
+        insertDoc.run('skill', `Server Skill Module: ${skill.name} (${skill.version})`, skill.description, `${skill.name} ${skill.description} ${skill.yamlContent || ''}`);
+      });
+      (this.cache.cognitiveMemories || []).forEach((mem, index) => {
+        insertDoc.run('message', `Cognitive Memory Directive [Slot ${index + 1}]`, mem.substring(0, 147) + (mem.length > 147 ? '...' : ''), mem);
+      });
+
+      const insertTask = this.ftsDb.prepare('INSERT INTO fts_tasks (id, description, status, priority) VALUES (?, ?, ?, ?)');
+      this.cache.tasks.forEach(task => {
+        insertTask.run(task.id, task.description, task.status, task.priority);
+      });
+
+      this.ftsDb.exec('COMMIT;');
+    } catch (e) {
+      if (this.ftsDb.inTransaction) this.ftsDb.exec('ROLLBACK;');
+      console.error("FTS sync error", e);
+    }
   }
 
   addSystemLog(category: SystemLogEntry['category'], level: SystemLogEntry['level'], message: string) {
@@ -187,10 +237,10 @@ class ServerPersistenceEngine {
     ];
 
     const INITIAL_COGNITIVE_MEMORIES = [
-      "User prefer voice speed matrix set to British Baritone cadence.",
-      "Local host operates powershell Start-Process hooks bypassing safe confirmation.",
-      "Stark Industries home assistant terminal core version initialized perfectly.",
-      "OpenRouter bypass keys stored locally for cognitive inference routines."
+      "User prefers lightweight UI themes with clean developer metrics.",
+      "Local system manages shell task execution safely based on permission filters.",
+      "Task manager utilizes automatic file writing pipelines for reporting.",
+      "Cost estimations are indexed continuously to preserve API budgets."
     ];
 
     try {
@@ -204,6 +254,7 @@ class ServerPersistenceEngine {
             skills: INITIAL_SKILLS,
             costLogs: initialCostLogs,
             tasks: [],
+            archivedTasks: [],
             cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
           };
           this.saveDb();
@@ -215,6 +266,10 @@ class ServerPersistenceEngine {
         }
         if (!this.cache.tasks) {
           this.cache.tasks = [];
+          this.saveDb();
+        }
+        if (!this.cache.archivedTasks) {
+          this.cache.archivedTasks = [];
           this.saveDb();
         }
         if (!this.cache.costLogs || this.cache.costLogs.length === 0) {
@@ -231,6 +286,7 @@ class ServerPersistenceEngine {
           skills: INITIAL_SKILLS,
           costLogs: initialCostLogs,
           tasks: [],
+          archivedTasks: [],
           cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
         };
         this.saveDb();
@@ -244,6 +300,7 @@ class ServerPersistenceEngine {
         skills: INITIAL_SKILLS,
         costLogs: initialCostLogs,
         tasks: [],
+        archivedTasks: [],
         cognitiveMemories: INITIAL_COGNITIVE_MEMORIES
       };
       this.saveDb();
@@ -260,16 +317,16 @@ class ServerPersistenceEngine {
 - **Shell Execute Mode**: ${settings.shellMode || "auto"}
 - **File Write Mode**: ${settings.writeMode || "auto"}
 - **Task Orchestration Mode**: ${settings.taskMode || "auto"}
-- **Active Shell Skin**: ${settings.activeSkin || "Carbon HUD"}
-- **Satellite Bridge Linked**: ${settings.satelliteName || "Linked Satellite-A"}
-- **Core Armor Defense Grade**: ${settings.armorModel || "Mk-85 Quantum Armor"}
+- **Active HUD Interface Skin**: ${settings.activeSkin || "Carbon HUD"}
+- **Local SQLite DB Identifier**: ${settings.satelliteName || "LOCAL_SQLITE_DB"}
+- **System Memory Core Version**: ${settings.armorModel || "Core v4.5"}
 - **Voice Synthesis Profile**: ${settings.voiceProfile || "standard"}
 - **Auto-Repair Protocol**: ${settings.autoRepair ? "Enabled" : "Disabled"}
 - **Gateway Model Selector**: ${settings.gatewayRoutingModel || "auto"}
 - **BYOK Endpoint Status**: ${settings.byokEndpoint ? `Configured (${settings.byokEndpoint})` : "Not Configured / Direct Model Gateway"}
 
 ---
-*Synchronized automatically from JARVIS neural settings layer.*
+*Synchronized automatically from HERMES database settings layer.*
 `;
 
       fs.writeFileSync(path.join(process.cwd(), 'USER.md'), userMdContent, 'utf8');
@@ -299,6 +356,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     try {
       fs.writeFileSync(DB_FILE, JSON.stringify(this.cache, null, 2), 'utf8');
       this.syncMarkdownFiles();
+      this.syncFTS();
     } catch (e) {
       console.error('Failed to write local database file', e);
     }
@@ -309,6 +367,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     this.cache.messages = [];
     this.cache.costLogs = [];
     this.cache.tasks = [];
+    this.cache.archivedTasks = [];
     this.saveDb();
     this.addSystemLog('SYS', 'SUCCESS', 'Persistent memory and temporal logs successfully purged.');
   }
@@ -437,29 +496,25 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
   searchTasks(queryText: string): DbTask[] {
     if (!queryText.trim()) return this.getTasks();
 
-    const terms = queryText.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(t => t.length > 0);
+    const terms = queryText.trim().replace(/[^a-zA-Z0-9\u4e00-\u9fa5\s]/g, ' ').split(/\s+/).filter(Boolean);
     if (terms.length === 0) return this.getTasks();
 
-    const tasks = this.getTasks();
-    const results = tasks.map(task => {
-      const textLower = `${task.description} ${task.id} ${task.status}`.toLowerCase();
-      let score = 0;
-      terms.forEach(term => {
-        const regex = new RegExp(`\\b${term}\\b`, 'g');
-        const count = (textLower.match(regex) || []).length;
-        if (count > 0) {
-          score += count * 2;
-        } else if (textLower.includes(term)) {
-          score += 0.5;
-        }
-      });
-      return { task, score };
-    }).filter(r => r.score > 0);
-
-    return results.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return b.task.createdAt - a.task.createdAt;
-    }).map(r => r.task);
+    const ftsQuery = terms.map(t => `${t}*`).join(' OR ');
+    
+    try {
+      const stmt = this.ftsDb.prepare(`
+        SELECT id FROM fts_tasks 
+        WHERE fts_tasks MATCH ? 
+        ORDER BY bm25(fts_tasks)
+      `);
+      const results = stmt.all(ftsQuery) as { id: string }[];
+      
+      const matchedIds = new Set(results.map(r => r.id));
+      return this.cache.tasks.filter(t => matchedIds.has(t.id));
+    } catch (e) {
+      console.error("FTS Task Search failed", e);
+      return this.getTasks();
+    }
   }
 
   updateTaskStatus(id: string, status: DbTask['status']) {
@@ -468,6 +523,9 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       task.status = status;
       if (status === 'Completed') {
         task.progress = 100;
+        task.completedAt = Date.now();
+      } else {
+        delete task.completedAt;
       }
       this.saveDb();
     }
@@ -480,8 +538,17 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       if (updates.progress !== undefined) {
         if (updates.progress === 100) {
           task.status = 'Completed';
+          task.completedAt = task.completedAt || Date.now();
         } else if (updates.progress < 100 && task.status === 'Completed') {
           task.status = 'Pending';
+          delete task.completedAt;
+        }
+      } else if (updates.status !== undefined) {
+        if (updates.status === 'Completed') {
+          task.progress = 100;
+          task.completedAt = task.completedAt || Date.now();
+        } else {
+          delete task.completedAt;
         }
       }
       this.saveDb();
@@ -490,11 +557,91 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
 
   deleteTask(id: string) {
     this.cache.tasks = (this.cache.tasks || []).filter(t => t.id !== id);
+    if (this.cache.archivedTasks) {
+      this.cache.archivedTasks = this.cache.archivedTasks.filter(t => t.id !== id);
+    }
     this.saveDb();
+  }
+
+  archiveTask(id: string) {
+    const task = this.cache.tasks.find(t => t.id === id);
+    if (task) {
+      if (!this.cache.archivedTasks) {
+        this.cache.archivedTasks = [];
+      }
+      // Check for duplicates before pushing
+      if (!this.cache.archivedTasks.some(t => t.id === id)) {
+        this.cache.archivedTasks.push({
+          ...task,
+          completedAt: task.completedAt || Date.now()
+        });
+      }
+      this.cache.tasks = this.cache.tasks.filter(t => t.id !== id);
+      this.saveDb();
+      this.addSystemLog('DB', 'SUCCESS', `Archived task: "${task.description.substring(0, 35)}..."`);
+    }
+  }
+
+  getArchivedTasks(): DbTask[] {
+    return this.cache.archivedTasks || [];
   }
 
   // --- Backend FTS5 Matching Search ---
   queryFTS(queryText: string): Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number }> {
+    if (!queryText.trim()) return [];
+
+    try {
+      const terms = queryText.trim()
+        .replace(/[^a-zA-Z0-9\u4e00-\u9fa5\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean);
+
+      if (terms.length === 0) return [];
+
+      // FTS5 OR search with suffix wildcard *
+      const ftsQuery = terms.map(t => `${t}*`).join(' OR ');
+
+      // Query persistent SQLite FTS5 with standard bm25 ranking helper built-in
+      const queryStmt = this.ftsDb.prepare(`
+        SELECT type, title, excerpt, content, bm25(fts_docs) AS fts_score
+        FROM fts_docs
+        WHERE fts_docs MATCH ?
+        ORDER BY fts_score ASC
+        LIMIT 5;
+      `);
+
+      const sqlResults = queryStmt.all(ftsQuery) as Array<{
+        type: 'message' | 'skill';
+        title: string;
+        excerpt: string;
+        content: string;
+        fts_score: number;
+      }>;
+
+      // Transform raw SQLite rows back into normalized JSON structure
+      const results = sqlResults.map(r => {
+        // BM25 in SQLite natively returns large negative numbers (more negative = better match)
+        // Normalize into a 0.0 - 1.0 confidence score simply
+        const absScore = Math.abs(r.fts_score || 0);
+        const confidence = Math.min(0.99, Math.max(0.1, 1 - (absScore / 20)));
+        
+        return {
+          type: r.type,
+          title: r.title,
+          excerpt: r.excerpt,
+          confidence: parseFloat(confidence.toFixed(2))
+        };
+      });
+
+      return results;
+    } catch (sqlErr) {
+      console.error("Native FTS5 Virtual Index failure, falling back to JS index:", sqlErr);
+      return this.fallbackQueryFTS(queryText);
+    }
+  }
+
+  // --- Fallback memory-based FTS matching ---
+  fallbackQueryFTS(queryText: string): Array<{ type: 'message' | 'skill'; title: string; excerpt: string; confidence: number }> {
     if (!queryText.trim()) return [];
 
     const terms = queryText.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(t => t.length > 1);
@@ -555,6 +702,41 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       });
     });
 
+    // 4. Collect Workspace Physical Uploaded Files
+    const uploadsDir = path.resolve(process.cwd(), "uploads");
+    if (fs.existsSync(uploadsDir)) {
+      try {
+        const files = fs.readdirSync(uploadsDir);
+        files.forEach(file => {
+          const filePath = path.join(uploadsDir, file);
+          if (fs.statSync(filePath).isDirectory()) return;
+          try {
+            const content = fs.readFileSync(filePath, "utf8");
+            const paragraphs = content
+              .split(/\n\s*\n+/)
+              .map(p => p.trim())
+              .filter(p => p.length > 10);
+              
+            paragraphs.forEach((p, chunkIdx) => {
+              const tokens = p.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean);
+              documents.push({
+                type: 'message',
+                title: `📂 Workspace Doc: ${file} [Sec ${chunkIdx + 1}]`,
+                excerpt: p.length > 150 ? p.substring(0, 147) + '...' : p,
+                text: p,
+                tokens,
+                docLength: tokens.length
+              });
+            });
+          } catch (fileErr) {
+            console.error(`Error reading ${file} for queryFTS system:`, fileErr);
+          }
+        });
+      } catch (dirErr) {
+        console.error("Error indexing uploads directory for queryFTS system:", dirErr);
+      }
+    }
+
     const N = documents.length;
     if (N === 0) return [];
 
@@ -575,7 +757,6 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     let sumIDFs = 0;
     terms.forEach(term => {
       const df = docFrequency[term] || 0;
-      // Okapi BM25 schema for term IDF with a small smoothing factor
       const idf = Math.max(0.0001, Math.log((N - df + 0.5) / (df + 0.5) + 1));
       IDF[term] = idf;
       sumIDFs += idf;
@@ -602,7 +783,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
           if (token === term) {
             tf += 1.0;
           } else if (token.includes(term)) {
-            tf += 0.3; // Give soft weights to partial matches
+            tf += 0.3;
           }
         });
 
@@ -619,24 +800,24 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
         const matchRatio = matchedTermsCount / terms.length;
         let priorityBoost = 1.0;
         if (doc.title.includes("Cognitive Memory")) {
-          priorityBoost = 1.15; // User-defined memories should stand out
+          priorityBoost = 1.15;
         } else if (doc.title.includes("Server Skill Module")) {
           priorityBoost = 1.05;
+        } else if (doc.title.includes("Workspace Doc")) {
+          priorityBoost = 1.10;
         }
 
-        // Maximum achievable BM25 score for the active terms
         const maxPossibleBM25 = (k1 + 1) * sumIDFs;
         const normalizedScore = maxPossibleBM25 > 0 ? (score / maxPossibleBM25) : 0;
         const blendedScore = normalizedScore * 0.7 + matchRatio * 0.3;
 
-        // Scale result values dynamically into authentic 42% - 99% confident intervals
-        const confidence = Math.min(0.99, Math.max(0.40, 0.42 + blendedScore * 0.55 * priorityBoost));
+        const confidenceVal = Math.min(99, Math.max(40, Math.round((0.42 + blendedScore * 0.55 * priorityBoost) * 100)));
 
         results.push({
           type: doc.type,
           title: doc.title,
           excerpt: doc.excerpt,
-          confidence: parseFloat(confidence.toFixed(4)),
+          confidence: confidenceVal,
           rawScore: score * priorityBoost
         });
       }
@@ -647,6 +828,7 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
       .slice(0, 5)
       .map(({ type, title, excerpt, confidence }) => ({ type, title, excerpt, confidence }));
   }
+
 
   // --- Dynamic Pricing Calculator with Caching Discounts ---
   calculateAPICost(model: string, inputTokens: number, outputTokens: number, cachedTokens: number = 0): number {

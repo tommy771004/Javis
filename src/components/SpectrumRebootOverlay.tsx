@@ -274,7 +274,7 @@ export function SpectrumRebootOverlay() {
             </div>
 
             <div className="pt-4 flex justify-between items-center text-[8.5px] text-white/35 font-mono">
-              <span>SECURITY LEVEL: STARK_ARMOR_SENSITIVE</span>
+              <span>SECURITY LEVEL: HERMES_SYSTEM_SENSITIVE</span>
               <span>INDEX_REF: {activeSkin.toUpperCase()}_SPECTRA_RELOAD_05</span>
             </div>
           </div>

@@ -42,9 +42,9 @@ const DEFAULT_SETTINGS: SecuritySettings = {
   voiceProfile: 'baritone',
   autoRepair: false,
   activeSkin: 'cyan',
-  satelliteName: 'STARK-SAT-4',
-  armorModel: 'Mark LXXXV',
-  operatorName: 'T. STARK',
+  satelliteName: 'LOCAL_SQLITE_DB',
+  armorModel: 'Core v4.5',
+  operatorName: 'ADMIN OPERATOR',
   byokKey: '',
   byokModel: 'google/gemini-2.5-flash',
   byokEndpoint: 'https://openrouter.ai/api/v1',
@@ -280,9 +280,9 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
           }
         });
 
-      const savedOperatorName = localStorage.getItem('jarvis_operator_name') || (locale === 'zh-TW' ? '東尼 史塔克' : 'T. STARK');
-      const savedArmorModel = localStorage.getItem('jarvis_armor_model') || 'Mark LXXXV';
-      const savedSatelliteName = localStorage.getItem('jarvis_satellite_name') || (locale === 'zh-TW' ? '史塔克 4 號軌道衛星' : 'STARK-SAT-4');
+      const savedOperatorName = localStorage.getItem('jarvis_operator_name') || (locale === 'zh-TW' ? '系統管理員' : 'ADMIN OPERATOR');
+      const savedArmorModel = localStorage.getItem('jarvis_armor_model') || 'Core v4.5';
+      const savedSatelliteName = localStorage.getItem('jarvis_satellite_name') || (locale === 'zh-TW' ? '本機 SQLite 資料庫' : 'LOCAL_SQLITE_DB');
       const savedSkin = localStorage.getItem('jarvis_active_skin') || 'cyan';
 
       setOperatorName(savedOperatorName);
@@ -1818,7 +1818,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         value={operatorName}
                         onChange={(e) => handleIdentityChange('operatorName', e.target.value)}
                         className="w-full bg-slate-950/80 border border-cyan-900/60 rounded px-2.5 py-1.5 text-[10px] text-cyan-300 font-mono tracking-widest focus:outline-none focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.2)]"
-                        placeholder="e.g. T. STARK"
+                        placeholder="e.g. ADMIN_OPERATOR"
                       />
                     </div>
 
@@ -1831,7 +1831,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         value={armorModel}
                         onChange={(e) => handleIdentityChange('armorModel', e.target.value)}
                         className="w-full bg-slate-950/80 border border-cyan-900/60 rounded px-2.5 py-1.5 text-[10px] text-cyan-300 font-mono tracking-widest focus:outline-none focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.2)]"
-                        placeholder="e.g. Mark LXXXV"
+                        placeholder="e.g. Core v4.5"
                       />
                     </div>
 
@@ -1844,7 +1844,7 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         value={satelliteName}
                         onChange={(e) => handleIdentityChange('satelliteName', e.target.value)}
                         className="w-full bg-slate-950/80 border border-cyan-900/60 rounded px-2.5 py-1.5 text-[10px] text-cyan-300 font-mono tracking-widest focus:outline-none focus:border-cyan-400 focus:shadow-[0_0_8px_rgba(34,211,238,0.2)]"
-                        placeholder="e.g. STARK-SAT-4"
+                        placeholder="e.g. LOCAL_SQLITE_DB"
                       />
                     </div>
                   </div>

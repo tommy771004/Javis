@@ -122,15 +122,20 @@ export function HermesDashboard({
     }
   }, [activeTab]);
 
-  const handleMcpConnect = async () => {
+  const handleMcpConnect = async (useConfig?: string | React.MouseEvent) => {
     setIsMcpConnecting(true);
     setMcpStatus("Initializing connections...");
+    const hasConfigOverride = typeof useConfig === 'string';
+    const targetConfig = hasConfigOverride ? useConfig : mcpServersText;
     try {
-      localStorage.setItem('jarvis_mcp_config', mcpServersText);
+      localStorage.setItem('jarvis_mcp_config', targetConfig);
+      if (hasConfigOverride) {
+        setMcpServersText(useConfig);
+      }
       const resp = await fetch("/api/mcp/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: mcpServersText })
+        body: JSON.stringify({ config: targetConfig })
       });
       const data = await resp.json();
       if (data.success) {
@@ -234,6 +239,20 @@ export function HermesDashboard({
     }
   };
 
+  const handleClearTaskSearch = async () => {
+    setTaskSearchQuery('');
+    taskSearchQueryRef.current = '';
+    try {
+      const res = await fetch('/api/tasks/search?q=');
+      if (res.ok) {
+        const data = await res.json();
+        setTasks(data);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     taskSearchQueryRef.current = taskSearchQuery;
     loadDataFromBackend();
@@ -276,7 +295,7 @@ export function HermesDashboard({
   const [costLogs, setCostLogs] = useState<DbCostLog[]>([]);
   const [cognitiveMemoriesCount, setCognitiveMemoriesCount] = useState(0);
   const [selectedLoopNode, setSelectedLoopNode] = useState<'experience' | 'curation' | 'skills' | 'gepa'>('experience');
-  const [systemStats, setSystemStats] = useState<{ freq: string; os: string }>({ freq: '4.2GHz', os: 'STARK_OS' });
+  const [systemStats, setSystemStats] = useState<{ freq: string; os: string }>({ freq: '3.6GHz', os: 'HERMES_CORE_OS' });
 
   // Autoscroll terminal
   useEffect(() => {
@@ -324,6 +343,9 @@ export function HermesDashboard({
             setSelectedModel(localModel as 'haiku' | 'sonnet' | 'auto');
           }
         }
+        if (data.activeLoopNode) {
+          setSelectedLoopNode(data.activeLoopNode);
+        }
       }
 
       if (tasksRes.ok) {
@@ -360,8 +382,8 @@ export function HermesDashboard({
       if (statsRes.ok) {
         const statsData = await statsRes.json();
         setSystemStats({
-          freq: statsData.freq || '4.2GHz',
-          os: `STARK_OS_${statsData.os || 'GENRIC'}`
+          freq: statsData.freq || '3.6GHz',
+          os: `HERMES_OS_${statsData.os || 'GENERIC'}`
         });
       }
 
@@ -415,6 +437,32 @@ export function HermesDashboard({
     }
   };
 
+  const selectLearningLoopNode = async (node: 'experience' | 'curation' | 'skills' | 'gepa') => {
+    setSelectedLoopNode(node);
+    
+    // Auto-switch tabs to show corresponding dashboard features
+    if (node === 'experience') {
+      setActiveTab('memory');
+    } else if (node === 'curation') {
+      setActiveTab('tasks');
+    } else if (node === 'skills') {
+      setActiveTab('matrix');
+    } else if (node === 'gepa') {
+      setActiveTab('gateway');
+    }
+
+    try {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activeLoopNode: node })
+      });
+      loadDataFromBackend();
+    } catch (e) {
+      console.warn("Failed to save learning loop selection to backend", e);
+    }
+  };
+
   useEffect(() => {
     loadDataFromBackend();
     
@@ -443,8 +491,8 @@ export function HermesDashboard({
         if (res.ok) {
           const data = await res.json();
           setSystemStats({
-            freq: data.freq || '4.2GHz',
-            os: `STARK_OS_${data.os || 'GENRIC'}`
+            freq: data.freq || '3.6GHz',
+            os: `HERMES_OS_${data.os || 'GENERIC'}`
           });
         }
       } catch (e) {}
@@ -634,7 +682,7 @@ export function HermesDashboard({
                   />
                   {taskSearchQuery && (
                     <button 
-                      onClick={() => setTaskSearchQuery('')}
+                      onClick={handleClearTaskSearch}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500 hover:text-emerald-300 text-[9px] font-bold font-mono"
                     >
                       [CLEAR]
@@ -681,7 +729,7 @@ export function HermesDashboard({
                   />
                   {taskSearchQuery && (
                     <button 
-                      onClick={() => setTaskSearchQuery('')}
+                      onClick={handleClearTaskSearch}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500 hover:text-emerald-300 text-[9px] font-bold font-mono"
                     >
                       [CLEAR]
@@ -757,8 +805,8 @@ export function HermesDashboard({
                           ) : (
                             <div className="mt-2 pt-2 border-t border-emerald-950/45 flex flex-col gap-1" onClick={(e) => e.stopPropagation()}>
                               <div className="flex justify-between items-center mb-1">
-                                <span className="text-[7.5px] text-emerald-500/70 font-bold tracking-widest uppercase">Cognitive Tracking Active</span>
-                                <span className="text-[7.5px] text-emerald-600 animate-pulse font-bold">[HEURISTIC_SYNC]</span>
+                                <span className="text-[7.5px] text-emerald-500/70 font-bold tracking-widest uppercase">Adaptive Tracking Active</span>
+                                <span className="text-[7.5px] text-emerald-600 animate-pulse font-bold">[ACTIVE_SYNC]</span>
                               </div>
                               <div className="flex items-center gap-3">
                                 <span className="text-[8px] text-emerald-500/70 font-bold tracking-wider">SYNC:</span>
@@ -1006,28 +1054,28 @@ export function HermesDashboard({
                   {/* Nodes */}
                   <g>
                     {/* User Experience Node */}
-                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('experience')}>
+                    <g className="cursor-pointer group" onClick={() => selectLearningLoopNode('experience')}>
                       <circle cx="60" cy="80" r="26" fill={selectedLoopNode === 'experience' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'experience' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'experience' ? "1.5" : "1"} strokeDasharray="3,3" className="transition-all duration-300" />
                       <text x="60" y="77" fill={selectedLoopNode === 'experience' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">EXPERIENCE</text>
                       <text x="60" y="88" fill={selectedLoopNode === 'experience' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{cognitiveMemoriesCount} MEMS</text>
                     </g>
                     
                     {/* Skill Curation Node */}
-                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('curation')}>
+                    <g className="cursor-pointer group" onClick={() => selectLearningLoopNode('curation')}>
                       <circle cx="200" cy="40" r="26" fill={selectedLoopNode === 'curation' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'curation' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'curation' ? "1.5" : "1"} className="transition-all duration-300" />
                       <text x="200" y="37" fill={selectedLoopNode === 'curation' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">CURATION</text>
                       <text x="200" y="48" fill={selectedLoopNode === 'curation' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{tasks.length} TASKS</text>
                     </g>
                     
                     {/* Active Skills Repository */}
-                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('skills')}>
+                    <g className="cursor-pointer group" onClick={() => selectLearningLoopNode('skills')}>
                       <circle cx="340" cy="80" r="26" fill={selectedLoopNode === 'skills' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'skills' ? "#10b981" : activeColor} strokeWidth={selectedLoopNode === 'skills' ? "1.5" : "1"} strokeDasharray="3,3" className="transition-all duration-300" />
                       <text x="340" y="77" fill={selectedLoopNode === 'skills' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">SKILLS</text>
                       <text x="340" y="88" fill={selectedLoopNode === 'skills' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{skills.length} ACTIVE</text>
                     </g>
                     
                     {/* DSPy/GEPA Genetic Optimizer */}
-                    <g className="cursor-pointer group" onClick={() => setSelectedLoopNode('gepa')}>
+                    <g className="cursor-pointer group" onClick={() => selectLearningLoopNode('gepa')}>
                       <circle cx="200" cy="120" r="26" fill={selectedLoopNode === 'gepa' ? "rgba(16,185,129,0.25)" : "rgba(6,78,59,0.15)"} stroke={selectedLoopNode === 'gepa' ? "#10b981" : activeColor} strokeWidth={isEvolving ? "2" : (selectedLoopNode === 'gepa' ? "1.5" : "1")} className="transition-all duration-300" />
                       <text x="200" y="117" fill={selectedLoopNode === 'gepa' ? "#6ee7b7" : "#34d399"} fontSize="8" fontWeight="bold" textAnchor="middle" fontFamily="monospace" className="transition-colors">{isEvolving ? "EVOLVING" : "GEPA EVOLVE"}</text>
                       <text x="200" y="128" fill={selectedLoopNode === 'gepa' ? "#34d399" : "#10b981"} fontSize="7.5" textAnchor="middle" fontFamily="monospace" opacity="0.9" className="transition-colors">{isEvolving ? "MUTATING..." : `v${(1 + (skills.length - 3) * 0.1).toFixed(1)} GEN`}</text>
@@ -1588,7 +1636,7 @@ export function HermesDashboard({
                     <div className="flex flex-wrap gap-2 justify-between items-center">
                       <div className="flex gap-2">
                         <button
-                          onClick={() => setMcpServersText(JSON.stringify({
+                          onClick={() => handleMcpConnect(JSON.stringify({
                             mcpServers: {
                               "sqlite": {
                                 "command": "npx",
@@ -1597,12 +1645,13 @@ export function HermesDashboard({
                               }
                             }
                           }, null, 2))}
-                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition"
+                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
+                          title="Instantly deploy SQLite MCP protocol server"
                         >
-                          + SQLite Preset
+                          ⚡ + SQLite Preset
                         </button>
                         <button
-                          onClick={() => setMcpServersText(JSON.stringify({
+                          onClick={() => handleMcpConnect(JSON.stringify({
                             mcpServers: {
                               "everything": {
                                 "command": "npx",
@@ -1610,9 +1659,10 @@ export function HermesDashboard({
                               }
                             }
                           }, null, 2))}
-                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition"
+                          className="px-2 py-0.5 border border-emerald-900/60 bg-emerald-950/10 text-[8px] text-emerald-500 hover:text-emerald-300 hover:border-emerald-700 transition font-bold"
+                          title="Instantly deploy Everything MCP protocol server"
                         >
-                          + Everything Preset
+                          ⚡ + Everything Preset
                         </button>
                       </div>
 

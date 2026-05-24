@@ -33,7 +33,7 @@ export function SysMonitor({
 
     const [heartRate, setHeartRate] = useState(72);
     const [bodyTemp, setBodyTemp] = useState(98.6);
-    const [satelliteName, setSatelliteName] = useState('STARK-SAT-4');
+    const [satelliteName, setSatelliteName] = useState('LOCAL_SQLITE_DB');
 
     useEffect(() => {
         const updateSatellite = () => {
