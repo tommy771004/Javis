@@ -38,14 +38,14 @@ export function SysMonitor({
         neuralSync: '99.55',
         rxSpeed: 0,
         txSpeed: 0,
-        tmp: 'N/A',
+        tmp: '...',
         uptime: 0,
         processes: 0,
         os: 'WIN',
         secStatus: 'SEC_REQUIRED',
-        powerDraw: 'N/A',
-        fans: 'N/A',
-        voltage: 'N/A'
+        powerDraw: '...',
+        fans: '...',
+        voltage: '...'
     });
 
     const [satelliteName, setSatelliteName] = useState('LOCAL_SQLITE_DB');
@@ -66,6 +66,30 @@ export function SysMonitor({
     }, [t.lblStarkSat4]);
 
     const [apiLatency, setApiLatency] = useState(0);
+
+    const [isVerifyingUplink, setIsVerifyingUplink] = useState(false);
+    const [uplinkVerified, setUplinkVerified] = useState(false);
+
+    const handleVerifyUplink = async () => {
+        if (isVerifyingUplink) return;
+        setIsVerifyingUplink(true);
+        setUplinkVerified(false);
+        try {
+            const result = await fetch('/api/system/test-cli-ping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).then(r => r.json());
+            
+            if (result.success) {
+                setUplinkVerified(true);
+                setTimeout(() => setUplinkVerified(false), 8000);
+            }
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setIsVerifyingUplink(false);
+        }
+    };
 
     useEffect(() => {
         let active = true;
@@ -289,27 +313,52 @@ export function SysMonitor({
                 </div>
 
                 {/* Rotating Cryptographic Radar Graphic matching the user design */}
-                <div className="w-24 h-24 rounded-full border border-cyan-900/40 relative flex items-center justify-center my-2 select-none overflow-hidden bg-cyan-950/5">
+                <div 
+                    onClick={handleVerifyUplink}
+                    className={`w-24 h-24 rounded-full border relative flex items-center justify-center my-2 select-none overflow-hidden cursor-pointer transition-colors ${
+                        isVerifyingUplink ? 'border-amber-500/60 bg-amber-950/10' 
+                        : uplinkVerified ? 'border-emerald-500/60 bg-emerald-950/10' 
+                        : 'border-cyan-900/40 bg-cyan-950/5 hover:bg-cyan-950/20'
+                    }`}
+                >
                     {/* Sweep radar ray */}
                     <motion.div
                         animate={{ rotate: 360 }}
-                        transition={{ duration: 4, repeat: Infinity, ease: "linear" }}
-                        className="absolute inset-0 bg-[conic-gradient(from_0deg,transparent_65%,rgba(34,211,238,0.45)_100%)] rounded-full origin-center"
+                        transition={{ duration: isVerifyingUplink ? 1 : 4, repeat: Infinity, ease: "linear" }}
+                        className={`absolute inset-0 rounded-full origin-center ${
+                            isVerifyingUplink ? 'bg-[conic-gradient(from_0deg,transparent_65%,rgba(245,158,11,0.45)_100%)]'
+                            : uplinkVerified ? 'bg-[conic-gradient(from_0deg,transparent_65%,rgba(16,185,129,0.45)_100%)]'
+                            : 'bg-[conic-gradient(from_0deg,transparent_65%,rgba(34,211,238,0.45)_100%)]'
+                        }`}
                     />
                     
                     {/* Orbit lines & lock indicator */}
-                    <div className="absolute w-[80%] h-[80%] rounded-full border border-cyan-950 border-dashed animate-[spin_10s_linear_infinite]" />
-                    <div className="absolute w-[55%] h-[55%] rounded-full border border-cyan-900/30 flex items-center justify-center">
+                    <div className={`absolute w-[80%] h-[80%] rounded-full border border-dashed animate-[spin_10s_linear_infinite] ${
+                        isVerifyingUplink ? 'border-amber-500/50' : uplinkVerified ? 'border-emerald-500/50' : 'border-cyan-950'
+                    }`} />
+                    <div className={`absolute w-[55%] h-[55%] rounded-full border flex items-center justify-center ${
+                        isVerifyingUplink ? 'border-amber-900/50' : uplinkVerified ? 'border-emerald-900/50' : 'border-cyan-900/30'
+                    }`}>
                         <motion.div
                             animate={{ scale: [1, 1.15, 1] }}
                             transition={{ duration: 2, repeat: Infinity }}
                         >
-                            <Shield className="w-4 h-4 text-cyan-400 fill-cyan-400/10 drop-shadow-[0_0_6px_rgba(34,211,238,0.6)]" />
+                            <Shield className={`w-4 h-4 ${
+                                isVerifyingUplink ? 'text-amber-400 fill-amber-400/10 drop-shadow-[0_0_6px_rgba(245,158,11,0.6)]'
+                                : uplinkVerified ? 'text-emerald-400 fill-emerald-400/10 drop-shadow-[0_0_6px_rgba(16,185,129,0.6)]' 
+                                : 'text-cyan-400 fill-cyan-400/10 drop-shadow-[0_0_6px_rgba(34,211,238,0.6)]'
+                            }`} />
                         </motion.div>
                     </div>
 
                     {/* Encrypted link beacon */}
-                    <div className="absolute top-1 left-2 pl-0.5 text-[7px] text-cyan-400 animate-pulse font-bold">ENCRYPTED</div>
+                    <div className={`absolute top-1 left-2 pl-0.5 text-[7px] animate-pulse font-bold ${
+                        isVerifyingUplink ? 'text-amber-400 w-full text-center left-0 top-3' 
+                        : uplinkVerified ? 'text-emerald-400' 
+                        : 'text-cyan-400'
+                    }`}>
+                        {isVerifyingUplink ? 'VERIFYING...' : uplinkVerified ? 'SECURE' : 'ENCRYPTED'}
+                    </div>
                 </div>
 
                 {/* Satellite Connection description */}

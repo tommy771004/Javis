@@ -37,6 +37,10 @@ export interface SecuritySettings {
   launchOnStartup?: boolean;
   gatewayRoutingModel?: 'auto' | 'haiku' | 'sonnet';
   cliPackageMap?: Record<string, string>;
+  sttProvider?: string;
+  ttsProvider?: string;
+  locale?: string;
+  isLightMode?: boolean;
   // Provider API keys stored in encrypted DB
   openrouterKey?: string;
   openaiKey?: string;
@@ -1743,10 +1747,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] text-cyan-400">STT (語音辨識) Provider:</span>
                       <select 
-                        value={localStorage.getItem('jarvis_stt_provider') || 'webspeech'}
+                        value={settings.sttProvider || 'webspeech'}
                         onChange={(e) => {
-                          localStorage.setItem('jarvis_stt_provider', e.target.value);
-                          triggerLog(t.logSttEngineMessage(e.target.value.toUpperCase()));
+                          const val = e.target.value;
+                          localStorage.setItem('jarvis_stt_provider', val);
+                          saveSettings({ ...settings, sttProvider: val });
+                          triggerLog(t.logSttEngineMessage(val.toUpperCase()));
                           // Dispatch event to app
                           window.dispatchEvent(new Event('voice-engine-updated'));
                         }}
@@ -1760,10 +1766,12 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] text-cyan-400">TTS (語音合成) Provider:</span>
                       <select 
-                        value={localStorage.getItem('jarvis_tts_provider') || 'webspeech'}
+                        value={settings.ttsProvider || 'webspeech'}
                         onChange={(e) => {
-                          localStorage.setItem('jarvis_tts_provider', e.target.value);
-                          triggerLog(t.logTtsEngineMessage(e.target.value.toUpperCase()));
+                          const val = e.target.value;
+                          localStorage.setItem('jarvis_tts_provider', val);
+                          saveSettings({ ...settings, ttsProvider: val });
+                          triggerLog(t.logTtsEngineMessage(val.toUpperCase()));
                           window.dispatchEvent(new Event('voice-engine-updated'));
                         }}
                         className="bg-slate-950 border border-cyan-950 text-[10px] text-cyan-300 rounded p-1"
@@ -1772,6 +1780,41 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                         <option value="elevenlabs">Backend API (ElevenLabs)</option>
                       </select>
                     </div>
+
+                    {settings.sttProvider === 'whisper' && (
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] text-cyan-500">OpenAI API Key:</span>
+                        <input
+                          type="password"
+                          className="w-48 bg-slate-950 border border-cyan-800 rounded px-2 py-1 text-[10px] text-cyan-300 font-mono focus:border-cyan-500 outline-none"
+                          placeholder="sk-..."
+                          value={openaiKey}
+                          onChange={(e) => setOpenaiKey(e.target.value)}
+                          onBlur={async () => {
+                            const updated = { ...settings, openaiKey };
+                            await saveSettings(updated);
+                            localStorage.setItem('jarvis_openai_key', openaiKey);
+                          }}
+                        />
+                      </div>
+                    )}
+                    {settings.ttsProvider === 'elevenlabs' && (
+                      <div className="flex items-center justify-between mt-1">
+                        <span className="text-[10px] text-cyan-500">ElevenLabs API Key:</span>
+                        <input
+                          type="password"
+                          className="w-48 bg-slate-950 border border-cyan-800 rounded px-2 py-1 text-[10px] text-cyan-300 font-mono focus:border-cyan-500 outline-none"
+                          placeholder="sk-..."
+                          value={elevenLabsKey}
+                          onChange={(e) => setElevenLabsKey(e.target.value)}
+                          onBlur={async () => {
+                            const updated = { ...settings, elevenLabsKey };
+                            await saveSettings(updated);
+                            localStorage.setItem('jarvis_elevenlabs_key', elevenLabsKey);
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
 
                   <p className="text-[10px] text-cyan-500/70 mb-3 leading-relaxed border-t border-cyan-950/40 pt-3">
@@ -1822,8 +1865,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                   <div className="grid grid-cols-2 gap-2">
                     <button 
                       onClick={() => {
-                        setLocale('zh-TW');
-                        const nextTranslations = getTranslations('zh-TW');
+                        const newLocale = 'zh-TW';
+                        setLocale(newLocale);
+                        localStorage.setItem('jarvis_locale', newLocale);
+                        saveSettings({ ...settings, locale: newLocale });
+                        const nextTranslations = getTranslations(newLocale);
                         triggerLog(nextTranslations.logLocaleZhTwMessage, nextTranslations.logLocaleZhTwSpeak);
                       }}
                       className={`p-2 border rounded text-[10.5px] font-bold uppercase text-center cursor-pointer transition-all ${
@@ -1836,8 +1882,11 @@ export function SettingsModal({ isOpen, onClose, onSettingsChange, isMuted, onTo
                     </button>
                     <button 
                       onClick={() => {
-                        setLocale('en');
-                        const nextTranslations = getTranslations('en');
+                        const newLocale = 'en';
+                        setLocale(newLocale);
+                        localStorage.setItem('jarvis_locale', newLocale);
+                        saveSettings({ ...settings, locale: newLocale });
+                        const nextTranslations = getTranslations(newLocale);
                         triggerLog(nextTranslations.logLocaleEnMessage, nextTranslations.logLocaleEnSpeak);
                       }}
                       className={`p-2 border rounded text-[10.5px] font-bold uppercase text-center cursor-pointer transition-all ${

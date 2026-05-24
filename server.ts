@@ -489,6 +489,7 @@ setInterval(() => {
   hardwareTick++;
   if (hardwareTick % 5 === 0) {
     updateRealHardwareMetrics();
+    updateSystemInformationSensors();
   }
   updateSystemSpeeds().catch(() => {});
   const currentCpus = os.cpus();
@@ -1111,6 +1112,35 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+  app.get("/api/system/status", (req, res) => {
+    res.json({
+      success: true,
+      shieldActive,
+      reactorOverdrive
+    });
+  });
+
+  app.post("/api/system/toggle-shield", (req, res) => {
+    try {
+      shieldActive = !!req.body.active;
+      serverDB.addSystemLog('SEC', shieldActive ? 'SUCCESS' : 'INFO', `Shield Firewall Status Changed: ${shieldActive ? 'ACTIVE' : 'STANDBY'}`);
+      res.json({ success: true, shieldActive });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/system/overdrive", (req, res) => {
+    try {
+      reactorOverdrive = !!req.body.active;
+      toggleTrueOverdriveWorker(reactorOverdrive);
+      serverDB.addSystemLog('SYS', reactorOverdrive ? 'WARN' : 'INFO', `Node.js Process Priority changed: ${reactorOverdrive ? 'HIGH' : 'NORMAL'}`);
+      res.json({ success: true, reactorOverdrive });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // --- Real-time Chat & Cost Routing Endpoint ---
   app.post("/api/chat", async (req, res) => {
@@ -2696,10 +2726,10 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       finalTmp = `${Math.round(siCpuTemp)}°C`;
     }
 
-    const powerDraw = siPower !== null && siPower > 0 ? `${siPower} W` : "N/A";
-    const activeFans = siFans.length > 0 ? `${siFans[0]} RPM` : "N/A";
-    const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0 ? `${siCpuVoltage.toFixed(3)} V` : "N/A";
-    const finalFreq = siCpuSpeed !== null && siCpuSpeed > 0 ? `${siCpuSpeed.toFixed(2)}GHz` : "N/A";
+    const powerDraw = siPower !== null && siPower > 0 ? `${siPower} W` : "...";
+    const activeFans = siFans.length > 0 ? `${siFans[0]} RPM` : "...";
+    const activeVoltage = siCpuVoltage !== null && siCpuVoltage > 0 ? `${siCpuVoltage.toFixed(3)} V` : "...";
+    const finalFreq = siCpuSpeed !== null && siCpuSpeed > 0 ? `${siCpuSpeed.toFixed(2)}GHz` : "...";
 
     const finalNet = currentRxSpeed > 0 || currentTxSpeed > 0
       ? `${(currentRxSpeed / 1024).toFixed(1)} KB/s ↓ | ${(currentTxSpeed / 1024).toFixed(1)} KB/s ↑`
@@ -2953,6 +2983,44 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
       if (newSettings.gatewayRoutingModel && newSettings.gatewayRoutingModel !== oldSettings.gatewayRoutingModel) {
         const routeMode = String(newSettings.gatewayRoutingModel).toUpperCase();
         serverDB.addSystemLog('API', 'INFO', `[ROUTING SHIFT]: Cost-Aware Gateway updated to [${routeMode}] mode.`);
+      }
+
+      if (newSettings.isLightMode !== undefined && newSettings.isLightMode !== oldSettings.isLightMode) {
+        const modeState = newSettings.isLightMode ? 'LIGHT' : 'DARK';
+        serverDB.addSystemLog('SYS', 'INFO', `UI DOMAIN SET TO ${modeState} MODE.`);
+      }
+
+      if (newSettings.activeSkin !== undefined && newSettings.activeSkin !== oldSettings.activeSkin) {
+        const skinFormat = String(newSettings.activeSkin).toUpperCase();
+        serverDB.addSystemLog('SYS', 'INFO', `TACTICAL UI SKIN CALIBRATED TO [${skinFormat}].`);
+      }
+
+      if (newSettings.operatorName && newSettings.operatorName !== oldSettings.operatorName) {
+        serverDB.addSystemLog('SYS', 'INFO', `OPERATOR IDENTITY UPDATED TO [${newSettings.operatorName.toUpperCase()}].`);
+      }
+
+      if (newSettings.satelliteName && newSettings.satelliteName !== oldSettings.satelliteName) {
+        serverDB.addSystemLog('SYS', 'INFO', `UPLINK SATELLITE DESIGNATION SET TO [${newSettings.satelliteName.toUpperCase()}].`);
+      }
+
+      if (newSettings.armorModel && newSettings.armorModel !== oldSettings.armorModel) {
+        serverDB.addSystemLog('SYS', 'INFO', `CORE ARCHITECTURE EMULATION SET TO [${newSettings.armorModel.toUpperCase()}].`);
+      }
+
+      if (newSettings.voiceProfile && newSettings.voiceProfile !== oldSettings.voiceProfile) {
+        serverDB.addSystemLog('SYS', 'INFO', `VOCAL SYNTHESIS ENGINE OVERRIDDEN TO [${newSettings.voiceProfile.toUpperCase()}].`);
+      }
+
+      if (newSettings.sttProvider && newSettings.sttProvider !== oldSettings.sttProvider) {
+        serverDB.addSystemLog('VOIP', 'INFO', `SPEECH RECOGNITION PIPELINE SWITCHED TO: [${newSettings.sttProvider.toUpperCase()}]`);
+      }
+
+      if (newSettings.ttsProvider && newSettings.ttsProvider !== oldSettings.ttsProvider) {
+        serverDB.addSystemLog('VOIP', 'INFO', `TEXT-TO-SPEECH SYNTHESIS ENGINE SWITCHED TO: [${newSettings.ttsProvider.toUpperCase()}]`);
+      }
+
+      if (newSettings.locale && newSettings.locale !== oldSettings.locale) {
+        serverDB.addSystemLog('SYS', 'INFO', `SYSTEM LOCALE AND TRANSLATION MATRIX SET TO: [${newSettings.locale.toUpperCase()}]`);
       }
 
       serverDB.updateSettings(newSettings);

@@ -437,6 +437,8 @@ export function HermesDashboard({
   const [cognitiveMemoriesCount, setCognitiveMemoriesCount] = useState(0);
   const [selectedLoopNode, setSelectedLoopNode] = useState<'experience' | 'curation' | 'skills' | 'gepa'>('experience');
   const [systemStats, setSystemStats] = useState<{ freq: string; os: string }>({ freq: '3.6GHz', os: 'HERMES_CORE_OS' });
+  const [shieldActive, setShieldActive] = useState(false);
+  const [reactorOverdrive, setReactorOverdrive] = useState(false);
   // flowSpeed: animation duration for Matrix data-flow particles, driven by actual DB flush/sec.
   // Lower value = faster particles (more DB I/O happening). Range: 1.0s (busy) – 5.0s (idle).
   const [flowSpeed, setFlowSpeed] = useState(4.5);
@@ -488,7 +490,14 @@ export function HermesDashboard({
       setCognitiveMemoriesCount(memoriesCount);
       
       const settingsRes = await fetch('/api/settings');
+      const sysStatusRes = await fetch('/api/system/status');
       const tasksRes = await fetch('/api/tasks/search?q=' + encodeURIComponent(taskSearchQueryRef.current));
+      
+      if (sysStatusRes.ok) {
+        const sysStats = await sysStatusRes.json();
+        setShieldActive(sysStats.shieldActive);
+        setReactorOverdrive(sysStats.reactorOverdrive);
+      }
       
       if (settingsRes.ok) {
         const data = await settingsRes.json();
@@ -932,6 +941,42 @@ export function HermesDashboard({
           alerts={monitoringAlerts}
           isLoading={isDatabaseHealthLoading}
         />
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        <button
+          onClick={async () => {
+             const active = !shieldActive;
+             const res = await fetch('/api/system/toggle-shield', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ active }) }).then(r=>r.json());
+             if (res.success) setShieldActive(res.shieldActive);
+          }}
+          className={`flex-1 min-w-[120px] py-1.5 px-3 border rounded-sm flex items-center justify-between transition-all outline-none ${
+            shieldActive ? 'bg-emerald-950/40 border-emerald-500 text-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.3)]' : 'border-emerald-900/40 bg-black/40 hover:bg-emerald-950/30'
+          }`}
+        >
+          <div className={`flex items-center gap-2 text-[10px] font-bold tracking-wider uppercase ${shieldActive ? 'text-emerald-400' : 'text-emerald-700'}`}>
+            <Shield className="w-3.5 h-3.5" />
+            啟動防護罩
+          </div>
+          <div className={`w-2 h-2 rounded-full ${shieldActive ? 'bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-emerald-900'}`} />
+        </button>
+
+        <button
+          onClick={async () => {
+             const active = !reactorOverdrive;
+             const res = await fetch('/api/system/overdrive', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ active }) }).then(r=>r.json());
+             if (res.success) setReactorOverdrive(res.reactorOverdrive);
+          }}
+          className={`flex-1 min-w-[120px] py-1.5 px-3 border rounded-sm flex items-center justify-between transition-all outline-none ${
+            reactorOverdrive ? 'bg-orange-950/40 border-orange-500 text-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.3)]' : 'border-emerald-900/40 bg-black/40 hover:bg-emerald-950/30'
+          }`}
+        >
+           <div className={`flex items-center gap-2 text-[10px] font-bold tracking-wider uppercase ${reactorOverdrive ? 'text-orange-400' : 'text-emerald-700'}`}>
+             <Zap className="w-3.5 h-3.5" />
+             進程超頻模式
+           </div>
+           <div className={`w-2 h-2 rounded-full ${reactorOverdrive ? 'bg-orange-400 animate-[pulse_0.5s_ease-in-out_infinite] shadow-[0_0_8px_rgba(249,115,22,0.8)]' : 'bg-emerald-900'}`} />
+        </button>
       </div>
 
       {/* Tab Panels */}
