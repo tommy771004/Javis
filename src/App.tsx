@@ -17,6 +17,7 @@ import { type HermesRuntimeStatus } from './services/hermesRuntime';
 import { CACHE_PURGE_RESET_EVENT, createInitialWebRtcStats, createUiResetSnapshot } from './services/uiResetPolicies';
 import { resolveGlobalShortcutAction } from './services/hermesDashboardInteractions';
 import { buildOperationalSpeechFallback } from './services/truthfulUiPolicies';
+import { buildSessionLogTranscript, formatSessionEventAsLogLine } from './services/sessionEventPresentation';
 
 interface PlannedAction {
   type: 'write' | 'execute' | 'create_task';
@@ -27,6 +28,8 @@ interface PlannedAction {
   description?: string;
   ticketId?: string;
 }
+
+const DEFAULT_SESSION_ID = 'default-session';
 
 export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(() => {
@@ -222,6 +225,8 @@ export default function App() {
   const [pendingAction, setPendingAction] = useState<PlannedAction | null>(null);
   const [actionQueue, setActionQueue] = useState<PlannedAction[]>([]);
   const [isExecutingAction, setIsExecutingAction] = useState(false);
+  const sessionSequenceRef = useRef(0);
+  const sessionStreamRef = useRef<EventSource | null>(null);
 
   // Protective queue manager: If an action is already pending, others wait their turn
   useEffect(() => {
@@ -235,24 +240,61 @@ export default function App() {
   // Synchronize conversational history from backend master database
   const syncLogsFromBackend = async () => {
     try {
-      const savedMsgs = await apiClient.getSessionMessages("default-session");
-      if (savedMsgs.length > 0) {
-        const logStrings = savedMsgs.map(msg => {
-          const role = msg.role === 'user' ? 'USER' : msg.role === 'system' ? 'SYS' : isHermesActive ? 'HERMES' : 'JARVIS';
-          return `${role}: ${msg.content}`;
+      const bootstrap = await apiClient.getSessionEventBootstrap(DEFAULT_SESSION_ID);
+      sessionSequenceRef.current = bootstrap.latestSequence;
+      if (bootstrap.events.length > 0) {
+        const logStrings = buildSessionLogTranscript(bootstrap.events, {
+          assistantLabel: isHermesActive ? 'HERMES' : 'JARVIS',
         });
         setLogs([
-          "SYS: Server database logs synchronized.",
+          "SYS: Session event stream synchronized.",
           ...logStrings
         ]);
       }
     } catch (err) {
-      console.error("Failed to load historical logs from backend", err);
+      console.error("Failed to load historical logs from session event backend", err);
     }
   };
 
   useEffect(() => {
-    syncLogsFromBackend();
+    let cancelled = false;
+    const clientId = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const bootstrapAndAttach = async () => {
+      await syncLogsFromBackend();
+      if (cancelled) {
+        return;
+      }
+
+      const stream = new EventSource(`/api/session-events/stream?sessionId=${DEFAULT_SESSION_ID}&afterSequence=${sessionSequenceRef.current}&clientId=${clientId}`);
+      sessionStreamRef.current = stream;
+      stream.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (typeof payload.sequence === 'number') {
+            sessionSequenceRef.current = Math.max(sessionSequenceRef.current, payload.sequence);
+          }
+
+          const line = formatSessionEventAsLogLine(payload, {
+            assistantLabel: isHermesActive ? 'HERMES' : 'JARVIS',
+          });
+
+          if (line) {
+            setLogs((prev) => [...prev, line]);
+          }
+        } catch (error) {
+          console.error('Failed to parse session stream event', error);
+        }
+      };
+    };
+
+    bootstrapAndAttach();
+
+    return () => {
+      cancelled = true;
+      sessionStreamRef.current?.close();
+      sessionStreamRef.current = null;
+    };
   }, [isHermesActive]);
 
   // WebRTC Active Switch Effect
@@ -1068,12 +1110,6 @@ export default function App() {
   const handleCommandRef = useRef<any>(null);
 
   const handleCommand = async (text: string) => {
-    if (text.startsWith('[SYSTEM FEEDBACK]')) {
-      setLogs(prev => [...prev, `SYS: ${text}`]);
-    } else {
-      setLogs(prev => [...prev, `USER: ${text}`]);
-    }
-    
     // Trigger Amber computing state immediately
     setCognitiveState('thinking');
     setIsThinking(true);
@@ -1099,7 +1135,7 @@ export default function App() {
         body: JSON.stringify({ 
           message: text,
           model: requestedModel === "auto" ? (byokModel || undefined) : requestedModel,
-          sessionId: "default-session",
+          sessionId: DEFAULT_SESSION_ID,
           activeCli: activeCli,
           byokKey: byokKey,
           byokEndpoint: byokEndpoint,
@@ -1184,7 +1220,6 @@ export default function App() {
         setCognitiveState('idle');
       }
 
-      await syncLogsFromBackend();
       speakText(data.text);
     } catch (e) {
       console.error(e);
@@ -1230,7 +1265,6 @@ export default function App() {
         }
       } else if (action.type === 'execute') {
         const cmd = action.command || '';
-        setLogs(prev => [...prev, `SYS: Initiating OS command execution...`, `CMD: ${cmd.substring(0, 120)}`]);
         
         // Determine best endpoint: /api/system/shell for PowerShell/CMD, /api/workspace/run as fallback
         const isShellCmd = /^(powershell|cmd|start\s)/i.test(cmd.trim());
@@ -1240,18 +1274,13 @@ export default function App() {
         const executeRes = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli, shellMode: securitySettings.shellMode, ticketId: action.ticketId })
+          body: JSON.stringify({ command: cmd, shell: 'powershell', activeCli, shellMode: securitySettings.shellMode, ticketId: action.ticketId, sessionId: DEFAULT_SESSION_ID })
         });
         
         const executeData = await executeRes.json();
         const outputPreview = (executeData.stdout || '').substring(0, 300).trim();
 
         if (executeData.success) {
-          setLogs(prev => [
-            ...prev,
-            `SYS: Command dispatched. Exit status: SUCCESS.`,
-            outputPreview ? `OUTPUT: ${outputPreview}` : `SYS: Process launched in background. No stdout captured (GUI process).`
-          ]);
           speakText(
             outputPreview
               ? `Command executed successfully, sir. ${outputPreview.split('\n')[0]}`
@@ -1259,11 +1288,6 @@ export default function App() {
           );
         } else {
           const errMsg = (executeData.stderr || 'Unknown execution failure').substring(0, 200);
-          setLogs(prev => [
-            ...prev,
-            `SYS ERROR: Command failed. Trace:`,
-            errMsg
-          ]);
           speakText(`Warning, sir. The command encountered an error. ${errMsg.split('\n')[0]}`);
         }
       } else {

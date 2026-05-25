@@ -4,6 +4,13 @@ import crypto from 'crypto';
 import os from 'os';
 import Database from 'better-sqlite3';
 import { formatFtsScoreLabel, type FtsScoreKind } from './src/services/telemetryPresentationPolicies';
+import {
+  createUniversalEvent,
+  type AgentRuntime,
+  type UniversalEvent,
+  type UniversalEventActor,
+} from './src/services/universalEvents';
+import { SqliteSessionEventStore, SqliteSessionEventWriter } from './src/services/sqliteSessionEvents';
 
 // ---------------------------------------------------------------------------
 // Real AES-256-GCM encryption for database.json at rest
@@ -186,18 +193,85 @@ const INITIAL_SKILLS: DbSkill[] = [];
 class ServerPersistenceEngine {
   private cache: DatabaseSchema = { messages: [], skills: [], costLogs: [], tasks: [], cognitiveMemories: [] };
   private ftsDb: any;
+  private sessionEventStore: SqliteSessionEventStore;
+  private sessionEventWriter: SqliteSessionEventWriter;
   private systemLogs: SystemLogEntry[] = [];
   private dataListeners: (() => void)[] = [];
+  private sessionEventListeners: Array<(events: UniversalEvent[]) => void> = [];
+  private sessionSequenceCache = new Map<string, number>();
   private dbFlushCount = 0;
 
   onDataChanged(cb: () => void) {
     this.dataListeners.push(cb);
   }
 
+  onSessionEvents(cb: (events: UniversalEvent[]) => void) {
+    this.sessionEventListeners.push(cb);
+  }
+
   constructor() {
     this.ftsDb = new Database('jarvis_fts.sqlite');
+    this.sessionEventStore = new SqliteSessionEventStore(this.ftsDb);
+    this.sessionEventWriter = new SqliteSessionEventWriter(this.sessionEventStore);
     this.initFTS();
+    this.sessionEventStore.initialize();
     this.initDb();
+  }
+
+  private emitSessionEvents(events: UniversalEvent[]) {
+    if (events.length === 0) {
+      return;
+    }
+
+    this.sessionEventListeners.forEach((listener) => {
+      try {
+        listener(events);
+      } catch (error) {
+        console.error('Session event listener failed', error);
+      }
+    });
+
+    this.dataListeners.forEach((listener) => {
+      try {
+        listener();
+      } catch (error) {
+        console.error('Data listener failed after session event emission', error);
+      }
+    });
+  }
+
+  private nextSessionSequence(sessionId: string): number {
+    const cached = this.sessionSequenceCache.get(sessionId);
+    if (typeof cached === 'number') {
+      const next = cached + 1;
+      this.sessionSequenceCache.set(sessionId, next);
+      return next;
+    }
+
+    const next = this.sessionEventStore.getLatestSequence(sessionId) + 1;
+    this.sessionSequenceCache.set(sessionId, next);
+    return next;
+  }
+
+  private ingestSessionEvent(event: UniversalEvent): UniversalEvent[] {
+    const appended = this.sessionEventWriter.ingest(event);
+    this.emitSessionEvents(appended);
+    return appended;
+  }
+
+  private createSessionEvent(
+    sessionId: string,
+    runtime: AgentRuntime,
+    kind: UniversalEvent['kind'],
+    actor: UniversalEventActor,
+    details: Partial<UniversalEvent> = {},
+  ): UniversalEvent {
+    return createUniversalEvent(runtime, kind, actor, {
+      sessionId,
+      streamId: sessionId,
+      now: () => Date.now(),
+      nextSequence: () => this.nextSessionSequence(sessionId),
+    }, details);
   }
 
   private initFTS() {
@@ -548,7 +622,148 @@ ${memoryLines || "*No cognitive memories stored in active memory bank, sir.*"}
     this.saveDb();
   }
 
+  getSessionEvents(sessionId: string, afterSequence = 0): UniversalEvent[] {
+    return this.sessionEventStore.listSessionEvents(sessionId, afterSequence);
+  }
+
+  getLatestSessionSequence(sessionId: string): number {
+    return this.sessionEventStore.getLatestSequence(sessionId);
+  }
+
+  recordTranscriptMessage(params: {
+    sessionId: string;
+    runtime: AgentRuntime;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    costUsd?: number;
+    cachedTokens?: number;
+    metadata?: Record<string, unknown>;
+  }): UniversalEvent[] {
+    const messageId = `${params.sessionId}:msg:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const actor = params.role === 'system' ? 'system' : params.role;
+
+    const appended: UniversalEvent[] = [];
+    appended.push(
+      ...this.ingestSessionEvent(this.createSessionEvent(params.sessionId, params.runtime, 'message.started', actor, {
+        messageId,
+        metadata: params.metadata,
+      })),
+    );
+    appended.push(
+      ...this.ingestSessionEvent(this.createSessionEvent(params.sessionId, params.runtime, 'text.completed', actor, {
+        messageId,
+        itemId: `${messageId}:text`,
+        text: params.content,
+        metadata: params.metadata,
+      })),
+    );
+    appended.push(
+      ...this.ingestSessionEvent(this.createSessionEvent(params.sessionId, params.runtime, 'message.completed', actor, {
+        messageId,
+        metadata: params.metadata,
+      })),
+    );
+
+    this.addMessage({
+      id: Math.random().toString(36).substring(7),
+      sessionId: params.sessionId,
+      role: params.role,
+      content: params.content,
+      timestamp: Date.now(),
+      model: params.model,
+      inputTokens: params.inputTokens,
+      outputTokens: params.outputTokens,
+      costUsd: params.costUsd,
+      cachedTokens: params.cachedTokens,
+    });
+
+    return appended;
+  }
+
+  recordToolCall(params: {
+    sessionId: string;
+    runtime: AgentRuntime;
+    toolName: string;
+    argumentsText: string;
+    toolCallId?: string;
+    messageId?: string;
+    itemId?: string;
+    metadata?: Record<string, unknown>;
+  }): UniversalEvent {
+    const event = this.createSessionEvent(params.sessionId, params.runtime, 'tool.call', 'assistant', {
+      messageId: params.messageId,
+      itemId: params.itemId ?? params.toolCallId,
+      toolCallId: params.toolCallId ?? `${params.sessionId}:tool:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      toolName: params.toolName,
+      argumentsText: params.argumentsText,
+      metadata: params.metadata,
+    });
+    this.ingestSessionEvent(event);
+    return event;
+  }
+
+  recordToolResult(params: {
+    sessionId: string;
+    runtime: AgentRuntime;
+    toolCallId: string;
+    resultText: string;
+    isPartial?: boolean;
+    messageId?: string;
+    itemId?: string;
+    metadata?: Record<string, unknown>;
+  }): UniversalEvent[] {
+    const event = this.createSessionEvent(params.sessionId, params.runtime, 'tool.result', 'tool', {
+      messageId: params.messageId,
+      itemId: params.itemId ?? params.toolCallId,
+      toolCallId: params.toolCallId,
+      resultText: params.resultText,
+      delta: params.isPartial ? params.resultText : undefined,
+      isPartial: params.isPartial ?? false,
+      metadata: params.metadata,
+    });
+
+    return this.ingestSessionEvent(event);
+  }
+
+  recordSessionEnded(sessionId: string, runtime: AgentRuntime, reason: string, metadata?: Record<string, unknown>): UniversalEvent[] {
+    return this.ingestSessionEvent(
+      this.createSessionEvent(sessionId, runtime, 'session.ended', 'system', {
+        reason,
+        metadata,
+      }),
+    );
+  }
+
   getMessages(sessionId: string): DbMessage[] {
+    const transcriptEvents = this.getSessionEvents(sessionId).filter((event) => event.kind === 'text.completed' && event.text);
+    if (transcriptEvents.length > 0) {
+      return transcriptEvents.map((event) => {
+        const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+        const role: DbMessage['role'] =
+          event.actor === 'user'
+            ? 'user'
+            : event.actor === 'assistant'
+              ? 'assistant'
+              : 'system';
+
+        return {
+          id: event.messageId || event.eventId,
+          sessionId: event.sessionId,
+          role,
+          content: event.text || '',
+          timestamp: event.occurredAt,
+          model: typeof metadata.model === 'string' ? metadata.model : undefined,
+          inputTokens: typeof metadata.inputTokens === 'number' ? metadata.inputTokens : undefined,
+          outputTokens: typeof metadata.outputTokens === 'number' ? metadata.outputTokens : undefined,
+          costUsd: typeof metadata.costUsd === 'number' ? metadata.costUsd : undefined,
+          cachedTokens: typeof metadata.cachedTokens === 'number' ? metadata.cachedTokens : undefined,
+        };
+      });
+    }
+
     return this.cache.messages
       .filter(m => m.sessionId === sessionId)
       .sort((a, b) => a.timestamp - b.timestamp);

@@ -171,15 +171,16 @@ export class SqliteSessionEventStore {
     insertMany(events);
   }
 
-  listSessionEvents(sessionId: string): UniversalEvent[] {
+  listSessionEvents(sessionId: string, afterSequence = 0): UniversalEvent[] {
     const rows = this.db
       .prepare(
         `SELECT payload_json, is_partial
          FROM session_events
          WHERE session_id = ?
+           AND sequence > ?
          ORDER BY sequence ASC`,
       )
-      .all(sessionId) as Array<{ payload_json: string; is_partial: number | null }>;
+      .all(sessionId, afterSequence) as Array<{ payload_json: string; is_partial: number | null }>;
 
     return rows.map((row) => {
       const event = parseEvent(row.payload_json);
@@ -188,6 +189,18 @@ export class SqliteSessionEventStore {
       }
       return event;
     });
+  }
+
+  getLatestSequence(sessionId: string): number {
+    const latest = this.db
+      .prepare(
+        `SELECT COALESCE(MAX(sequence), 0) AS latest_sequence
+         FROM session_events
+         WHERE session_id = ?`,
+      )
+      .get(sessionId) as { latest_sequence: number } | undefined;
+
+    return latest?.latest_sequence ?? 0;
   }
 
   upsertPendingToolResult(event: UniversalEvent, flushAfter: number): void {

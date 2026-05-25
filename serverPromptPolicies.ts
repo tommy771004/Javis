@@ -1,3 +1,12 @@
+import {
+  buildAgenticSearchInstruction,
+  buildClaudeContextSection,
+  buildStartHookContext,
+  buildSubagentDelegationInstruction,
+  type ClaudeContextEntry,
+  type StartHookContext,
+} from './src/services/agentWorkflow';
+
 interface PromptSkillLike {
   name: string;
   version: string;
@@ -25,6 +34,12 @@ interface BuildHermesSystemPromptOptions {
   currentContextHistory: PromptMessageLike[];
   activeWebhooks: PromptWebhookLike[];
   message: string;
+  /** Spec2 §2 — CLAUDE.md hierarchy for the current working directory */
+  claudeMdChain?: ClaudeContextEntry[];
+  /** Spec2 §4 — Start Hook environment snapshot */
+  startHookCtx?: StartHookContext;
+  /** Spec2 §1+6 — Enable Agentic Search + Subagent Delegation instructions */
+  agentMode?: boolean;
 }
 
 const CLI_PROMPT_TEMPLATES: Record<string, string> = {
@@ -96,6 +111,9 @@ export function buildHermesSystemPrompt({
   currentContextHistory,
   activeWebhooks,
   message,
+  claudeMdChain,
+  startHookCtx,
+  agentMode,
 }: BuildHermesSystemPromptOptions): string {
   const sections: string[] = [];
 
@@ -151,6 +169,27 @@ OPERATING RULES:
 
   if (activeSkills.length > 0) {
     sections.push(`Active Skills Catalog:\n${activeSkills.map(skill => `- [${skill.name} ${skill.version}]: ${skill.description}`).join('\n')}`);
+  }
+
+  // ── Spec2 §4: Start Hook — environment snapshot ───────────────────────────
+  if (startHookCtx) {
+    sections.push(buildStartHookContext(startHookCtx));
+  }
+
+  // ── Spec2 §2: CLAUDE.md hierarchical context ──────────────────────────────
+  if (claudeMdChain && claudeMdChain.length > 0) {
+    const claudeSection = buildClaudeContextSection(claudeMdChain);
+    if (claudeSection) sections.push(claudeSection);
+  }
+
+  // ── Spec2 §1: Agentic Search instruction ─────────────────────────────────
+  if (agentMode) {
+    sections.push(buildAgenticSearchInstruction());
+  }
+
+  // ── Spec2 §6: Subagent delegation instruction ─────────────────────────────
+  if (agentMode) {
+    sections.push(buildSubagentDelegationInstruction());
   }
 
   if (memories.length > 0) {

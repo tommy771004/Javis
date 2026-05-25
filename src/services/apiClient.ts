@@ -1,6 +1,7 @@
 // Client-side API wrapper communicating with the Node.js Server
 import type { FtsScoreKind } from './telemetryPresentationPolicies';
 import type { DatabaseHealthSnapshot, MonitoringAlert } from './hermesMonitoring';
+import type { UniversalEvent } from './universalEvents';
 
 export interface DbMessage {
   id: string;
@@ -73,6 +74,12 @@ export interface McpTemplate {
 
 export type { DatabaseHealthSnapshot, MonitoringAlert };
 
+export interface SessionEventBootstrap {
+  sessionId: string;
+  latestSequence: number;
+  events: UniversalEvent[];
+}
+
 class ApiClient {
   async init(): Promise<void> {
     return Promise.resolve();
@@ -82,6 +89,12 @@ class ApiClient {
   async getSessionMessages(sessionId: string): Promise<DbMessage[]> {
     const res = await fetch(`/api/messages?sessionId=${sessionId}`);
     if (!res.ok) throw new Error('Failed to fetch session messages');
+    return res.json();
+  }
+
+  async getSessionEventBootstrap(sessionId: string, afterSequence = 0): Promise<SessionEventBootstrap> {
+    const res = await fetch(`/api/session-events?sessionId=${sessionId}&afterSequence=${afterSequence}`);
+    if (!res.ok) throw new Error('Failed to fetch session event bootstrap');
     return res.json();
   }
 

@@ -19,6 +19,20 @@ import { buildRebootSequencePlan } from "./src/services/rebootSequence";
 import { buildDefaultTaskReport, resolveMcpTemplateById, type McpTemplateDefinition } from "./src/services/hermesServerHelpers";
 import { buildAutomationCapabilities, resolveEngineCapability, resolveRebootProbeDelayMs } from "./src/services/truthfulCapabilityPolicies";
 import { collectWorkspaceSearchMatches, isWorkspaceDocSearchPathAllowed } from "./src/services/workspaceDocs";
+import { normalizeCliRuntime, resolveChatExecutionTemplate, resolveCliBinary } from "./src/services/cliRuntimeRegistry";
+import {
+  guardInput,
+  guardOutput,
+  processLlmOutput,
+  validateToolCallParams,
+  buildRetryPrompt,
+  compressContext,
+} from "./src/services/agentHarness";
+import {
+  getDirectoryBoundSkills,
+  buildSubagentDelegationInstruction,
+} from "./src/services/agentWorkflow";
+import type { ClaudeContextEntry, StartHookContext } from "./src/services/agentWorkflow";
 import si from "systeminformation";
 
 // Persistent high-tech armor status memory states
@@ -99,6 +113,53 @@ function broadcastMcpEvent(eventType: string, payload: any) {
   } catch(e) {
     console.error("MCP Webhook Broadcast Error:", e);
   }
+}
+
+function getConfiguredCliMappings() {
+  return serverDB.getCliMappings().map((mapping) => ({
+    id: mapping.id,
+    executionTemplate: mapping.executionTemplate,
+  }));
+}
+
+function resolveCliRunnerCommand(activeCli: string, promptOrCommand: string): string | null {
+  const template = resolveChatExecutionTemplate(activeCli, getConfiguredCliMappings());
+  if (!template) {
+    return null;
+  }
+
+  const safePrompt = promptOrCommand.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+  return template.replace(/\{\{prompt\}\}/g, safePrompt);
+}
+
+function recordUserTranscript(sessionId: string, activeCli: string, content: string) {
+  serverDB.recordTranscriptMessage({
+    sessionId,
+    runtime: normalizeCliRuntime(activeCli),
+    role: 'user',
+    content,
+    metadata: { activeCli },
+  });
+}
+
+function recordAssistantTranscript(
+  sessionId: string,
+  activeCli: string,
+  content: string,
+  metadata: Record<string, unknown> = {},
+) {
+  serverDB.recordTranscriptMessage({
+    sessionId,
+    runtime: normalizeCliRuntime(activeCli),
+    role: 'assistant',
+    content,
+    model: typeof metadata.model === 'string' ? metadata.model : undefined,
+    inputTokens: typeof metadata.inputTokens === 'number' ? metadata.inputTokens : undefined,
+    outputTokens: typeof metadata.outputTokens === 'number' ? metadata.outputTokens : undefined,
+    costUsd: typeof metadata.costUsd === 'number' ? metadata.costUsd : undefined,
+    cachedTokens: typeof metadata.cachedTokens === 'number' ? metadata.cachedTokens : undefined,
+    metadata: { activeCli, ...metadata },
+  });
 }
 
 // Global precise CPU metric tracker
@@ -1146,15 +1207,18 @@ app.use((req, res, next) => {
   app.post("/api/chat", async (req, res) => {
     const llmStartMs = Date.now();
     try {
-      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter", byokTemplate, byokResponsePath } = req.body;
+      const { message, model, sessionId = "default-session", activeCli = "openrouter", byokKey, byokEndpoint, byokProtocol = "openrouter", byokTemplate, byokResponsePath, workingDir = '' } = req.body;
+
+      // ── Harness Layer 1: Input Guard (Prompt Injection Detection) ──────────
+      const inputGuard = guardInput(message ?? '');
+      if (!inputGuard.safe) {
+        serverDB.addSystemLog('SEC', 'WARN', `Input guard blocked message: ${inputGuard.reason}`);
+        return res.status(400).json({ error: `Request blocked by security filter: ${inputGuard.reason}` });
+      }
+
       // Key priority: BYOK field → DB-stored provider keys → environment variables
       const dbCfg = serverDB.getSettings();
       const apiKey = byokKey || dbCfg.openrouterKey || dbCfg.geminiKey || process.env.OPENROUTER_API_KEY || process.env.GEMINI_API_KEY || (byokEndpoint ? "custom-auth" : "");
-
-      if (!apiKey) {
-        serverDB.addSystemLog('API', 'ERROR', 'Request blocked: Missing API key credentials.');
-        return res.status(500).json({ error: "Missing API key (OPENROUTER_API_KEY or GEMINI_API_KEY)" });
-      }
 
       // Cost-Aware budget check
       const logs = serverDB.getCostLogs();
@@ -1168,69 +1232,30 @@ app.use((req, res, next) => {
         return res.status(402).json({ error: `API budget cap exceeded ($${totalSpent.toFixed(6)} spent). System locked.` });
       }
 
-      // Add user message to server DB
-      serverDB.addMessage({
-        id: Math.random().toString(36).substring(7),
-        sessionId,
-        role: "user",
-        content: message,
-        timestamp: Date.now()
-      });
+      recordUserTranscript(sessionId, activeCli, message);
 
-      // --- Distinct CLI Runner Physical Interceptor ---
-      const discreteAgents = ['claude-code', 'cursor-agent', 'devin', 'gemini-cli'];
-      if (discreteAgents.includes(activeCli)) {
+      // --- Dedicated CLI Runner Physical Interceptor ---
+      const resolvedCommand = resolveCliRunnerCommand(activeCli, message);
+      if (resolvedCommand) {
         serverDB.addSystemLog('EXEC', 'INFO', `Delegating autonomy to distinct CLI runner: ${activeCli}`);
-
-        const safePrompt = message.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-
-        // --- Resolve execution template from cli-mapping.json (single source of truth) ---
-        // Fallback defaults mirror the original behaviour; users override via cli-mapping.json.
-        const FALLBACK_TEMPLATES: Record<string, string> = {
-          'claude-code':    `npx -y @anthropic-ai/claude-code --print -p "{{prompt}}"`,
-          'cursor-agent':   `cursor --agent --prompt "{{prompt}}"`,
-          'devin':          `devin --interactive false --instruction "{{prompt}}"`,
-          'gemini-cli':     `gemini query "{{prompt}}"`,
-        };
-
-        let resolvedTemplate = FALLBACK_TEMPLATES[activeCli] ?? `${activeCli} "{{prompt}}"`;
-        try {
-          const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
-          if (fs.existsSync(mappingPath)) {
-            const mappingConf: Array<{ id: string; executionTemplate?: string; envPrefix?: string }> =
-              JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
-            const entry = mappingConf.find(c => c.id === activeCli);
-            if (entry?.executionTemplate) {
-              resolvedTemplate = entry.executionTemplate;
-              serverDB.addSystemLog('EXEC', 'INFO',
-                `CLI runner template sourced from cli-mapping.json for [${activeCli}].`);
-            }
-          }
-        } catch (mapErr: any) {
-          serverDB.addSystemLog('EXEC', 'WARN',
-            `Failed to read cli-mapping.json, using built-in default for ${activeCli}: ${mapErr.message}`);
-        }
-
-        const resolvedCommand = resolvedTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
 
         try {
           const { stdout, stderr } = await execAsync(resolvedCommand, {
             timeout: 60000,
-            env: { ...process.env, ANTHROPIC_API_KEY: apiKey }
+            env: {
+              ...process.env,
+              ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}),
+            }
           });
 
           let cliOutput = stdout || stderr || `[${activeCli}] Executed successfully with no output.`;
           const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER OUTPUT]\n\n${cliOutput.trim()}`;
           const tokensOut = estimateTokens(botResponse);
 
-          serverDB.addMessage({
-            id: Math.random().toString(36).substring(7),
-            sessionId,
-            role: "assistant",
-            content: botResponse,
-            timestamp: Date.now(),
+          recordAssistantTranscript(sessionId, activeCli, botResponse, {
             model: `cli-execution/${activeCli}`,
-            outputTokens: tokensOut
+            outputTokens: tokensOut,
+            runnerCommand: resolvedCommand,
           });
 
           return res.json({
@@ -1251,14 +1276,10 @@ app.use((req, res, next) => {
           const botResponse = `[\u25b6 ${activeCli.toUpperCase()} RUNNER FAULT]\n\nCommand attempted: \`${resolvedCommand}\`\n\nExecution error:\n\`\`\`text\n${errorText}\n\`\`\`\n\nThe target runner binary may not be installed in the current physical environment, or requires external environment keys. Switching back to 'OpenRouter REST API' or 'Hermes' mode in settings is recommended for guaranteed LLM inference.`;
 
           const tokensOut = estimateTokens(botResponse);
-          serverDB.addMessage({
-            id: Math.random().toString(36).substring(7),
-            sessionId,
-            role: "assistant",
-            content: botResponse,
-            timestamp: Date.now(),
+          recordAssistantTranscript(sessionId, activeCli, botResponse, {
             model: `cli-error/${activeCli}`,
-            outputTokens: tokensOut
+            outputTokens: tokensOut,
+            runnerCommand: resolvedCommand,
           });
 
           return res.json({
@@ -1275,27 +1296,100 @@ app.use((req, res, next) => {
       }
       // --- End Distinct CLI Runner ---
 
+      if (!apiKey) {
+        serverDB.addSystemLog('API', 'ERROR', 'Request blocked: Missing API key credentials.');
+        return res.status(500).json({ error: "Missing API key (OPENROUTER_API_KEY or GEMINI_API_KEY)" });
+      }
+
 
       // Construct dynamic system prompt with active skills context and filesystem instructions
-      const activeSkills = serverDB.getSkills().filter(s => s.status === 'active');
+      const baseSkills = serverDB.getSkills().filter(s => s.status === 'active');
       const settingsCtx = serverDB.getSettings();
       const sysName = settingsCtx.satelliteName || "HERMES";
       const opName = settingsCtx.operatorName || "Operator";
       const memories = serverDB.getCognitiveMemories();
       const dbHistory = serverDB.getMessages(sessionId);
-      let currentContextHistory: typeof dbHistory = [];
-      if (dbHistory.length > 0) {
-        const MAX_CONTEXT_TOKENS = 6000;
-        let runningTokenCount = 0;
-        const priorHistory = dbHistory.slice(0, -1).reverse();
 
-        for (const msg of priorHistory) {
-          const msgTokens = estimateTokens(msg.content);
-          if (runningTokenCount + msgTokens > MAX_CONTEXT_TOKENS) break;
-          currentContextHistory.unshift(msg);
-          runningTokenCount += msgTokens;
-          if (currentContextHistory.length >= 10) break;
+      // ── Spec2 §3: Directory-bound skill auto-mount ────────────────────────
+      const triggeredSkillIds = workingDir ? getDirectoryBoundSkills(workingDir) : [];
+      // Include all active skills + any triggered by the working directory
+      const allSkillIds = new Set(baseSkills.map(s => s.id));
+      const extraSkills = triggeredSkillIds
+        .filter(id => !allSkillIds.has(id))
+        .map(id => serverDB.getSkills().find(s => s.id === id))
+        .filter((s): s is NonNullable<typeof s> => !!s);
+      const activeSkills = [...baseSkills, ...extraSkills];
+      if (triggeredSkillIds.length > 0) {
+        serverDB.addSystemLog('HERMES', 'INFO', `Directory-bound skills mounted for "${workingDir}": ${triggeredSkillIds.join(', ')}`);
+      }
+
+      // ── Spec2 §2: CLAUDE.md hierarchical context loading ──────────────────
+      const claudeMdChain: ClaudeContextEntry[] = [];
+      if (workingDir) {
+        const safeWorkDir = path.resolve(process.cwd(), workingDir);
+        if (safeWorkDir.startsWith(process.cwd())) {
+          // Walk from workspace root down to the working directory, collecting CLAUDE.md files
+          const relParts = path.relative(process.cwd(), safeWorkDir).split(path.sep).filter(Boolean);
+          const candidates: string[] = [process.cwd()];
+          let accumulated = process.cwd();
+          for (const part of relParts) {
+            accumulated = path.join(accumulated, part);
+            candidates.push(accumulated);
+          }
+          for (const dir of candidates) {
+            const claudeFile = path.join(dir, 'CLAUDE.md');
+            if (fs.existsSync(claudeFile)) {
+              try {
+                const content = fs.readFileSync(claudeFile, 'utf8');
+                claudeMdChain.push({
+                  path: path.relative(process.cwd(), claudeFile).replace(/\\/g, '/'),
+                  content,
+                });
+              } catch { /* skip unreadable */ }
+            }
+          }
         }
+      }
+
+      // ── Spec2 §4: Start Hook — read package.json + env existence ─────────
+      let startHookCtx: StartHookContext | undefined;
+      try {
+        const pkgPath = path.join(process.cwd(), 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          startHookCtx = {
+            nodeVersion: process.version,
+            packageName: pkg.name || '(unknown)',
+            packageVersion: pkg.version || '(unknown)',
+            mainDependencies: pkg.dependencies || {},
+            devDependencies: pkg.devDependencies || {},
+            envFileExists: fs.existsSync(path.join(process.cwd(), '.env')),
+            workingDir: workingDir || '.',
+            triggeredSkills: triggeredSkillIds,
+          };
+        }
+      } catch { /* start hook is best-effort */ }
+
+      // Determine if agent mode (CLI tools or code-editing CLIs enable it)
+      const AGENT_CLI_SET = new Set(['hermes', 'claude-code', 'cursor-agent', 'devin', 'copilot', 'github-cli', 'codex-cli']);
+      const agentMode = AGENT_CLI_SET.has(activeCli) || !!workingDir;
+
+      // ── Context Window Management (Harness — Context Compressor) ───────────
+      const MAX_CONTEXT_TOKENS = 6000;
+      const priorMsgs = dbHistory
+        .slice(0, -1)
+        .map(m => ({ role: m.role, content: m.content }));
+      const { messages: compressedMsgs, summaryInjected, summary: ctxSummary } = compressContext(
+        priorMsgs,
+        MAX_CONTEXT_TOKENS,
+        estimateTokens,
+      );
+      const currentContextHistory = compressedMsgs.filter(m => m.role !== 'system');
+      const memoriesForPrompt: string[] = ctxSummary
+        ? [ctxSummary, ...memories]
+        : memories;
+      if (summaryInjected) {
+        serverDB.addSystemLog('HERMES', 'INFO', `Context compressed: ${priorMsgs.length} → ${currentContextHistory.length} active messages (summary injected).`);
       }
 
       const prompt = buildHermesSystemPrompt({
@@ -1305,10 +1399,13 @@ app.use((req, res, next) => {
         activeLoopNode: settingsCtx.activeLoopNode,
         systemPromptOverride: settingsCtx.systemPrompt,
         activeSkills,
-        memories,
+        memories: memoriesForPrompt,
         currentContextHistory,
         activeWebhooks: serverDB.getMcpWebhooks(),
         message,
+        claudeMdChain: claudeMdChain.length > 0 ? claudeMdChain : undefined,
+        startHookCtx,
+        agentMode,
       });
 
       // Extract systemContent for caching evaluation
@@ -1359,6 +1456,91 @@ app.use((req, res, next) => {
       const actualModel = result.model || "meta-llama/llama-3.2-3b-instruct:free";
       const usage = (result.usage as any) || { prompt_tokens: 0, completion_tokens: 0 };
 
+      // ── Harness Layer 3 + 2: Format Clean → Hardcode Overrides → Output Guard
+      const { text: cleanedText, outputFlagged, cleaningApplied, overridesApplied } = processLlmOutput(result.text);
+      if (cleaningApplied || overridesApplied) {
+        serverDB.addSystemLog('HERMES', 'INFO', `Output post-processed: cleaning=${cleaningApplied}, overrides=${overridesApplied}`);
+      }
+      if (outputFlagged.length > 0) {
+        serverDB.addSystemLog('SEC', 'WARN', `Output guard redacted sensitive data: ${outputFlagged.join(', ')}`);
+      }
+
+      // ── Extract planned tool call from cleaned output ─────────────────────
+      const extractPlannedAction = (text: string) => {
+        const executeMarker = /\[EXECUTE_COMMAND\]:\s*([^\n\r]+)/i;
+        const taskMarker = /\[CREATE_TASK\]:\s*(High|Medium|Low)\s*\|\s*([^\n\r]+)/i;
+        const writeMarker = /\[WRITE_FILE\]:\s*([^\n\r]+)/i;
+        // ── Spec2 §1: Agentic Search tool markers ─────────────────────────
+        const searchMarker = /\[SEARCH_WORKSPACE\]:\s*(\{[^\n\r]+\})/i;
+        const readFileMarker = /\[READ_FILE\]:\s*(\{[^\n\r]+\})/i;
+        const listDirMarker = /\[LIST_DIR\]:\s*(\{[^\n\r]+\})/i;
+        const delegateMarker = /\[DELEGATE_TASK\]:\s*(\{[^\n\r]+\})/i;
+
+        const cmdMatch = text.match(executeMarker);
+        const taskMatch = text.match(taskMarker);
+        const searchMatch = text.match(searchMarker);
+        const readMatch = text.match(readFileMarker);
+        const listMatch = text.match(listDirMarker);
+        const delegateMatch = text.match(delegateMarker);
+
+        if (cmdMatch) return { type: 'execute', command: cmdMatch[1].trim() } as Record<string, unknown>;
+        if (taskMatch) return { type: 'create_task', priority: taskMatch[1], description: taskMatch[2].trim() } as Record<string, unknown>;
+
+        // Agentic search tool calls — parse JSON params (best-effort)
+        if (searchMatch) {
+          try { return { type: 'search_workspace', ...JSON.parse(searchMatch[1]) } as Record<string, unknown>; } catch { /* ignore malformed */ }
+        }
+        if (readMatch) {
+          try { return { type: 'read_file', ...JSON.parse(readMatch[1]) } as Record<string, unknown>; } catch { /* ignore malformed */ }
+        }
+        if (listMatch) {
+          try { return { type: 'list_dir', ...JSON.parse(listMatch[1]) } as Record<string, unknown>; } catch { /* ignore malformed */ }
+        }
+        if (delegateMatch) {
+          try { return { type: 'delegate_task', ...JSON.parse(delegateMatch[1]) } as Record<string, unknown>; } catch { /* ignore malformed */ }
+        }
+
+        const wMatch = text.match(writeMarker);
+        if (wMatch) {
+          const relativePath = wMatch[1].trim();
+          const codeBlockStart = text.indexOf('```', wMatch.index);
+          if (codeBlockStart !== -1) {
+            const firstLineEnd = text.indexOf('\n', codeBlockStart);
+            const blockEnd = text.indexOf('```', firstLineEnd);
+            if (blockEnd !== -1) {
+              return { type: 'write', filePath: relativePath, content: text.substring(firstLineEnd + 1, blockEnd).trim() } as Record<string, unknown>;
+            }
+          }
+        }
+        return null;
+      };
+
+      let plannedAction = extractPlannedAction(cleanedText);
+
+      // ── Harness Layer 4 + 5: Validate → Retry with correction ─────────────
+      let finalResponseText = cleanedText;
+      if (plannedAction) {
+        const validation = validateToolCallParams(plannedAction.type as string, plannedAction);
+        if (!validation.valid) {
+          serverDB.addSystemLog('SEC', 'WARN', `Tool call validation failed (${plannedAction.type}): ${validation.errors.join('; ')}`);
+
+          // Layer 5: feed error back to LLM for one correction attempt
+          try {
+            const retryPromptStr = buildRetryPrompt(prompt, cleanedText, validation.correctionHint);
+            const retryResult = await fetchOpenRouterWithFallback(
+              apiKey, retryPromptStr, undefined, model, byokEndpoint, byokProtocol,
+              byokTemplate, byokResponsePath, gatewayRoutingModel,
+            );
+            const { text: retryClean } = processLlmOutput(retryResult.text);
+            finalResponseText = retryClean;
+            plannedAction = extractPlannedAction(retryClean);
+            serverDB.addSystemLog('HERMES', 'SUCCESS', 'Correction retry succeeded — updated planned action.');
+          } catch (retryErr: any) {
+            serverDB.addSystemLog('HERMES', 'ERROR', `Correction retry failed: ${retryErr.message}. Proceeding with original output.`);
+          }
+        }
+      }
+
       // Parse OpenRouter actual returned cached tokens if present
       let apiCachedTokens = 0;
       if (usage.prompt_tokens_details?.cached_tokens) {
@@ -1373,27 +1555,23 @@ app.use((req, res, next) => {
       
       // Heuristic fallback if standard usage is 0 tokens (e.g. free fallback pathways)
       const promptTokens = usage.prompt_tokens || estimateTokens(prompt);
-      const completionTokens = usage.completion_tokens || estimateTokens(result.text);
+      const completionTokens = usage.completion_tokens || estimateTokens(finalResponseText);
 
       const calculatedCost = serverDB.calculateAPICost(actualModel, promptTokens, completionTokens, finalCachedTokens);
 
       // Add assistant message to server DB
-      serverDB.addMessage({
-        id: Math.random().toString(36).substring(7),
-        sessionId,
-        role: "assistant",
-        content: result.text,
-        timestamp: Date.now(),
+      recordAssistantTranscript(sessionId, activeCli, finalResponseText, {
         model: actualModel,
         inputTokens: promptTokens,
         outputTokens: completionTokens,
         costUsd: calculatedCost,
-        cachedTokens: finalCachedTokens
+        cachedTokens: finalCachedTokens,
+        llmLatencyMs: Date.now() - llmStartMs,
       });
 
-      broadcastMcpEvent('CHAT_COMPLETION', { userPrompt: message, botResponse: result.text, model: actualModel, costUsd: calculatedCost });
+      broadcastMcpEvent('CHAT_COMPLETION', { userPrompt: message, botResponse: finalResponseText, model: actualModel, costUsd: calculatedCost });
 
-      triggerSpecificWebhooksFromText(result.text);
+      triggerSpecificWebhooksFromText(finalResponseText);
 
       // Log transaction details
       serverDB.addCostLog({
@@ -1426,46 +1604,6 @@ app.use((req, res, next) => {
         });
       }
 
-      // Check and extract any planned filesystem or OS execution action from the model output
-      let plannedAction = null;
-      
-      const executeMarker = /\[EXECUTE_COMMAND\]:\s*([^\n\r]+)/i;
-      const taskMarker = /\[CREATE_TASK\]:\s*(High|Medium|Low)\s*\|\s*([^\n\r]+)/i;
-      const cmdMatch = result.text.match(executeMarker);
-      const taskMatch = result.text.match(taskMarker);
-
-      if (cmdMatch) {
-        plannedAction = {
-          type: "execute",
-          command: cmdMatch[1].trim()
-        };
-      } else if (taskMatch) {
-        plannedAction = {
-          type: "create_task",
-          priority: taskMatch[1],
-          description: taskMatch[2].trim()
-        };
-      } else {
-        const writeMarker = /\[WRITE_FILE\]:\s*([^\n\r]+)/i;
-        const match = result.text.match(writeMarker);
-        if (match) {
-          const relativePath = match[1].trim();
-          const codeBlockStart = result.text.indexOf("```", match.index);
-          if (codeBlockStart !== -1) {
-            const firstLineEnd = result.text.indexOf("\n", codeBlockStart);
-            const blockEnd = result.text.indexOf("```", firstLineEnd);
-            if (blockEnd !== -1) {
-              const content = result.text.substring(firstLineEnd + 1, blockEnd).trim();
-              plannedAction = {
-                type: "write",
-                filePath: relativePath,
-                content
-              };
-            }
-          }
-        }
-      }
-
       globalLLMLatencyMs = Date.now() - llmStartMs;
 
       let ticketId = null;
@@ -1474,7 +1612,7 @@ app.use((req, res, next) => {
       }
 
       res.json({ 
-        text: result.text,
+        text: finalResponseText,
         model: actualModel,
         usage: usage,
         plannedAction,
@@ -1496,6 +1634,124 @@ app.use((req, res, next) => {
       } else {
         res.status(404).json({ error: "Documentation not found" });
       }
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Agentic Search: grep workspace source files (Spec2 §1) ---
+  app.post("/api/workspace/grep", (req, res) => {
+    try {
+      const { pattern, caseSensitive = false, maxResults = 30 } = req.body as {
+        pattern?: string;
+        caseSensitive?: boolean;
+        maxResults?: number;
+      };
+      if (!pattern || typeof pattern !== 'string' || pattern.trim() === '') {
+        return res.status(400).json({ error: 'pattern is required' });
+      }
+      // Build a safe regex (fall back to literal match on invalid regex)
+      let regex: RegExp;
+      try {
+        regex = new RegExp(pattern, caseSensitive ? 'g' : 'gi');
+      } catch {
+        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        regex = new RegExp(escaped, caseSensitive ? 'g' : 'gi');
+      }
+
+      const BLOCKED_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'task_reports', '.omx']);
+      const ALLOWED_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.md', '.yml', '.yaml', '.css', '.html', '.txt']);
+      const matches: Array<{ filePath: string; line: number; text: string }> = [];
+
+      const walk = (dir: string) => {
+        if (matches.length >= (maxResults as number)) return;
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const entry of entries) {
+          if (matches.length >= (maxResults as number)) break;
+          const fullPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            if (!BLOCKED_DIRS.has(entry.name)) walk(fullPath);
+            continue;
+          }
+          const ext = path.extname(entry.name).toLowerCase();
+          if (!ALLOWED_EXTS.has(ext)) continue;
+          try {
+            const content = fs.readFileSync(fullPath, 'utf8');
+            const lines = content.split('\n');
+            lines.forEach((lineText, idx) => {
+              if (matches.length >= (maxResults as number)) return;
+              regex.lastIndex = 0;
+              if (regex.test(lineText)) {
+                matches.push({
+                  filePath: path.relative(process.cwd(), fullPath).replace(/\\/g, '/'),
+                  line: idx + 1,
+                  text: lineText.trim().slice(0, 200),
+                });
+              }
+            });
+          } catch { /* skip unreadable files */ }
+        }
+      };
+      walk(process.cwd());
+      res.json({ pattern, matches });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Agentic Search: list workspace directory (Spec2 §1) ---
+  app.post("/api/workspace/list", (req, res) => {
+    try {
+      const dirPath = String(req.body?.dirPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const safePath = dirPath ? path.resolve(process.cwd(), dirPath) : process.cwd();
+      if (!safePath.startsWith(process.cwd())) {
+        return res.status(403).json({ error: 'Access denied: path outside workspace' });
+      }
+      const BLOCKED_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'task_reports']);
+      const topSegment = dirPath.split('/')[0];
+      if (BLOCKED_DIRS.has(topSegment)) {
+        return res.status(403).json({ error: 'Access denied: blocked directory' });
+      }
+      if (!fs.existsSync(safePath)) {
+        return res.status(404).json({ error: 'Directory not found' });
+      }
+      const entries = fs.readdirSync(safePath, { withFileTypes: true }).map(e => ({
+        name: e.name,
+        type: e.isDirectory() ? 'dir' : 'file',
+        blocked: e.isDirectory() && BLOCKED_DIRS.has(e.name),
+      }));
+      res.json({ dirPath: dirPath || '.', entries });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // --- Stop Hook: run lint/test and return self-healing prompt on failure (Spec2 §4) ---
+  app.post("/api/workflow/stop-hook", async (req, res) => {
+    try {
+      const { command = 'npm run lint', taskDescription = '' } = req.body as {
+        command?: string;
+        taskDescription?: string;
+      };
+      const allowed = ['npm run lint', 'npm run build', 'npm test', 'npm run typecheck', 'npx tsc --noEmit'];
+      if (!allowed.some(a => command === a || command.startsWith(a + ' '))) {
+        return res.status(403).json({ error: 'Command not in stop-hook allowlist' });
+      }
+      const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
+        exec(command, { cwd: process.cwd(), timeout: 60_000 }, (err, out, err2) => {
+          resolve({ stdout: out || '', stderr: err2 || (err?.message ?? ''), code: err?.code ?? 0 });
+        });
+      });
+      const passed = code === 0 && !stderr.includes('error TS');
+      let healingPrompt: string | null = null;
+      if (!passed) {
+        const { buildStopHookPrompt } = await import('./src/services/agentWorkflow');
+        healingPrompt = buildStopHookPrompt(taskDescription, { command, exitCode: code, stdout, stderr });
+      }
+      serverDB.addSystemLog('EXEC', passed ? 'SUCCESS' : 'ERROR',
+        `Stop hook "${command}" → ${passed ? 'PASSED' : 'FAILED'} (exit ${code})`);
+      res.json({ passed, command, exitCode: code, stdout, stderr, healingPrompt });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -1612,6 +1868,82 @@ app.use((req, res, next) => {
   app.get("/api/messages", (req, res) => {
     const sessionId = (req.query.sessionId as string) || "default-session";
     res.json(serverDB.getMessages(sessionId));
+  });
+
+  const sessionSseClients = new Map<string, Map<string, express.Response>>();
+
+  const attachSessionSseClient = (sessionId: string, clientId: string, response: express.Response) => {
+    const clients = sessionSseClients.get(sessionId) ?? new Map<string, express.Response>();
+    clients.set(clientId, response);
+    sessionSseClients.set(sessionId, clients);
+  };
+
+  const detachSessionSseClient = (sessionId: string, clientId: string) => {
+    const clients = sessionSseClients.get(sessionId);
+    if (!clients) {
+      return;
+    }
+
+    clients.delete(clientId);
+    if (clients.size === 0) {
+      sessionSseClients.delete(sessionId);
+    }
+  };
+
+  serverDB.onSessionEvents((events) => {
+    events.forEach((event) => {
+      const clients = sessionSseClients.get(event.sessionId);
+      if (!clients) {
+        return;
+      }
+
+      const payload = `id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`;
+      clients.forEach((client) => {
+        try {
+          client.write(payload);
+        } catch (error) {
+          // The request close handler will prune dead connections.
+        }
+      });
+    });
+  });
+
+  app.get("/api/session-events", (req, res) => {
+    const sessionId = (req.query.sessionId as string) || "default-session";
+    const afterSequence = Number(req.query.afterSequence || 0);
+    res.json({
+      sessionId,
+      latestSequence: serverDB.getLatestSessionSequence(sessionId),
+      events: serverDB.getSessionEvents(sessionId, Number.isFinite(afterSequence) ? afterSequence : 0),
+    });
+  });
+
+  app.get("/api/session-events/stream", (req, res) => {
+    const sessionId = (req.query.sessionId as string) || "default-session";
+    const afterSequence = Number(req.query.afterSequence || 0);
+    const clientId =
+      (req.query.clientId as string)
+      || `${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
+
+    res.write(`event: connected\ndata: ${JSON.stringify({ sessionId, latestSequence: serverDB.getLatestSessionSequence(sessionId) })}\n\n`);
+
+    const replay = serverDB.getSessionEvents(sessionId, Number.isFinite(afterSequence) ? afterSequence : 0);
+    replay.forEach((event) => {
+      res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+    });
+
+    attachSessionSseClient(sessionId, clientId, res);
+
+    req.on('close', () => {
+      detachSessionSseClient(sessionId, clientId);
+    });
   });
 
   // --- Real-time FTS Search Endpoint ---
@@ -1760,8 +2092,8 @@ User: Evolve the skill.`;
       let parsed = false;
 
       try {
-        const textToParse = result.text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const json = JSON.parse(textToParse);
+        // Use parseAndRepairJSON (Harness Format Cleaner) instead of manual regex stripping
+        const json = parseAndRepairJSON(result.text);
         if (json.mutatedDescription && json.mutationLog) {
           mutatedDescription = json.mutatedDescription;
           mutationLog = json.mutationLog;
@@ -2024,7 +2356,7 @@ User: Evolve the skill.`;
   // --- Unrestricted OS Command Execution Endpoint ---
   app.post("/api/workspace/run", async (req, res) => {
     try {
-      const { command, activeCli = 'openrouter' } = req.body;
+      const { command, activeCli = 'openrouter', sessionId = 'default-session' } = req.body;
       
       let extraStderr = "";
       logCliRouting(activeCli);
@@ -2041,21 +2373,7 @@ User: Evolve the skill.`;
         }
       }
 
-      const cliBinaryMap: { [key: string]: string } = {
-        'copilot': 'gh',
-        'github-cli': 'gh',
-        'claude-code': 'npx',
-        'cursor-agent': 'cursor',
-        'devin': 'devin',
-        'gemini-cli': 'gemini',
-        'codex-cli': 'codex',
-        'opencode': 'opencode',
-        'kimi': 'kimi',
-        'qwen': 'qwen',
-        'pi': 'pi'
-      };
-
-      const requiredBinary = cliBinaryMap[activeCli];
+      const requiredBinary = resolveCliBinary(activeCli);
       let useFallbackShell = false;
       if (requiredBinary) {
         if (!isBinaryOnPathSync(requiredBinary)) {
@@ -2067,27 +2385,13 @@ User: Evolve the skill.`;
       }
 
       let finalCommand = command;
-      let isAgentUsed = false;
-      let exeTemplate = "";
-
-      try {
-        const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
-        if (fs.existsSync(mappingPath)) {
-          const mappingConf = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
-          const cliConf = mappingConf.find((c: any) => c.id === activeCli);
-          // If a custom execution template is found (ignoring openrouter baseline REST fallback)
-          if (cliConf && cliConf.executionTemplate && activeCli !== 'openrouter') {
-            isAgentUsed = true;
-            exeTemplate = cliConf.executionTemplate;
-          }
-        }
-      } catch (e) {
-         console.error("Failed to load cli-mapping.json for workspace run", e);
-      }
+      const dedicatedCliCommand = activeCli !== 'openrouter'
+        ? resolveCliRunnerCommand(activeCli, command)
+        : null;
+      const isAgentUsed = Boolean(dedicatedCliCommand);
 
       if (isAgentUsed && !useFallbackShell) {
-        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-        finalCommand = exeTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
+        finalCommand = dedicatedCliCommand as string;
         serverDB.addSystemLog('EXEC', 'INFO', `Routing workspace pipeline via active engine: ${activeCli}`);
       } else {
         const isBashCmd = command.startsWith('bash ') || command.startsWith('wsl ') || activeCli === 'pi' || activeCli === 'kimi';
@@ -2106,12 +2410,36 @@ User: Evolve the skill.`;
       }
 
       console.log(`[JARVIS RUN] Executing: ${finalCommand}`);
+      const toolCall = serverDB.recordToolCall({
+        sessionId,
+        runtime: normalizeCliRuntime(activeCli),
+        toolName: isAgentUsed && !useFallbackShell ? activeCli : 'workspace-shell',
+        argumentsText: finalCommand,
+        metadata: {
+          requestedCommand: command,
+          activeCli,
+          usedFallbackShell: useFallbackShell,
+        },
+      });
 
       exec(finalCommand, { cwd: process.cwd(), timeout: 30000 }, (err, stdout, stderr) => {
+        const truncatedStdout = stdout?.substring(0, 2000) || '';
+        const truncatedStderr = (extraStderr + (stderr || '')).substring(0, 2000);
+        serverDB.recordToolResult({
+          sessionId,
+          runtime: normalizeCliRuntime(activeCli),
+          toolCallId: toolCall.toolCallId || `${sessionId}:workspace-shell`,
+          resultText: [truncatedStdout, truncatedStderr].filter(Boolean).join('\n'),
+          metadata: {
+            success: !err,
+            activeCli,
+          },
+        });
+
         res.json({
           success: !err,
-          stdout: stdout?.substring(0, 2000) || '',
-          stderr: (extraStderr + (stderr || '')).substring(0, 2000)
+          stdout: truncatedStdout,
+          stderr: truncatedStderr
         });
       });
     } catch (e: any) {
@@ -2122,7 +2450,7 @@ User: Evolve the skill.`;
   // --- Windows Native Shell Command Endpoint (PowerShell / CMD / Start) ---
   app.post("/api/system/shell", async (req, res) => {
     try {
-      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode: requestedShellMode, ticketId } = req.body;
+      const { command, shell = 'powershell', activeCli = 'openrouter', shellMode: requestedShellMode, ticketId, sessionId = 'default-session' } = req.body;
       const persistedShellMode = serverDB.getSettings().shellMode;
       const shellMode = resolveEffectiveShellMode(requestedShellMode, persistedShellMode);
       
@@ -2186,38 +2514,12 @@ User: Evolve the skill.`;
       }
 
       let translatedCmd = command;
-      let isDiscreteAgent = false;
-      let exeTemplate = "";
+      const dedicatedShellCliCommand = activeCli !== 'openrouter'
+        ? resolveCliRunnerCommand(activeCli, command)
+        : null;
+      let isDiscreteAgent = Boolean(dedicatedShellCliCommand);
 
-      try {
-        const mappingPath = path.join(process.cwd(), 'cli-mapping.json');
-        if (fs.existsSync(mappingPath)) {
-          const mappingConf = JSON.parse(fs.readFileSync(mappingPath, 'utf8'));
-          const cliConf = mappingConf.find((c: any) => c.id === activeCli);
-          if (cliConf && cliConf.executionTemplate) {
-            isDiscreteAgent = true;
-            exeTemplate = cliConf.executionTemplate;
-          }
-        }
-      } catch (e) {
-         console.error("Failed to load cli-mapping.json for execution", e);
-      }
-
-      const cliBinaryMap: { [key: string]: string } = {
-        'copilot': 'gh',
-        'github-cli': 'gh',
-        'claude-code': 'npx',
-        'cursor-agent': 'cursor',
-        'devin': 'devin',
-        'gemini-cli': 'gemini',
-        'codex-cli': 'codex',
-        'opencode': 'opencode',
-        'kimi': 'kimi',
-        'qwen': 'qwen',
-        'pi': 'pi'
-      };
-
-      const requiredBinary = cliBinaryMap[activeCli];
+      const requiredBinary = resolveCliBinary(activeCli);
       let useFallbackShell = false;
       if (requiredBinary && isDiscreteAgent) {
         if (!isBinaryOnPathSync(requiredBinary)) {
@@ -2230,8 +2532,7 @@ User: Evolve the skill.`;
       }
 
       if (isDiscreteAgent && !useFallbackShell) {
-        const safePrompt = command.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-        translatedCmd = exeTemplate.replace(/\{\{prompt\}\}/g, safePrompt);
+        translatedCmd = dedicatedShellCliCommand as string;
       }
 
       // Build final OS invocation based on shell type
@@ -2256,16 +2557,42 @@ User: Evolve the skill.`;
       }
 
       console.log(`[JARVIS SHELL] Executing: ${finalCmd}`);
+      const toolCall = serverDB.recordToolCall({
+        sessionId,
+        runtime: normalizeCliRuntime(activeCli),
+        toolName: isDiscreteAgent && !useFallbackShell ? activeCli : shell,
+        argumentsText: finalCmd,
+        metadata: {
+          requestedCommand: command,
+          activeCli,
+          shell,
+          usedFallbackShell: useFallbackShell,
+        },
+      });
 
       exec(finalCmd, { 
         cwd: process.cwd(),
         timeout: 30000,
         windowsHide: false  // Allow GUI windows to open
       }, (err, stdout, stderr) => {
+        const truncatedStdout = stdout?.substring(0, 3000) || '';
+        const truncatedStderr = (extraStderr + (stderr || '')).substring(0, 1000) || '';
+        serverDB.recordToolResult({
+          sessionId,
+          runtime: normalizeCliRuntime(activeCli),
+          toolCallId: toolCall.toolCallId || `${sessionId}:system-shell`,
+          resultText: [truncatedStdout, truncatedStderr].filter(Boolean).join('\n'),
+          metadata: {
+            success: !err || (stdout?.length ?? 0) > 0,
+            activeCli,
+            shell,
+          },
+        });
+
         res.json({
-          success: !err || stdout.length > 0, // Count as success if there's output even with exit code
-          stdout: stdout?.substring(0, 3000) || '',
-          stderr: (extraStderr + (stderr || '')).substring(0, 1000) || '',
+          success: !err || (stdout?.length ?? 0) > 0, // Count as success if there's output even with exit code
+          stdout: truncatedStdout,
+          stderr: truncatedStderr,
           command: finalCmd
         });
       });
@@ -2553,7 +2880,9 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
             increment = Math.max(5, Math.min(50, data.progressIncrement));
           }
           if (typeof data.logMessage === 'string') {
-            logMessage = `[JARVIS-AUTONOMOUS] ${data.logMessage}`;
+            // Harness Layer 2: guard against credential leaks in autonomous log output
+            const { sanitized: safeLog } = guardOutput(data.logMessage);
+            logMessage = `[JARVIS-AUTONOMOUS] ${safeLog}`;
           }
           if (data.technicalArtifact && typeof data.technicalArtifact.markdownContent === 'string') {
             fileContentGenerated = data.technicalArtifact.markdownContent;
@@ -2642,6 +2971,36 @@ Generate a valid JSON object in your response. Ensure you do NOT wrap your respo
         timelineContent += `\`\`\`markdown\n${fileContentGenerated.substring(0, 1000)}${fileContentGenerated.length > 1000 ? '\n... (truncated)' : ''}\n\`\`\`\n\n`;
         
         serverDB.addSystemLog('DB', 'SUCCESS', `[STARK-AUTONOMOUS]: Created workspace file: 'task_reports/${task.id}_${sanitizedFilename}'`);
+
+        // ── Spec2 §4 Stop Hook: validate code artifacts with lint/typecheck ─
+        // Only run when the artifact looks like TypeScript/JavaScript source
+        const looksLikeCode = /\.(ts|tsx|js|jsx|mjs|cjs)$/.test(sanitizedFilename);
+        if (looksLikeCode) {
+          try {
+            const { stdout: lintOut, stderr: lintErr } = await new Promise<{ stdout: string; stderr: string }>((resolve) => {
+              exec('npx tsc --noEmit', { cwd: process.cwd(), timeout: 30_000 }, (err, out, err2) => {
+                resolve({ stdout: out || '', stderr: err2 || (err ? err.message : '') });
+              });
+            });
+            const passed = !lintOut.includes('error TS') && !lintErr.includes('error TS');
+            serverDB.addSystemLog('EXEC', passed ? 'SUCCESS' : 'WARN',
+              `[STOP-HOOK] TypeScript check after artifact "${sanitizedFilename}": ${passed ? 'PASSED' : 'ISSUES FOUND'}`);
+            if (!passed) {
+              const { buildStopHookPrompt } = await import('./src/services/agentWorkflow');
+              const healPrompt = buildStopHookPrompt(task.description, {
+                command: 'npx tsc --noEmit',
+                exitCode: 1,
+                stdout: lintOut,
+                stderr: lintErr,
+              });
+              timelineContent += `\n#### Stop Hook — TypeScript Validation\n\`\`\`\n${lintErr.substring(0, 500)}\n\`\`\`\n`;
+              timelineContent += `\n> Self-healing prompt generated — next task cycle will address these issues.\n`;
+              // Store the healing prompt as a memory so the next LLM call can act on it
+              serverDB.addCognitiveMemory(`[STOP-HOOK] Fix needed in ${sanitizedFilename}: ${lintErr.substring(0, 150)}`);
+              logMessage += ` (Stop hook: TypeScript errors found — queued for auto-fix)`;
+            }
+          } catch { /* stop hook is best-effort */ }
+        }
       } else {
         // Fallback progress output if no API key is active or model couldn't output file
         const fallbackFilename = `task_${task.id}_progress_${newProgress}.md`;

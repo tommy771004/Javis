@@ -1,4 +1,19 @@
-export type AgentRuntime = 'claude-code' | 'codex';
+export type AgentRuntime =
+  | 'claude-code'
+  | 'codex'
+  | 'codex-cli'
+  | 'openrouter'
+  | 'cursor-agent'
+  | 'devin'
+  | 'gemini-cli'
+  | 'copilot'
+  | 'github-cli'
+  | 'opencode'
+  | 'kimi'
+  | 'qwen'
+  | 'pi'
+  | 'hermes'
+  | 'system';
 
 export type UniversalEventKind =
   | 'session.started'
@@ -110,7 +125,7 @@ function toTimestamp(context: UniversalEventContext): number {
   return context.now ? context.now() : Date.now();
 }
 
-function createEvent(
+export function createUniversalEvent(
   runtime: AgentRuntime,
   kind: UniversalEventKind,
   actor: UniversalEventActor,
@@ -147,7 +162,7 @@ export class ClaudeCodeEventAdapter implements NativeEventAdapter<ClaudeCodeNati
     }
 
     const events: UniversalEvent[] = [
-      createEvent(this.runtime, 'message.started', raw.role, context, {
+      createUniversalEvent(this.runtime, 'message.started', raw.role, context, {
         messageId: raw.messageId,
       }),
     ];
@@ -156,7 +171,7 @@ export class ClaudeCodeEventAdapter implements NativeEventAdapter<ClaudeCodeNati
       const itemId = `${raw.messageId}:block:${index}`;
       if (block.type === 'text') {
         events.push(
-          createEvent(this.runtime, 'text.completed', raw.role, context, {
+          createUniversalEvent(this.runtime, 'text.completed', raw.role, context, {
             messageId: raw.messageId,
             itemId,
             text: block.text,
@@ -167,7 +182,7 @@ export class ClaudeCodeEventAdapter implements NativeEventAdapter<ClaudeCodeNati
 
       if (block.type === 'tool_use') {
         events.push(
-          createEvent(this.runtime, 'tool.call', raw.role, context, {
+          createUniversalEvent(this.runtime, 'tool.call', raw.role, context, {
             messageId: raw.messageId,
             itemId,
             toolCallId: block.id,
@@ -179,7 +194,7 @@ export class ClaudeCodeEventAdapter implements NativeEventAdapter<ClaudeCodeNati
       }
 
       events.push(
-        createEvent(this.runtime, 'tool.result', 'tool', context, {
+        createUniversalEvent(this.runtime, 'tool.result', 'tool', context, {
           messageId: raw.messageId,
           itemId,
           toolCallId: block.toolUseId,
@@ -190,7 +205,7 @@ export class ClaudeCodeEventAdapter implements NativeEventAdapter<ClaudeCodeNati
     });
 
     events.push(
-      createEvent(this.runtime, 'message.completed', raw.role, context, {
+      createUniversalEvent(this.runtime, 'message.completed', raw.role, context, {
         messageId: raw.messageId,
       }),
     );
@@ -206,13 +221,13 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
     switch (raw.type) {
       case 'response.started':
         return [
-          createEvent(this.runtime, 'message.started', 'assistant', context, {
+          createUniversalEvent(this.runtime, 'message.started', 'assistant', context, {
             messageId: raw.messageId,
           }),
         ];
       case 'response.output_text.delta':
         return [
-          createEvent(this.runtime, 'text.delta', 'assistant', context, {
+          createUniversalEvent(this.runtime, 'text.delta', 'assistant', context, {
             messageId: raw.messageId,
             itemId: raw.itemId,
             delta: raw.delta,
@@ -220,7 +235,7 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
         ];
       case 'response.output_text.done':
         return [
-          createEvent(this.runtime, 'text.completed', 'assistant', context, {
+          createUniversalEvent(this.runtime, 'text.completed', 'assistant', context, {
             messageId: raw.messageId,
             itemId: raw.itemId,
             text: raw.text,
@@ -228,7 +243,7 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
         ];
       case 'response.tool_call':
         return [
-          createEvent(this.runtime, 'tool.call', 'assistant', context, {
+          createUniversalEvent(this.runtime, 'tool.call', 'assistant', context, {
             messageId: raw.messageId,
             itemId: raw.itemId,
             toolCallId: raw.callId,
@@ -238,7 +253,7 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
         ];
       case 'response.tool_result.delta':
         return [
-          createEvent(this.runtime, 'tool.result', 'tool', context, {
+          createUniversalEvent(this.runtime, 'tool.result', 'tool', context, {
             messageId: raw.messageId,
             itemId: raw.itemId,
             toolCallId: raw.callId,
@@ -249,7 +264,7 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
         ];
       case 'response.tool_result.done':
         return [
-          createEvent(this.runtime, 'tool.result', 'tool', context, {
+          createUniversalEvent(this.runtime, 'tool.result', 'tool', context, {
             messageId: raw.messageId,
             itemId: raw.itemId,
             toolCallId: raw.callId,
@@ -259,7 +274,7 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
         ];
       case 'response.completed':
         return [
-          createEvent(this.runtime, 'message.completed', 'assistant', context, {
+          createUniversalEvent(this.runtime, 'message.completed', 'assistant', context, {
             messageId: raw.messageId,
           }),
         ];
@@ -269,19 +284,21 @@ export class CodexEventAdapter implements NativeEventAdapter<CodexNativeEvent> {
   }
 }
 
-type AdapterRegistry = {
-  [runtime in AgentRuntime]: NativeEventAdapter<unknown>;
-};
+type AdapterRegistry = Partial<Record<AgentRuntime, NativeEventAdapter<unknown>>>;
 
 export class AgentSidecar {
   constructor(private readonly adapters: AdapterRegistry) {}
 
-  intercept<TRuntime extends AgentRuntime>(
-    runtime: TRuntime,
-    raw: Parameters<AdapterRegistry[TRuntime]['adapt']>[0],
+  intercept(
+    runtime: AgentRuntime,
+    raw: unknown,
     context: UniversalEventContext,
   ): UniversalEvent[] {
     const adapter = this.adapters[runtime];
+    if (!adapter) {
+      return [];
+    }
+
     return adapter.adapt(raw, context);
   }
 }
