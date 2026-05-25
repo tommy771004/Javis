@@ -122,10 +122,14 @@ export interface DbSettings {
   taskMode: 'manual' | 'auto';
   voiceProfile: 'baritone' | 'fast' | 'standard';
   autoRepair: boolean;
+  isLightMode?: boolean;
   activeSkin?: string;
   satelliteName?: string;
   armorModel?: string;
   operatorName?: string;
+  locale?: string;
+  sttProvider?: string;
+  ttsProvider?: string;
   byokKey?: string;
   byokModel?: string;
   byokEndpoint?: string;
